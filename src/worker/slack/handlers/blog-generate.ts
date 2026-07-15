@@ -10,13 +10,13 @@
 
 import { buildBlogRequest, type BlogTopic } from "@/domain/blog/prompt";
 import type { VoicePromptResult } from "@/domain/voice/voice";
-import type { OrchestratorResult } from "@/ai/orchestrator";
+import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import { formatOrchestratorResult, type SlackResponse } from "../formatter";
 
 export interface BlogGenerateDeps {
   getNextTopic: () => Promise<BlogTopic | null>;
   getBrandContext: () => Promise<string>;
-  runOrchestrator: (request: { prompt: string; system?: string; guardrails?: Record<string, unknown> }) => Promise<OrchestratorResult>;
+  runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   voice: VoicePromptResult;
 }
 

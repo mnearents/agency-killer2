@@ -4,6 +4,8 @@
  * text-embedding-3-small calls.
  */
 
+import OpenAI from "openai";
+
 export interface EmbeddingResult {
   embedding: number[];
   tokenCount: number;
@@ -14,8 +16,34 @@ export interface EmbeddingClient {
   embedBatch(texts: string[]): Promise<EmbeddingResult[]>;
 }
 
-export function createEmbeddingClient(_apiKey: string): EmbeddingClient {
-  throw new Error(
-    "Real OpenAI embedding client not yet implemented — use createMockEmbeddingClient in tests"
-  );
+const EMBEDDING_MODEL = "text-embedding-3-small";
+
+export function createEmbeddingClient(apiKey: string): EmbeddingClient {
+  const sdk = new OpenAI({ apiKey });
+
+  return {
+    async embed(text) {
+      const response = await sdk.embeddings.create({
+        model: EMBEDDING_MODEL,
+        input: text,
+      });
+
+      return {
+        embedding: response.data[0].embedding,
+        tokenCount: response.usage.total_tokens,
+      };
+    },
+
+    async embedBatch(texts) {
+      const response = await sdk.embeddings.create({
+        model: EMBEDDING_MODEL,
+        input: texts,
+      });
+
+      return response.data.map((item, i) => ({
+        embedding: item.embedding,
+        tokenCount: Math.ceil(response.usage.total_tokens / texts.length),
+      }));
+    },
+  };
 }

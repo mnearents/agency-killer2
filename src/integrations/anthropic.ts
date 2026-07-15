@@ -3,6 +3,8 @@
  * Tests mock this interface; production uses the real SDK.
  */
 
+import Anthropic from "@anthropic-ai/sdk";
+
 export interface GenerateOptions {
   model?: string;
   system?: string;
@@ -21,10 +23,34 @@ export interface AnthropicClient {
   generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult>;
 }
 
+const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_MAX_TOKENS = 4096;
+
 export function createAnthropicClient(apiKey: string): AnthropicClient {
-  // Real implementation will use the Anthropic SDK.
-  // For now, this exists to define the seam.
-  throw new Error(
-    "Real Anthropic client not yet implemented — use createMockAnthropicClient in tests"
-  );
+  const sdk = new Anthropic({ apiKey });
+
+  return {
+    async generate(prompt, options = {}) {
+      const response = await sdk.messages.create({
+        model: options.model ?? DEFAULT_MODEL,
+        max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+        temperature: options.temperature,
+        system: options.system,
+        messages: [{ role: "user", content: prompt }],
+      });
+
+      // Extract text from content blocks
+      const text = response.content
+        .filter((block): block is Anthropic.TextBlock => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+
+      return {
+        text,
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        stopReason: response.stop_reason ?? "unknown",
+      };
+    },
+  };
 }

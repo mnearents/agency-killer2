@@ -9,12 +9,12 @@
 
 import { buildEmailCreativeRequest, type EmailBrief, type ProductInfo } from "@/domain/email/creative";
 import type { VoicePromptResult } from "@/domain/voice/voice";
-import type { OrchestratorResult } from "@/ai/orchestrator";
+import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import { formatOrchestratorResult, type SlackResponse } from "../formatter";
 
 export interface EmailDesignDeps {
   getProducts: () => Promise<ProductInfo[]>;
-  runOrchestrator: (request: { prompt: string; system?: string; guardrails?: Record<string, unknown> }) => Promise<OrchestratorResult>;
+  runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   voice: VoicePromptResult;
 }
 

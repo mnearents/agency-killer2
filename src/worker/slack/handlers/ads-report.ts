@@ -10,13 +10,13 @@
 import { aggregateAndCompute, type InsightRow } from "@/domain/meta/metrics";
 import { buildAnalysisRequest, type CampaignSummary } from "@/domain/meta/analysis";
 import type { VoicePromptResult } from "@/domain/voice/voice";
-import type { OrchestratorResult } from "@/ai/orchestrator";
+import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import { formatOrchestratorResult, type SlackResponse } from "../formatter";
 
 export interface AdsReportDeps {
   getInsightRows: (dateRange: { start: string; end: string }) => Promise<InsightRow[]>;
   getCampaignName: (campaignId: string) => Promise<string>;
-  runOrchestrator: (request: { prompt: string; system?: string; guardrails?: Record<string, unknown> }) => Promise<OrchestratorResult>;
+  runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   voice: VoicePromptResult;
 }
 
