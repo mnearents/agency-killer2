@@ -7,7 +7,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:all": "vitest run --config vitest.config.ts && vitest run --config vitest.evals.config.ts",
-    "test:evals": "vitest run --config vitest.evals.config.ts"
+    "test:evals": "vitest run --config vitest.evals.config.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
   },
   "keywords": [],
   "author": "",
@@ -16,7 +19,12 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9"
   }
 }
