@@ -22,6 +22,7 @@ import { createDb } from "@/db/client";
 
 // Sync services
 import { syncIncremental } from "@/domain/meta/sync";
+import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
@@ -165,8 +166,16 @@ async function main() {
         console.log("[meta:analysis] Skipped — ANTHROPIC_API_KEY not set");
         return;
       }
-      // TODO: query DB for recent insights, compute metrics, generate analysis
-      console.log("[meta:analysis] Ad analysis not yet fully wired");
+      const result = await analyzeAdPerformance(
+        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        7
+      );
+      console.log(
+        `[meta:analysis] ${result.ok ? "Done" : "Failed"}: ${result.campaignCount} campaigns (${result.dateRange.start} to ${result.dateRange.end})`
+      );
+      if (!result.ok) {
+        console.error("[meta:analysis]", result.text);
+      }
     },
   };
 
@@ -210,10 +219,16 @@ async function main() {
 
   // ─── Start Slack bot ────────────────────────────────────────────────
   const slackHandlers: Record<string, (args: string) => Promise<SlackResponse>> = {
-    "meta:analysis": async () => ({
-      text: "Ad analysis is not yet wired to real data. The sync tasks are running — analysis will be available once data is populated.",
-      isError: false,
-    }),
+    "meta:analysis": async () => {
+      if (!orchestrator) {
+        return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
+      }
+      const result = await analyzeAdPerformance(
+        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        7
+      );
+      return { text: result.text, isError: !result.ok };
+    },
     "meta:status": async () => ({
       text: "Ad status coming soon!",
       isError: false,
