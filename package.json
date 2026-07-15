@@ -23,7 +23,10 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@11.13.0",
+  "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp"]
+  },
   "type": "module",
   "devDependencies": {
     "@types/node": "^26.1.1",
