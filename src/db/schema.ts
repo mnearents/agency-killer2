@@ -18,6 +18,7 @@ import {
   jsonb,
   uniqueIndex,
   index,
+  vector,
 } from "drizzle-orm/pg-core";
 
 // ─── Meta Ads ──────────────────────────────────────────────────────────
@@ -235,3 +236,35 @@ export type NewShopifyOrder = typeof shopifyOrders.$inferInsert;
 
 export type ShopifyLineItem = typeof shopifyLineItems.$inferSelect;
 export type NewShopifyLineItem = typeof shopifyLineItems.$inferInsert;
+
+// ─── Knowledge Base ────────────────────────────────────────────────────
+
+export const kbDocuments = pgTable(
+  "kb_documents",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    category: text("category").notNull(), // brand, strategy, meeting-notes, etc.
+    subcategory: text("subcategory"),
+    sourceFile: text("source_file"), // Dropbox path or manual entry ID
+    contentHash: text("content_hash").notNull(), // SHA-256 for change detection
+    chunkIndex: integer("chunk_index").notNull().default(0),
+    totalChunks: integer("total_chunks").notNull().default(1),
+    contextPrefix: text("context_prefix").notNull(),
+    documentDate: timestamp("document_date", { withTimezone: true }),
+    embedding: vector("embedding", { dimensions: 1536 }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("kb_documents_category_idx").on(table.category),
+    index("kb_documents_source_idx").on(table.sourceFile),
+    index("kb_documents_hash_idx").on(table.contentHash),
+  ]
+);
+
+export type KbDocument = typeof kbDocuments.$inferSelect;
+export type NewKbDocument = typeof kbDocuments.$inferInsert;

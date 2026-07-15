@@ -7,12 +7,14 @@ import {
   metaAds,
   metaCreatives,
   metaInsights,
+  kbDocuments,
 } from "@/db/schema";
 import type {
   NewMetaCampaign,
   NewMetaAdSet,
   NewMetaAd,
   NewMetaInsight,
+  NewKbDocument,
 } from "@/db/schema";
 
 describe("schema: meta_campaigns", () => {
@@ -159,5 +161,44 @@ describe("schema: type safety — insert types require mandatory fields", () => 
     };
     expect(valid.adId).toBe("ad_123");
     expect(valid.date).toEqual(new Date("2025-01-15"));
+  });
+});
+
+// ─── Knowledge Base ───────────────────────────────────────────────────
+
+describe("schema: kb_documents", () => {
+  it("has the correct table name", () => {
+    const config = getTableConfig(kbDocuments);
+    expect(config.name).toBe("kb_documents");
+  });
+
+  it("has embedding column for pgvector", () => {
+    const columns = getTableColumns(kbDocuments);
+    expect(columns.embedding).toBeDefined();
+  });
+
+  it("has contentHash for change detection", () => {
+    const columns = getTableColumns(kbDocuments);
+    expect(columns.contentHash).toBeDefined();
+  });
+
+  it("has indexes on category, source, and hash", () => {
+    const config = getTableConfig(kbDocuments);
+    const indexNames = config.indexes.map((idx) => idx.config.name);
+    expect(indexNames).toContain("kb_documents_category_idx");
+    expect(indexNames).toContain("kb_documents_source_idx");
+    expect(indexNames).toContain("kb_documents_hash_idx");
+  });
+
+  it("NewKbDocument requires title, content, category, contentHash, contextPrefix", () => {
+    const valid: NewKbDocument = {
+      title: "Test Doc",
+      content: "Some content",
+      category: "brand",
+      contentHash: "abc123",
+      contextPrefix: "From Test Doc:",
+    };
+    expect(valid.title).toBe("Test Doc");
+    expect(valid.category).toBe("brand");
   });
 });
