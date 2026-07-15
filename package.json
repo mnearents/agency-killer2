@@ -1,0 +1,22 @@
+{
+  "name": "agency-killer2",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:all": "vitest run --config vitest.config.ts && vitest run --config vitest.evals.config.ts",
+    "test:evals": "vitest run --config vitest.evals.config.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@11.13.0",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
