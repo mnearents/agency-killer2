@@ -12,73 +12,165 @@ import { getPhase1Tasks, getTaskHandlerMap } from "./tasks/registry";
 import { createSlackApp } from "./slack/app";
 import type { SlackResponse } from "./slack/formatter";
 
-// Scheduler tick: every minute, check for due tasks
+// Real API clients
+import { createMetaApiClient } from "@/integrations/meta-api";
+import { createShopifyApiClient } from "@/integrations/shopify-api";
+import { createDropboxClient } from "@/integrations/dropbox";
+import { createAnthropicClient } from "@/integrations/anthropic";
+import { createEmbeddingClient } from "@/integrations/openai";
+import { createDb } from "@/db/client";
+
+// Sync services
+import { syncIncremental } from "@/domain/meta/sync";
+import { syncOrders } from "@/domain/shopify/sync";
+import { syncKnowledgeBase } from "@/domain/knowledge/sync";
+import { embedChunks } from "@/domain/knowledge/embedding";
+
+// AI orchestration
+import { createOrchestrator } from "@/ai/orchestrator";
+import { assembleVoicePrompt } from "@/domain/voice/voice";
+
 const SCHEDULER_CRON = "* * * * *";
 
-function createHandlerFns(): Record<string, () => Promise<void>> {
-  // TODO: wire up real handler functions as they're implemented
-  const handlers: Record<string, () => Promise<void>> = {};
-  const handlerMap = getTaskHandlerMap();
-
-  for (const [taskId, handlerName] of Object.entries(handlerMap)) {
-    handlers[handlerName] = async () => {
-      console.log(`[handler] Running ${handlerName} for task ${taskId}`);
-    };
-  }
-
-  return handlers;
+function getEnv(key: string): string {
+  const value = process.env[key];
+  if (!value) throw new Error(`Missing environment variable: ${key}`);
+  return value;
 }
 
-function createSlackHandlers(): Record<string, (args: string) => Promise<SlackResponse>> {
-  // TODO: wire up real Slack command handlers as they're implemented
-  return {
-    "meta:analysis": async () => ({
-      text: "Ads analysis is not yet wired up to real data. Coming soon!",
-      isError: false,
-    }),
-    "meta:status": async () => ({
-      text: "Ads status is not yet wired up. Coming soon!",
-      isError: false,
-    }),
-    "meta:overview": async () => ({
-      text: "Ads overview coming soon!",
-      isError: false,
-    }),
-    "email:design": async (args) => ({
-      text: `Email design for "${args}" is not yet wired up. Coming soon!`,
-      isError: false,
-    }),
-    "email:overview": async () => ({
-      text: "Email overview coming soon!",
-      isError: false,
-    }),
-    "blog:create": async (args) => ({
-      text: `Blog creation for "${args}" is not yet wired up. Coming soon!`,
-      isError: false,
-    }),
-    "blog:list": async () => ({
-      text: "Blog list coming soon!",
-      isError: false,
-    }),
-    "blog:overview": async () => ({
-      text: "Blog overview coming soon!",
-      isError: false,
-    }),
-    "social:analyze": async () => ({
-      text: "Social analytics coming soon!",
-      isError: false,
-    }),
-    "inventory:check": async () => ({
-      text: "Inventory check coming soon!",
-      isError: false,
-    }),
-  };
+function getEnvOptional(key: string): string | undefined {
+  return process.env[key];
 }
 
 async function main() {
   console.log("[worker] Starting agency-killer2 worker...");
 
-  // Initialize scheduler with Phase 1 tasks
+  // ─── Initialize clients ─────────────────────────────────────────────
+  const db = createDb(getEnv("DATABASE_URL"));
+
+  const metaClient = getEnvOptional("META_ACCESS_TOKEN")
+    ? createMetaApiClient(getEnv("META_ACCESS_TOKEN"))
+    : null;
+
+  const shopifyClient =
+    getEnvOptional("SHOPIFY_ACCESS_TOKEN") && getEnvOptional("SHOPIFY_STORE_DOMAIN")
+      ? createShopifyApiClient(
+          getEnv("SHOPIFY_STORE_DOMAIN"),
+          getEnv("SHOPIFY_ACCESS_TOKEN")
+        )
+      : null;
+
+  const dropboxClient =
+    getEnvOptional("DROPBOX_APP_KEY") &&
+    getEnvOptional("DROPBOX_APP_SECRET") &&
+    getEnvOptional("DROPBOX_REFRESH_TOKEN")
+      ? createDropboxClient(
+          getEnv("DROPBOX_APP_KEY"),
+          getEnv("DROPBOX_APP_SECRET"),
+          getEnv("DROPBOX_REFRESH_TOKEN")
+        )
+      : null;
+
+  const anthropicClient = getEnvOptional("ANTHROPIC_API_KEY")
+    ? createAnthropicClient(getEnv("ANTHROPIC_API_KEY"))
+    : null;
+
+  const embeddingClient = getEnvOptional("OPENAI_API_KEY")
+    ? createEmbeddingClient(getEnv("OPENAI_API_KEY"))
+    : null;
+
+  const metaAccountId = getEnvOptional("META_AD_ACCOUNT_ID");
+  const dropboxKbRoot = getEnvOptional("DROPBOX_KB_ROOT") ?? "/RAD/Agency";
+
+  // ─── Build orchestrator ─────────────────────────────────────────────
+  // TODO: load voice profile from DB instead of hardcoding
+  const voiceProfile = {
+    samples: [{ id: "1", title: "placeholder", content: "placeholder", tags: [] as string[] }],
+    rules: [] as string[],
+    bannedWords: ["synergy", "delve", "leverage", "shenanigans"],
+  };
+  const voice = assembleVoicePrompt(voiceProfile);
+
+  const orchestrator = anthropicClient
+    ? createOrchestrator({ client: anthropicClient, defaultGuardrails: voice.guardrailOptions })
+    : null;
+
+  // ─── Register task handlers ─────────────────────────────────────────
+  const handlerFns: Record<string, () => Promise<void>> = {
+    "sync:meta": async () => {
+      if (!metaClient || !metaAccountId) {
+        console.log("[sync:meta] Skipped — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set");
+        return;
+      }
+      const result = await syncIncremental({ client: metaClient, db, accountId: metaAccountId });
+      console.log(
+        `[sync:meta] Done: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`
+      );
+      if (result.errors.length > 0) {
+        console.error("[sync:meta] Errors:", result.errors);
+      }
+    },
+
+    "sync:shopify": async () => {
+      if (!shopifyClient) {
+        console.log("[sync:shopify] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+        return;
+      }
+      const result = await syncOrders({ client: shopifyClient, db });
+      console.log(`[sync:shopify] Done: ${result.orders} orders, ${result.lineItems} line items`);
+      if (result.errors.length > 0) {
+        console.error("[sync:shopify] Errors:", result.errors);
+      }
+    },
+
+    "sync:knowledge-base": async () => {
+      if (!dropboxClient) {
+        console.log("[sync:kb] Skipped — DROPBOX credentials not set");
+        return;
+      }
+      // TODO: load existing hashes and lastSynced from DB
+      const result = await syncKnowledgeBase(
+        dropboxClient,
+        dropboxKbRoot,
+        new Map(),
+        new Set()
+      );
+      console.log(
+        `[sync:kb] Done: ${result.totalFiles} files (${result.newFiles} new, ${result.changedFiles} changed, ${result.unchangedFiles} unchanged)`
+      );
+
+      // Embed new chunks
+      if (embeddingClient) {
+        const allChunks = result.ingestionResults.flatMap((r) => r.rows);
+        const embeddingResult = await embedChunks(allChunks, embeddingClient);
+        console.log(
+          `[sync:kb] Embedding: ${embeddingResult.embedded} embedded, ${embeddingResult.skipped} skipped, ${embeddingResult.failed} failed`
+        );
+      }
+
+      // TODO: upsert embedded chunks to DB
+    },
+
+    "blog:create": async () => {
+      if (!orchestrator) {
+        console.log("[blog:create] Skipped — ANTHROPIC_API_KEY not set");
+        return;
+      }
+      // TODO: select next topic, generate article, publish to Shopify
+      console.log("[blog:create] Blog generation not yet fully wired");
+    },
+
+    "meta:analysis": async () => {
+      if (!orchestrator) {
+        console.log("[meta:analysis] Skipped — ANTHROPIC_API_KEY not set");
+        return;
+      }
+      // TODO: query DB for recent insights, compute metrics, generate analysis
+      console.log("[meta:analysis] Ad analysis not yet fully wired");
+    },
+  };
+
+  // ─── Start scheduler ────────────────────────────────────────────────
   const tasks = getPhase1Tasks();
   let state = createSchedulerState(tasks);
   console.log(`[worker] Registered ${tasks.length} tasks:`);
@@ -86,17 +178,14 @@ async function main() {
     console.log(`  - ${task.name} (${task.id}) [${task.enabled ? "enabled" : "disabled"}]`);
   }
 
-  // Build dispatcher config
   const config: DispatcherConfig = {
     handlerMap: getTaskHandlerMap(),
-    handlerFns: createHandlerFns(),
+    handlerFns,
   };
 
-  // Start scheduler tick
   cron.schedule(SCHEDULER_CRON, async () => {
     const now = new Date();
     const dueTasks = getDueTasks(state, now);
-
     if (dueTasks.length === 0) return;
 
     console.log(`[scheduler] ${dueTasks.length} task(s) due at ${now.toISOString()}`);
@@ -119,18 +208,83 @@ async function main() {
 
   console.log("[worker] Scheduler started (checking every minute)");
 
-  // Start Slack bot
+  // ─── Start Slack bot ────────────────────────────────────────────────
+  const slackHandlers: Record<string, (args: string) => Promise<SlackResponse>> = {
+    "meta:analysis": async () => ({
+      text: "Ad analysis is not yet wired to real data. The sync tasks are running — analysis will be available once data is populated.",
+      isError: false,
+    }),
+    "meta:status": async () => ({
+      text: "Ad status coming soon!",
+      isError: false,
+    }),
+    "meta:overview": async () => ({
+      text: "Ad overview coming soon!",
+      isError: false,
+    }),
+    "email:design": async (args) => ({
+      text: `Email design for "${args}" coming soon!`,
+      isError: false,
+    }),
+    "email:overview": async () => ({
+      text: "Email overview coming soon!",
+      isError: false,
+    }),
+    "email:calendar": async () => ({
+      text: "Email calendar coming soon!",
+      isError: false,
+    }),
+    "blog:create": async (args) => ({
+      text: `Blog creation for "${args}" coming soon!`,
+      isError: false,
+    }),
+    "blog:list": async () => ({
+      text: "Blog list coming soon!",
+      isError: false,
+    }),
+    "blog:overview": async () => ({
+      text: "Blog overview coming soon!",
+      isError: false,
+    }),
+    "social:analyze": async () => ({
+      text: "Social analytics coming soon!",
+      isError: false,
+    }),
+    "social:overview": async () => ({
+      text: "Social overview coming soon!",
+      isError: false,
+    }),
+    "social:reel": async () => ({
+      text: "Reel creation coming soon!",
+      isError: false,
+    }),
+    "inventory:check": async () => ({
+      text: "Inventory check coming soon!",
+      isError: false,
+    }),
+    "inventory:alerts": async () => ({
+      text: "Inventory alerts coming soon!",
+      isError: false,
+    }),
+    "inventory:overview": async () => ({
+      text: "Inventory overview coming soon!",
+      isError: false,
+    }),
+  };
+
   const slackApp = createSlackApp({
     runOrchestrator: async (request) => {
-      // TODO: wire up real orchestrator with Anthropic client
-      return {
-        ok: true as const,
-        text: `I heard you! You said: "${request.prompt}". Real AI responses coming soon.`,
-        inputTokens: 0,
-        outputTokens: 0,
-      };
+      if (!orchestrator) {
+        return {
+          ok: true as const,
+          text: "AI responses are not available — ANTHROPIC_API_KEY not set.",
+          inputTokens: 0,
+          outputTokens: 0,
+        };
+      }
+      return orchestrator.run(request);
     },
-    handlers: createSlackHandlers(),
+    handlers: slackHandlers,
   });
 
   if (slackApp) {
