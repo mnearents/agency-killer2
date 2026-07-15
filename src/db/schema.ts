@@ -157,3 +157,81 @@ export type NewMetaCreative = typeof metaCreatives.$inferInsert;
 
 export type MetaInsight = typeof metaInsights.$inferSelect;
 export type NewMetaInsight = typeof metaInsights.$inferInsert;
+
+// ─── Shopify ───────────────────────────────────────────────────────────
+
+export const shopifyOrders = pgTable(
+  "shopify_orders",
+  {
+    id: text("id").primaryKey(), // Shopify's order ID
+    orderNumber: text("order_number"),
+    currency: text("currency").notNull().default("USD"),
+
+    // Money in cents
+    totalPriceCents: bigint("total_price_cents", { mode: "number" }).notNull(),
+    subtotalPriceCents: bigint("subtotal_price_cents", { mode: "number" }),
+    totalTaxCents: bigint("total_tax_cents", { mode: "number" }),
+    totalDiscountsCents: bigint("total_discounts_cents", { mode: "number" }),
+
+    // Status
+    financialStatus: text("financial_status"),
+    fulfillmentStatus: text("fulfillment_status"),
+
+    // Customer & attribution
+    customerId: text("customer_id"),
+    sourceName: text("source_name"),
+    referringSite: text("referring_site"),
+
+    // UTM parameters (for attributing orders to ad campaigns)
+    utmSource: text("utm_source"),
+    utmMedium: text("utm_medium"),
+    utmCampaign: text("utm_campaign"),
+    utmContent: text("utm_content"),
+    utmTerm: text("utm_term"),
+
+    // Subscription tracking
+    isRecurring: integer("is_recurring").notNull().default(0), // 0 = false, 1 = true
+    tags: jsonb("tags"),
+    discountCodes: jsonb("discount_codes"),
+
+    orderCreatedAt: timestamp("order_created_at", { withTimezone: true }),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("shopify_orders_created_idx").on(table.orderCreatedAt),
+    index("shopify_orders_customer_idx").on(table.customerId),
+    index("shopify_orders_utm_idx").on(
+      table.utmSource,
+      table.utmMedium,
+      table.utmCampaign
+    ),
+  ]
+);
+
+export const shopifyLineItems = pgTable(
+  "shopify_line_items",
+  {
+    id: text("id").primaryKey(),
+    orderId: text("order_id")
+      .notNull()
+      .references(() => shopifyOrders.id),
+    productId: text("product_id"),
+    variantId: text("variant_id"),
+    productType: text("product_type"),
+    sku: text("sku"),
+    title: text("title").notNull(),
+    quantity: integer("quantity").notNull(),
+    priceCents: bigint("price_cents", { mode: "number" }).notNull(), // unit price
+    rawJson: jsonb("raw_json"),
+  },
+  (table) => [index("shopify_line_items_product_idx").on(table.productId)]
+);
+
+export type ShopifyOrder = typeof shopifyOrders.$inferSelect;
+export type NewShopifyOrder = typeof shopifyOrders.$inferInsert;
+
+export type ShopifyLineItem = typeof shopifyLineItems.$inferSelect;
+export type NewShopifyLineItem = typeof shopifyLineItems.$inferInsert;
