@@ -110,13 +110,18 @@ export function createShopifyApiClient(
       const allOrders: ShopifyApiOrder[] = [];
       let after: string | null = null;
 
+      interface OrdersResponse {
+        orders: {
+          pageInfo: { hasNextPage: boolean; endCursor: string };
+          nodes: ShopifyApiOrder[];
+        };
+      }
+
       do {
-        const data = await graphql<{
-          orders: {
-            pageInfo: { hasNextPage: boolean; endCursor: string };
-            nodes: ShopifyApiOrder[];
-          };
-        }>(ORDERS_QUERY, { first: limit, query, after });
+        const data: OrdersResponse = await graphql<OrdersResponse>(
+          ORDERS_QUERY,
+          { first: limit, query, after }
+        );
 
         allOrders.push(...data.orders.nodes);
         after = data.orders.pageInfo.hasNextPage

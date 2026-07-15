@@ -130,13 +130,13 @@ async function fetchAllPages<T>(url: string): Promise<T[]> {
   let nextUrl: string | null = url;
 
   while (nextUrl) {
-    const response = await fetch(nextUrl);
+    const response: Response = await fetch(nextUrl);
     if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Meta API error (${response.status}): ${error}`);
+      const errorText = await response.text();
+      throw new Error(`Meta API error (${response.status}): ${errorText}`);
     }
 
-    const json = await response.json();
+    const json: { data?: T[]; paging?: { next?: string } } = await response.json();
     if (json.data) {
       results.push(...json.data);
     }

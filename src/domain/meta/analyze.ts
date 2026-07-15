@@ -9,7 +9,7 @@
  */
 
 import type { Db } from "@/db/client";
-import type { OrchestratorResult } from "@/ai/orchestrator";
+import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import type { VoicePromptResult } from "@/domain/voice/voice";
 import { getInsightsByCampaign } from "./queries";
 import { aggregateAndCompute } from "./metrics";
@@ -18,11 +18,7 @@ import { buildAnalysisRequest, type CampaignSummary } from "./analysis";
 export interface AnalyzeDeps {
   db: Db;
   voice: VoicePromptResult;
-  runOrchestrator: (request: {
-    prompt: string;
-    system?: string;
-    guardrails?: Record<string, unknown>;
-  }) => Promise<OrchestratorResult>;
+  runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
 }
 
 export interface AnalyzeResult {
