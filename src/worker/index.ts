@@ -9,13 +9,14 @@ import cron from "node-cron";
 import { createSchedulerState, getDueTasks, recordTaskRun } from "./scheduler";
 import { dispatchDueTasks, type DispatcherConfig } from "./dispatcher";
 import { getPhase1Tasks, getTaskHandlerMap } from "./tasks/registry";
+import { createSlackApp } from "./slack/app";
+import type { SlackResponse } from "./slack/formatter";
 
 // Scheduler tick: every minute, check for due tasks
 const SCHEDULER_CRON = "* * * * *";
 
 function createHandlerFns(): Record<string, () => Promise<void>> {
   // TODO: wire up real handler functions as they're implemented
-  // For now, each handler logs what would run
   const handlers: Record<string, () => Promise<void>> = {};
   const handlerMap = getTaskHandlerMap();
 
@@ -26,6 +27,52 @@ function createHandlerFns(): Record<string, () => Promise<void>> {
   }
 
   return handlers;
+}
+
+function createSlackHandlers(): Record<string, (args: string) => Promise<SlackResponse>> {
+  // TODO: wire up real Slack command handlers as they're implemented
+  return {
+    "meta:analysis": async () => ({
+      text: "Ads analysis is not yet wired up to real data. Coming soon!",
+      isError: false,
+    }),
+    "meta:status": async () => ({
+      text: "Ads status is not yet wired up. Coming soon!",
+      isError: false,
+    }),
+    "meta:overview": async () => ({
+      text: "Ads overview coming soon!",
+      isError: false,
+    }),
+    "email:design": async (args) => ({
+      text: `Email design for "${args}" is not yet wired up. Coming soon!`,
+      isError: false,
+    }),
+    "email:overview": async () => ({
+      text: "Email overview coming soon!",
+      isError: false,
+    }),
+    "blog:create": async (args) => ({
+      text: `Blog creation for "${args}" is not yet wired up. Coming soon!`,
+      isError: false,
+    }),
+    "blog:list": async () => ({
+      text: "Blog list coming soon!",
+      isError: false,
+    }),
+    "blog:overview": async () => ({
+      text: "Blog overview coming soon!",
+      isError: false,
+    }),
+    "social:analyze": async () => ({
+      text: "Social analytics coming soon!",
+      isError: false,
+    }),
+    "inventory:check": async () => ({
+      text: "Inventory check coming soon!",
+      isError: false,
+    }),
+  };
 }
 
 async function main() {
@@ -60,7 +107,6 @@ async function main() {
       () => Date.now()
     );
 
-    // Record completed runs
     for (const result of results) {
       if (result.status === "success" || result.status === "failed") {
         state = recordTaskRun(state, result.taskId, now);
@@ -73,9 +119,26 @@ async function main() {
 
   console.log("[worker] Scheduler started (checking every minute)");
 
-  // TODO: Start Slack bot here
-  // const app = new App({ token: process.env.SLACK_BOT_TOKEN, appToken: process.env.SLACK_APP_TOKEN, socketMode: true });
-  // await app.start();
+  // Start Slack bot
+  const slackApp = createSlackApp({
+    runOrchestrator: async (request) => {
+      // TODO: wire up real orchestrator with Anthropic client
+      return {
+        ok: true as const,
+        text: `I heard you! You said: "${request.prompt}". Real AI responses coming soon.`,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    },
+    handlers: createSlackHandlers(),
+  });
+
+  if (slackApp) {
+    await slackApp.start();
+    console.log("[worker] Slack bot started (socket mode)");
+  } else {
+    console.log("[worker] Slack bot skipped (no tokens configured)");
+  }
 
   console.log("[worker] Ready.");
 }
