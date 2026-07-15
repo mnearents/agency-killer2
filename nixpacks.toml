@@ -1,0 +1,5 @@
+# System dependencies for Railway (nixpacks builder).
+# ffmpeg is needed for video frame extraction (PySceneDetect + FFmpeg pipeline).
+
+[phases.setup]
+aptPkgs = ["ffmpeg"]

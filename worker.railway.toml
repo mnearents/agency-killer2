@@ -1,0 +1,12 @@
+# Worker service Railway config.
+# Set this as the config file path in the worker service settings:
+#   Railway Dashboard → Worker Service → Settings → Config File Path → /worker.railway.toml
+
+[build]
+builder = "nixpacks"
+buildCommand = "pnpm install --frozen-lockfile"
+
+[deploy]
+startCommand = "pnpm start:worker"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

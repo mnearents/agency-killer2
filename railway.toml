@@ -1,0 +1,14 @@
+# Default Railway config — used by the web service.
+# The worker service uses /worker.railway.toml (set via Railway dashboard).
+
+[build]
+builder = "nixpacks"
+buildCommand = "pnpm install --frozen-lockfile && pnpm build"
+
+[deploy]
+preDeployCommand = ["pnpm db:migrate"]
+startCommand = "pnpm start:web"
+healthcheckPath = "/"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
