@@ -268,3 +268,47 @@ export const kbDocuments = pgTable(
 
 export type KbDocument = typeof kbDocuments.$inferSelect;
 export type NewKbDocument = typeof kbDocuments.$inferInsert;
+
+// ─── Blog ──────────────────────────────────────────────────────────────
+
+export const blogTopics = pgTable("blog_topics", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  title: text("title").notNull(),
+  description: text("description"),
+  targetDate: timestamp("target_date", { withTimezone: true }),
+  priority: integer("priority").notNull().default(5), // lower = higher priority
+  status: text("status").notNull().default("pending"), // pending, generating, published, skipped
+  tags: jsonb("tags").$type<string[]>(),
+  repeatYearly: integer("repeat_yearly").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const blogGenerations = pgTable(
+  "blog_generations",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    topicId: text("topic_id")
+      .notNull()
+      .references(() => blogTopics.id),
+    articleHtml: text("article_html").notNull(),
+    shopifyDraftUrl: text("shopify_draft_url"),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    costCents: integer("cost_cents").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("blog_generations_topic_idx").on(table.topicId),
+  ]
+);
+
+export type BlogTopic = typeof blogTopics.$inferSelect;
+export type NewBlogTopic = typeof blogTopics.$inferInsert;
+
+export type BlogGeneration = typeof blogGenerations.$inferSelect;
+export type NewBlogGeneration = typeof blogGenerations.$inferInsert;

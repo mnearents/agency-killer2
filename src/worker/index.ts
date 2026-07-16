@@ -28,6 +28,7 @@ import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
+import { generateBlogArticle } from "@/domain/blog/generate";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -159,8 +160,18 @@ async function main() {
         console.log("[blog:create] Skipped — ANTHROPIC_API_KEY not set");
         return;
       }
-      // TODO: select next topic, generate article, publish to Shopify
-      console.log("[blog:create] Blog generation not yet fully wired");
+      const result = await generateBlogArticle({
+        db,
+        voice,
+        runOrchestrator: (req) => orchestrator.run(req),
+        getBrandContext: async () => "", // TODO: fetch from KB
+      });
+      console.log(
+        `[blog:create] ${result.ok ? "Done" : "Failed"}: ${result.topicTitle ?? "no topic"}`
+      );
+      if (!result.ok) {
+        console.error("[blog:create]", result.text);
+      }
     },
 
     "meta:analysis": async () => {
@@ -260,14 +271,40 @@ async function main() {
       text: "Email calendar coming soon!",
       isError: false,
     }),
-    "blog:create": async (args) => ({
-      text: `Blog creation for "${args}" coming soon!`,
-      isError: false,
-    }),
-    "blog:list": async () => ({
-      text: "Blog list coming soon!",
-      isError: false,
-    }),
+    "blog:create": async (args) => {
+      if (!orchestrator) {
+        return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
+      }
+      const result = await generateBlogArticle(
+        {
+          db,
+          voice,
+          runOrchestrator: (req) => orchestrator.run(req),
+          getBrandContext: async () => "",
+        },
+        args || undefined
+      );
+      return { text: result.text, isError: !result.ok };
+    },
+    "blog:list": async () => {
+      try {
+        const { blogTopics: bt } = await import("@/db/schema");
+        const { eq } = await import("drizzle-orm");
+        const pending = await db
+          .select({ title: bt.title, priority: bt.priority, targetDate: bt.targetDate })
+          .from(bt)
+          .where(eq(bt.status, "pending"));
+        if (pending.length === 0) {
+          return { text: "No pending blog topics.", isError: false };
+        }
+        const lines = pending.map((t) =>
+          `• ${t.title} (priority: ${t.priority}${t.targetDate ? `, target: ${t.targetDate.toISOString().split("T")[0]}` : ""})`
+        );
+        return { text: `*Pending Blog Topics:*\n${lines.join("\n")}`, isError: false };
+      } catch {
+        return { text: "Failed to fetch blog topics.", isError: true };
+      }
+    },
     "blog:overview": async () => ({
       text: "Blog overview coming soon!",
       isError: false,
