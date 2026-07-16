@@ -333,6 +333,73 @@ async function main() {
       text: "Inventory overview coming soon!",
       isError: false,
     }),
+    "sync:meta": async () => {
+      if (!metaClient || !metaAccountId) {
+        return { text: "Meta sync unavailable — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set.", isError: true };
+      }
+      const result = await syncIncremental({ client: metaClient, db, accountId: metaAccountId });
+      if (result.errors.length > 0) {
+        return {
+          text: `Meta sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`,
+          isError: true,
+        };
+      }
+      return {
+        text: `*Meta sync complete!*\n• ${result.campaigns} campaigns\n• ${result.adSets} ad sets\n• ${result.ads} ads\n• ${result.creatives} creatives\n• ${result.insights} insights (last 7 days)`,
+        isError: false,
+      };
+    },
+    "sync:shopify": async () => {
+      if (!shopifyClient) {
+        return { text: "Shopify sync unavailable — SHOPIFY_ACCESS_TOKEN not set.", isError: true };
+      }
+      const result = await syncOrders({ client: shopifyClient, db });
+      if (result.errors.length > 0) {
+        return {
+          text: `Shopify sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}`,
+          isError: true,
+        };
+      }
+      return {
+        text: `*Shopify sync complete!*\n• ${result.orders} orders\n• ${result.lineItems} line items`,
+        isError: false,
+      };
+    },
+    "sync:knowledge-base": async () => {
+      if (!dropboxClient) {
+        return { text: "KB sync unavailable — Dropbox credentials not set.", isError: true };
+      }
+      const result = await syncKnowledgeBase(dropboxClient, dropboxKbRoot, new Map(), new Set());
+      return {
+        text: `*KB sync complete!*\n• ${result.totalFiles} files found\n• ${result.newFiles} new, ${result.changedFiles} changed, ${result.unchangedFiles} unchanged`,
+        isError: false,
+      };
+    },
+    "sync:all": async () => {
+      const results: string[] = [];
+      if (metaClient && metaAccountId) {
+        const r = await syncIncremental({ client: metaClient, db, accountId: metaAccountId });
+        results.push(`Meta: ${r.campaigns} campaigns, ${r.insights} insights${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
+      } else {
+        results.push("Meta: skipped (no credentials)");
+      }
+      if (shopifyClient) {
+        const r = await syncOrders({ client: shopifyClient, db });
+        results.push(`Shopify: ${r.orders} orders${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
+      } else {
+        results.push("Shopify: skipped (no credentials)");
+      }
+      if (dropboxClient) {
+        const r = await syncKnowledgeBase(dropboxClient, dropboxKbRoot, new Map(), new Set());
+        results.push(`KB: ${r.totalFiles} files (${r.newFiles} new)`);
+      } else {
+        results.push("KB: skipped (no credentials)");
+      }
+      return {
+        text: `*Sync complete!*\n${results.map(r => `• ${r}`).join("\n")}`,
+        isError: false,
+      };
+    },
   };
 
   const slackApp = createSlackApp({

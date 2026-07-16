@@ -64,11 +64,14 @@ export function createSlackApp(deps: SlackAppDeps) {
         response = {
           text: [
             "*Available commands:*",
-            "• `!ads report` — Meta ads performance analysis",
-            "• `!ads status` — Quick campaign status",
+            "• `!ads report` — AI-generated performance analysis",
+            "• `!ads status` — Quick campaign metrics",
             "• `!email design <brief>` — Generate email creative",
             "• `!blog create <topic>` — Generate a blog article",
             "• `!blog list` — List pending blog topics",
+            "• `!sync meta` — Pull latest Meta ads data",
+            "• `!sync shopify` — Pull latest Shopify orders",
+            "• `!sync all` — Sync everything",
             "• `!social analyze` — Organic social performance",
             "• `!inventory check` — Stock level alerts",
             "• `!help` — Show this message",
