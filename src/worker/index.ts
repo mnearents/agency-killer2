@@ -26,6 +26,8 @@ import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
+import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
+import { generateEmailCreative } from "@/domain/email/generate";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -229,18 +231,27 @@ async function main() {
       );
       return { text: result.text, isError: !result.ok };
     },
-    "meta:status": async () => ({
-      text: "Ad status coming soon!",
-      isError: false,
-    }),
-    "meta:overview": async () => ({
-      text: "Ad overview coming soon!",
-      isError: false,
-    }),
-    "email:design": async (args) => ({
-      text: `Email design for "${args}" coming soon!`,
-      isError: false,
-    }),
+    "meta:status": async () => {
+      const result = await getAdsStatus(db, 7);
+      return { text: formatAdsStatus(result), isError: false };
+    },
+    "meta:overview": async () => {
+      const result = await getAdsStatus(db, 30);
+      return { text: formatAdsStatus(result), isError: false };
+    },
+    "email:design": async (args) => {
+      if (!orchestrator) {
+        return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
+      }
+      if (!args) {
+        return { text: "Please provide a brief: `!email design <brief>`\nExample: `!email design summer sale promo`", isError: true };
+      }
+      const result = await generateEmailCreative(
+        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        args
+      );
+      return { text: result.text, isError: !result.ok };
+    },
     "email:overview": async () => ({
       text: "Email overview coming soon!",
       isError: false,
