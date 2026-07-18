@@ -47,6 +47,7 @@ export function createSlackApp(deps: SlackAppDeps) {
 
     let response: SlackResponse;
 
+    try {
     if (parsed.type === "natural") {
       // Route natural language to the orchestrator
       const result = await deps.runOrchestrator({
@@ -92,6 +93,14 @@ export function createSlackApp(deps: SlackAppDeps) {
           };
         }
       }
+    }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error("[slack] Handler error:", errorMsg);
+      response = {
+        text: `Something went wrong: ${errorMsg.slice(0, 200)}`,
+        isError: true,
+      };
     }
 
     await say(response.text);

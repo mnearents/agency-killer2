@@ -187,7 +187,7 @@ export function createMetaApiClient(accessToken: string): MetaApiClient {
     async getCreatives(accountId) {
       const url = buildUrl(`${accountId}/adcreatives`, {
         fields: CREATIVE_FIELDS,
-        limit: "500",
+        limit: "50", // Lower limit — creatives are large objects, Meta rate-limits at 500
       });
       return fetchAllPages<MetaApiCreative>(url);
     },

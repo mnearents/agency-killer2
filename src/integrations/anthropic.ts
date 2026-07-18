@@ -23,7 +23,7 @@ export interface AnthropicClient {
   generate(prompt: string, options?: GenerateOptions): Promise<GenerateResult>;
 }
 
-const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 const DEFAULT_MAX_TOKENS = 4096;
 
 export function createAnthropicClient(apiKey: string): AnthropicClient {
