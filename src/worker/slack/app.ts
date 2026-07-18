@@ -16,6 +16,17 @@ export interface SlackAppDeps {
   handlers: Record<string, (args: string) => Promise<SlackResponse>>;
 }
 
+/** Acknowledgment messages for slow commands so the user knows we heard them. */
+const ACK_MESSAGES: Record<string, string> = {
+  "sync:meta": "Syncing Meta ads data...",
+  "sync:shopify": "Syncing Shopify orders...",
+  "sync:knowledge-base": "Syncing knowledge base from Dropbox...",
+  "sync:all": "Syncing all data sources...",
+  "meta:analysis": "Analyzing ad performance...",
+  "email:design": "Generating email creative...",
+  "blog:create": "Generating blog article...",
+};
+
 export function createSlackApp(deps: SlackAppDeps) {
   const botToken = process.env.SLACK_BOT_TOKEN;
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -48,52 +59,60 @@ export function createSlackApp(deps: SlackAppDeps) {
     let response: SlackResponse;
 
     try {
-    if (parsed.type === "natural") {
-      // Route natural language to the orchestrator
-      const result = await deps.runOrchestrator({
-        prompt: parsed.text,
-        system: "You are a marketing assistant for Rad & Happy, a stationery brand. Answer the user's question based on available data. Be friendly, specific, and actionable.",
-      });
-      response = formatOrchestratorResult(result);
-    } else {
-      // Route structured commands
-      const route = routeCommand(parsed);
+      if (parsed.type === "natural") {
+        // Acknowledge natural language — AI takes a moment
+        await say("Thinking...");
 
-      if (route.handler === "unknown") {
-        response = formatUnknownCommand(parsed.raw);
-      } else if (route.handler === "help") {
-        response = {
-          text: [
-            "*Available commands:*",
-            "• `!ads report` — AI-generated performance analysis",
-            "• `!ads status` — Quick campaign metrics",
-            "• `!email design <brief>` — Generate email creative",
-            "• `!blog create <topic>` — Generate a blog article",
-            "• `!blog list` — List pending blog topics",
-            "• `!sync meta` — Pull latest Meta ads data",
-            "• `!sync shopify` — Pull latest Shopify orders",
-            "• `!sync all` — Sync everything",
-            "• `!social analyze` — Organic social performance",
-            "• `!inventory check` — Stock level alerts",
-            "• `!help` — Show this message",
-            "",
-            "Or just ask me anything in plain English!",
-          ].join("\n"),
-          isError: false,
-        };
+        const result = await deps.runOrchestrator({
+          prompt: parsed.text,
+          system: "You are a marketing assistant for Rad & Happy, a stationery brand. Answer the user's question based on available data. Be friendly, specific, and actionable.",
+        });
+        response = formatOrchestratorResult(result);
       } else {
-        // Dispatch to the registered handler
-        const handler = deps.handlers[route.handler];
-        if (handler) {
-          response = await handler(parsed.args);
-        } else {
+        // Route structured commands
+        const route = routeCommand(parsed);
+
+        if (route.handler === "unknown") {
+          response = formatUnknownCommand(parsed.raw);
+        } else if (route.handler === "help") {
           response = {
-            text: `The command was recognized but the handler "${route.handler}" isn't wired up yet.`,
-            isError: true,
+            text: [
+              "*Available commands:*",
+              "• `!ads report` — AI-generated performance analysis",
+              "• `!ads status` — Quick campaign metrics",
+              "• `!email design <brief>` — Generate email creative",
+              "• `!blog create <topic>` — Generate a blog article",
+              "• `!blog list` — List pending blog topics",
+              "• `!sync meta` — Pull latest Meta ads data",
+              "• `!sync shopify` — Pull latest Shopify orders",
+              "• `!sync all` — Sync everything",
+              "• `!social analyze` — Organic social performance",
+              "• `!inventory check` — Stock level alerts",
+              "• `!help` — Show this message",
+              "",
+              "Or just ask me anything in plain English!",
+            ].join("\n"),
+            isError: false,
           };
+        } else {
+          // Send acknowledgment for slow commands
+          const ack = ACK_MESSAGES[route.handler];
+          if (ack) {
+            await say(ack);
+          }
+
+          // Dispatch to the registered handler
+          const handler = deps.handlers[route.handler];
+          if (handler) {
+            response = await handler(parsed.args);
+          } else {
+            response = {
+              text: `The command was recognized but the handler "${route.handler}" isn't wired up yet.`,
+              isError: true,
+            };
+          }
         }
       }
-    }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error("[slack] Handler error:", errorMsg);
