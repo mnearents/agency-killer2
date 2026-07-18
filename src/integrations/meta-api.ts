@@ -149,7 +149,9 @@ async function fetchAllPages<T>(url: string): Promise<T[]> {
 
 export function createMetaApiClient(accessToken: string): MetaApiClient {
   function buildUrl(path: string, params: Record<string, string> = {}): string {
-    const url = new URL(`${GRAPH_API_BASE}/${path}`);
+    const fullPath = `${GRAPH_API_BASE}/${path}`;
+    console.log(`[meta-api] Request: ${fullPath.replace(accessToken, "***")}`);
+    const url = new URL(fullPath);
     url.searchParams.set("access_token", accessToken);
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);
