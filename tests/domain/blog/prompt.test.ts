@@ -3,22 +3,14 @@ import {
   buildBlogRequest,
   buildBlogGuardrails,
   type BlogTopic,
-  type BlogPromptInput,
 } from "@/domain/blog/prompt";
 import {
   AI_WRITING_BANNED_WORDS,
   mergeAiWritingBannedWords,
 } from "@/domain/blog/ai-writing-rules";
-import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
 import { validateOutput } from "@/ai/guardrails";
 
-const VOICE_PROFILE: VoiceProfile = {
-  samples: [
-    { id: "1", title: "Test", content: "So excited about planners!", tags: [] },
-  ],
-  rules: ["No vulgarity"],
-  bannedWords: ["shenanigans"], // brand-specific
-};
+const VOICE_BANNED_WORDS = ["shenanigans"]; // brand-specific, passed from voice profile
 
 const BASIC_TOPIC: BlogTopic = {
   title: "10 Ways to Use Your Planner for Meal Planning",
@@ -66,28 +58,26 @@ describe("mergeAiWritingBannedWords", () => {
 // ─── Blog guardrails ──────────────────────────────────────────────────
 
 describe("buildBlogGuardrails", () => {
-  const voice = assembleVoicePrompt(VOICE_PROFILE);
-
   it("includes AI-writing banned words merged with voice banned words", () => {
-    const guardrails = buildBlogGuardrails(voice.guardrailOptions);
-    expect(guardrails.bannedWords).toContain("shenanigans"); // voice
-    expect(guardrails.bannedWords).toContain("delve"); // AI
-    expect(guardrails.bannedWords).toContain("tapestry"); // AI
-    expect(guardrails.bannedWords).toContain("furthermore"); // AI
+    const guardrails = buildBlogGuardrails(VOICE_BANNED_WORDS);
+    expect(guardrails.bannedWords).toContain("shenanigans");
+    expect(guardrails.bannedWords).toContain("delve");
+    expect(guardrails.bannedWords).toContain("tapestry");
+    expect(guardrails.bannedWords).toContain("furthermore");
   });
 
   it("enables fabricated-stats check (blog must not invent numbers)", () => {
-    const guardrails = buildBlogGuardrails(voice.guardrailOptions);
+    const guardrails = buildBlogGuardrails(VOICE_BANNED_WORDS);
     expect(guardrails.checkFabricatedStats).toBe(true);
   });
 
   it("enables PII check", () => {
-    const guardrails = buildBlogGuardrails(voice.guardrailOptions);
+    const guardrails = buildBlogGuardrails(VOICE_BANNED_WORDS);
     expect(guardrails.checkPii).toBe(true);
   });
 
   it("sets a generous max length for articles", () => {
-    const guardrails = buildBlogGuardrails(voice.guardrailOptions);
+    const guardrails = buildBlogGuardrails(VOICE_BANNED_WORDS);
     expect(guardrails.maxLength).toBeGreaterThanOrEqual(10000);
   });
 });
@@ -95,8 +85,7 @@ describe("buildBlogGuardrails", () => {
 // ─── Blog guardrails actually catch AI writing ────────────────────────
 
 describe("blog guardrails catch AI-sounding output", () => {
-  const voice = assembleVoicePrompt(VOICE_PROFILE);
-  const guardrails = buildBlogGuardrails(voice.guardrailOptions);
+  const guardrails = buildBlogGuardrails(VOICE_BANNED_WORDS);
 
   it("blocks output containing 'delve'", () => {
     const result = validateOutput(
@@ -135,31 +124,33 @@ describe("blog guardrails catch AI-sounding output", () => {
 // ─── Full request assembly ────────────────────────────────────────────
 
 describe("buildBlogRequest", () => {
-  const voice = assembleVoicePrompt(VOICE_PROFILE);
+  it("uses neutral blog tone, NOT Tara's voice", () => {
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
+    expect(req.system).toContain("Rad & Happy");
+    expect(req.system).toContain("friendly");
+    // Should NOT contain voice sample instructions
+    expect(req.system).not.toContain("Study the following writing examples");
+    expect(req.system).not.toContain("match their voice");
+  });
 
   it("includes AI-writing avoidance instructions in system prompt", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
     expect(req.system).toContain("AI Writing Avoidance");
     expect(req.system).toContain("No filler transitions");
   });
 
-  it("includes the voice system prompt", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
-    expect(req.system).toContain("Rad & Happy");
-  });
-
   it("includes topic title in the prompt", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
     expect(req.prompt).toContain("10 Ways to Use Your Planner for Meal Planning");
   });
 
   it("includes topic description when present", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
     expect(req.prompt).toContain("planner meal planning");
   });
 
   it("includes tags when present", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
     expect(req.prompt).toContain("planning");
     expect(req.prompt).toContain("organization");
   });
@@ -167,21 +158,23 @@ describe("buildBlogRequest", () => {
   it("includes brand context when provided", () => {
     const req = buildBlogRequest({
       topic: BASIC_TOPIC,
-      voice,
       brandContext: "We focus on minimalist design and functional products.",
     });
     expect(req.prompt).toContain("minimalist design");
   });
 
   it("sets blog-specific guardrails with AI-writing words", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({
+      topic: BASIC_TOPIC,
+      voiceBannedWords: VOICE_BANNED_WORDS,
+    });
     expect(req.guardrails?.bannedWords).toContain("delve");
     expect(req.guardrails?.bannedWords).toContain("shenanigans");
     expect(req.guardrails?.checkFabricatedStats).toBe(true);
   });
 
   it("instructs the model to write SEO-optimized HTML content", () => {
-    const req = buildBlogRequest({ topic: BASIC_TOPIC, voice });
+    const req = buildBlogRequest({ topic: BASIC_TOPIC });
     expect(req.prompt.toLowerCase()).toMatch(/seo|html|article/);
   });
 });

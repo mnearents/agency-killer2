@@ -5,13 +5,7 @@ import { handleBlogGenerate, type BlogGenerateDeps } from "@/worker/slack/handle
 import { AI_WRITING_BANNED_WORDS } from "@/domain/blog/ai-writing-rules";
 import type { OrchestratorResult } from "@/ai/orchestrator";
 
-const VOICE_PROFILE: VoiceProfile = {
-  samples: [
-    { id: "1", title: "Test", content: "So excited about planners!", tags: [] },
-  ],
-  rules: ["No vulgarity"],
-  bannedWords: ["shenanigans"],
-};
+const VOICE_BANNED_WORDS = ["shenanigans"];
 
 const MOCK_ARTICLE = `<h2>10 Ways to Use Your Planner for Meal Planning</h2>
 <p>Here's the thing about meal planning — it doesn't have to be complicated.</p>
@@ -39,9 +33,7 @@ describe("blog generate: routing", () => {
 // ─── Full vertical slice ──────────────────────────────────────────────
 
 describe("blog generate: full flow", () => {
-  it("selects topic → builds prompt with AI-writing rules → generates → formats", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
-
+  it("selects topic → builds prompt with AI-writing rules (no Tara voice) → generates → formats", async () => {
     const deps: BlogGenerateDeps = {
       getNextTopic: vi.fn().mockResolvedValue({
         title: "10 Ways to Use Your Planner for Meal Planning",
@@ -57,7 +49,7 @@ describe("blog generate: full flow", () => {
         inputTokens: 2000,
         outputTokens: 800,
       } satisfies OrchestratorResult),
-      voice,
+      voiceBannedWords: VOICE_BANNED_WORDS,
     };
 
     const response = await handleBlogGenerate(deps, {});
@@ -65,36 +57,28 @@ describe("blog generate: full flow", () => {
     expect(response.isError).toBe(false);
     expect(response.text).toContain("Meal Planning");
 
-    // Verify orchestrator received correct data
     const call = (deps.runOrchestrator as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-    // Prompt should contain topic
     expect(call.prompt).toContain("10 Ways to Use Your Planner");
     expect(call.prompt).toContain("planner meal planning");
 
-    // System prompt should have voice AND AI-writing avoidance
+    // System prompt should be neutral blog tone, NOT Tara's voice
     expect(call.system).toContain("Rad & Happy");
     expect(call.system).toContain("AI Writing Avoidance");
-    expect(call.system).toContain("No filler transitions");
+    expect(call.system).not.toContain("Study the following writing examples");
 
-    // Brand context should be in the prompt
     expect(call.prompt).toContain("minimalist design");
 
-    // Guardrails must include AI-writing banned words
+    // Guardrails should have AI banned words
     expect(call.guardrails.bannedWords).toContain("delve");
     expect(call.guardrails.bannedWords).toContain("tapestry");
-    expect(call.guardrails.bannedWords).toContain("furthermore");
-    // Plus the voice-specific banned word
     expect(call.guardrails.bannedWords).toContain("shenanigans");
-    // Fabricated stats ON for blog (creative content)
     expect(call.guardrails.checkFabricatedStats).toBe(true);
   });
 
   it("uses topic override from Slack command when provided", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
-
     const deps: BlogGenerateDeps = {
-      getNextTopic: vi.fn(), // should NOT be called
+      getNextTopic: vi.fn(),
       getBrandContext: vi.fn().mockResolvedValue("Brand context."),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
@@ -102,12 +86,10 @@ describe("blog generate: full flow", () => {
         inputTokens: 1000,
         outputTokens: 500,
       } satisfies OrchestratorResult),
-      voice,
     };
 
     await handleBlogGenerate(deps, { topic: "Best Pens for Journaling" });
 
-    // getNextTopic should not be called when topic is provided
     expect(deps.getNextTopic).not.toHaveBeenCalled();
 
     const call = (deps.runOrchestrator as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -115,30 +97,22 @@ describe("blog generate: full flow", () => {
   });
 
   it("returns helpful message when no topics are pending", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
-
     const deps: BlogGenerateDeps = {
       getNextTopic: vi.fn().mockResolvedValue(null),
       getBrandContext: vi.fn(),
       runOrchestrator: vi.fn(),
-      voice,
     };
 
     const response = await handleBlogGenerate(deps, {});
 
     expect(response.isError).toBe(false);
     expect(response.text.toLowerCase()).toMatch(/no.*topic/);
-    // Should NOT call the orchestrator if there's nothing to generate
     expect(deps.runOrchestrator).not.toHaveBeenCalled();
   });
 
   it("returns error when orchestrator blocks (AI-sounding content)", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
-
     const deps: BlogGenerateDeps = {
-      getNextTopic: vi.fn().mockResolvedValue({
-        title: "Test Topic",
-      }),
+      getNextTopic: vi.fn().mockResolvedValue({ title: "Test Topic" }),
       getBrandContext: vi.fn().mockResolvedValue(""),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
@@ -149,7 +123,6 @@ describe("blog generate: full flow", () => {
           ],
         },
       } satisfies OrchestratorResult),
-      voice,
     };
 
     const response = await handleBlogGenerate(deps, {});
@@ -162,7 +135,12 @@ describe("blog generate: full flow", () => {
 
 describe("guardrail config three-way cross-check", () => {
   it("ads, email, and blog all have distinct guardrail configs", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voiceProfile: VoiceProfile = {
+      samples: [{ id: "1", title: "Test", content: "So excited!", tags: [] }],
+      rules: [],
+      bannedWords: ["shenanigans"],
+    };
+    const voice = assembleVoicePrompt(voiceProfile);
 
     const captureCalls = () => {
       const calls: Record<string, unknown>[] = [];
@@ -175,7 +153,6 @@ describe("guardrail config three-way cross-check", () => {
       };
     };
 
-    // Run all three handlers
     const { handleAdsReport } = await import("@/worker/slack/handlers/ads-report");
     const { handleEmailDesign } = await import("@/worker/slack/handlers/email-design");
 
@@ -212,7 +189,7 @@ describe("guardrail config three-way cross-check", () => {
         getNextTopic: vi.fn().mockResolvedValue({ title: "Test" }),
         getBrandContext: vi.fn().mockResolvedValue(""),
         runOrchestrator: blogCapture.fn,
-        voice,
+        voiceBannedWords: ["shenanigans"],
       },
       {}
     );

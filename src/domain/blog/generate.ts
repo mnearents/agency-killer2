@@ -6,7 +6,6 @@
 
 import type { Db } from "@/db/client";
 import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
-import type { VoicePromptResult } from "@/domain/voice/voice";
 import { eq } from "drizzle-orm";
 import { blogTopics, blogGenerations } from "@/db/schema";
 import { selectNextTopic, toPromptTopic, type TopicCandidate } from "./topics";
@@ -14,9 +13,9 @@ import { buildBlogRequest } from "./prompt";
 
 export interface BlogGenerateDeps {
   db: Db;
-  voice: VoicePromptResult;
   runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   getBrandContext: () => Promise<string>;
+  voiceBannedWords?: string[];
 }
 
 export interface BlogGenerateResult {
@@ -98,8 +97,8 @@ export async function generateBlogArticle(
   const promptTopic = toPromptTopic(topic);
   const request = buildBlogRequest({
     topic: promptTopic,
-    voice: deps.voice,
     brandContext,
+    voiceBannedWords: deps.voiceBannedWords,
   });
 
   // Generate through orchestrator

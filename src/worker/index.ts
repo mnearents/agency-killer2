@@ -33,6 +33,7 @@ import { generateBlogArticle } from "@/domain/blog/generate";
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
+import { loadVoiceProfile } from "@/domain/voice/loader";
 
 const SCHEDULER_CRON = "* * * * *";
 
@@ -87,12 +88,8 @@ async function main() {
   const dropboxKbRoot = getEnvOptional("DROPBOX_KB_ROOT") ?? "/RAD/Agency";
 
   // ─── Build orchestrator ─────────────────────────────────────────────
-  // TODO: load voice profile from DB instead of hardcoding
-  const voiceProfile = {
-    samples: [{ id: "1", title: "placeholder", content: "placeholder", tags: [] as string[] }],
-    rules: [] as string[],
-    bannedWords: ["synergy", "delve", "leverage", "shenanigans"],
-  };
+  const voiceProfile = loadVoiceProfile();
+  console.log(`[worker] Loaded voice profile: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`);
   const voice = assembleVoicePrompt(voiceProfile);
 
   const orchestrator = anthropicClient
@@ -162,9 +159,9 @@ async function main() {
       }
       const result = await generateBlogArticle({
         db,
-        voice,
         runOrchestrator: (req) => orchestrator.run(req),
-        getBrandContext: async () => "", // TODO: fetch from KB
+        getBrandContext: async () => "",
+        voiceBannedWords: voiceProfile.bannedWords,
       });
       console.log(
         `[blog:create] ${result.ok ? "Done" : "Failed"}: ${result.topicTitle ?? "no topic"}`
@@ -278,9 +275,9 @@ async function main() {
       const result = await generateBlogArticle(
         {
           db,
-          voice,
           runOrchestrator: (req) => orchestrator.run(req),
           getBrandContext: async () => "",
+          voiceBannedWords: voiceProfile.bannedWords,
         },
         args || undefined
       );

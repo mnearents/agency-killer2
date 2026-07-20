@@ -2,14 +2,11 @@
  * Blog generation handler — the vertical integration point for
  * "!blog create" and the weekly scheduled blog-generate task.
  *
- * Wires together: topic selection → brand context → voice prompt →
- * blog prompt (with AI-writing avoidance) → orchestrator → response.
- *
- * Dependencies injected for full mockability.
+ * Blogs use a neutral, friendly, SEO-optimized tone — NOT Tara's brand
+ * voice (which sounds forced in long-form content).
  */
 
 import { buildBlogRequest, type BlogTopic } from "@/domain/blog/prompt";
-import type { VoicePromptResult } from "@/domain/voice/voice";
 import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import { formatOrchestratorResult, type SlackResponse } from "../formatter";
 
@@ -17,7 +14,7 @@ export interface BlogGenerateDeps {
   getNextTopic: () => Promise<BlogTopic | null>;
   getBrandContext: () => Promise<string>;
   runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
-  voice: VoicePromptResult;
+  voiceBannedWords?: string[];
 }
 
 export interface BlogGenerateParams {
@@ -28,7 +25,6 @@ export async function handleBlogGenerate(
   deps: BlogGenerateDeps,
   params: BlogGenerateParams
 ): Promise<SlackResponse> {
-  // Step 1: Get the topic — override from params or next pending topic
   let topic: BlogTopic | null;
 
   if (params.topic) {
@@ -44,19 +40,15 @@ export async function handleBlogGenerate(
     };
   }
 
-  // Step 2: Get brand context for the prompt
   const brandContext = await deps.getBrandContext();
 
-  // Step 3: Build the blog request (wires voice + AI-writing avoidance + guardrails)
   const request = buildBlogRequest({
     topic,
-    voice: deps.voice,
     brandContext,
+    voiceBannedWords: deps.voiceBannedWords,
   });
 
-  // Step 4: Run through the orchestrator
   const result = await deps.runOrchestrator(request);
 
-  // Step 5: Format for Slack
   return formatOrchestratorResult(result, "Blog Article");
 }
