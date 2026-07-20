@@ -26,6 +26,8 @@ import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
+import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
+import { ingestDocument } from "@/domain/knowledge/ingestion";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
@@ -129,27 +131,31 @@ async function main() {
         console.log("[sync:kb] Skipped — DROPBOX credentials not set");
         return;
       }
-      // TODO: load existing hashes and lastSynced from DB
+      const existingHashes = await getExistingHashes(db);
       const result = await syncKnowledgeBase(
         dropboxClient,
         dropboxKbRoot,
-        new Map(),
-        new Set()
+        new Map(), // TODO: track Dropbox revisions in DB
+        existingHashes
       );
       console.log(
         `[sync:kb] Done: ${result.totalFiles} files (${result.newFiles} new, ${result.changedFiles} changed, ${result.unchangedFiles} unchanged)`
       );
 
       // Embed new chunks
-      if (embeddingClient) {
-        const allChunks = result.ingestionResults.flatMap((r) => r.rows);
+      const allChunks = result.ingestionResults.flatMap((r) => r.rows);
+      if (embeddingClient && allChunks.some((c) => c.needsEmbedding)) {
         const embeddingResult = await embedChunks(allChunks, embeddingClient);
         console.log(
           `[sync:kb] Embedding: ${embeddingResult.embedded} embedded, ${embeddingResult.skipped} skipped, ${embeddingResult.failed} failed`
         );
-      }
 
-      // TODO: upsert embedded chunks to DB
+        // Store to DB
+        const storageResult = await storeChunks(db, embeddingResult.chunks);
+        console.log(
+          `[sync:kb] Storage: ${storageResult.stored} stored, ${storageResult.skipped} skipped, ${storageResult.failed} failed`
+        );
+      }
     },
 
     "blog:create": async () => {
@@ -394,6 +400,69 @@ async function main() {
       }
       return {
         text: `*Sync complete!*\n${results.map(r => `• ${r}`).join("\n")}`,
+        isError: false,
+      };
+    },
+    "notes:add": async (args) => {
+      if (!args) {
+        return {
+          text: "Paste your notes after the command:\n`!notes CTC meeting 7/15 — discussed subscription ROAS...`\n\nEverything after `!notes` will be saved to the knowledge base.",
+          isError: false,
+        };
+      }
+
+      // Ingest the note as a KB document
+      const { chunkDocument } = await import("@/domain/knowledge/chunking");
+      const { contentHash } = await import("@/domain/knowledge/ingestion");
+
+      const chunks = chunkDocument({
+        title: `Note: ${args.slice(0, 50)}${args.length > 50 ? "..." : ""}`,
+        content: args,
+        category: "meeting-notes",
+        documentDate: new Date(),
+      });
+
+      if (chunks.length === 0) {
+        return { text: "Note was empty — nothing saved.", isError: true };
+      }
+
+      let stored = 0;
+      for (const chunk of chunks) {
+        const hash = contentHash(chunk.content);
+        const row = {
+          title: chunk.metadata.documentTitle,
+          content: chunk.content,
+          category: chunk.metadata.category,
+          contentHash: hash,
+          chunkIndex: chunk.metadata.chunkIndex,
+          totalChunks: chunk.metadata.totalChunks,
+          contextPrefix: chunk.metadata.contextPrefix,
+          documentDate: chunk.metadata.documentDate ?? null,
+          embedding: null as number[] | null,
+          sourceFile: null,
+        };
+
+        // Embed if possible
+        if (embeddingClient) {
+          try {
+            const result = await embeddingClient.embed(chunk.content);
+            row.embedding = result.embedding;
+          } catch (err) {
+            console.error("[notes] Embedding failed:", err);
+          }
+        }
+
+        try {
+          const { kbDocuments: kbTable } = await import("@/db/schema");
+          await db.insert(kbTable).values(row);
+          stored++;
+        } catch (err) {
+          console.error("[notes] Storage failed:", err);
+        }
+      }
+
+      return {
+        text: `*Note saved!* ${stored} chunk${stored !== 1 ? "s" : ""} stored in the knowledge base.${!embeddingClient ? "\n(No OpenAI key — saved without embedding, won't appear in RAG searches)" : ""}`,
         isError: false,
       };
     },

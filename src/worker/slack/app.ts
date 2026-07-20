@@ -18,6 +18,7 @@ export interface SlackAppDeps {
 
 /** Acknowledgment messages for slow commands so the user knows we heard them. */
 const ACK_MESSAGES: Record<string, string> = {
+  "notes:add": "Saving notes...",
   "sync:meta": "Syncing Meta ads data...",
   "sync:shopify": "Syncing Shopify orders...",
   "sync:knowledge-base": "Syncing knowledge base from Dropbox...",
@@ -83,7 +84,8 @@ export function createSlackApp(deps: SlackAppDeps) {
               "• `!email design <brief>` — Generate email creative",
               "• `!blog create <topic>` — Generate a blog article",
               "• `!blog list` — List pending blog topics",
-              "• `!sync meta` — Pull latest Meta ads data",
+              "• `!notes <text>` — Save meeting notes to the knowledge base",
+            "• `!sync meta` — Pull latest Meta ads data",
               "• `!sync shopify` — Pull latest Shopify orders",
               "• `!sync all` — Sync everything",
               "• `!social analyze` — Organic social performance",
@@ -104,7 +106,11 @@ export function createSlackApp(deps: SlackAppDeps) {
           // Dispatch to the registered handler
           const handler = deps.handlers[route.handler];
           if (handler) {
-            response = await handler(parsed.args);
+            // For notes, the "action" is part of the content — reconstruct full text
+            const handlerArgs = route.handler === "notes:add" && parsed.action
+              ? `${parsed.action} ${parsed.args}`.trim()
+              : parsed.args;
+            response = await handler(handlerArgs);
           } else {
             response = {
               text: `The command was recognized but the handler "${route.handler}" isn't wired up yet.`,
