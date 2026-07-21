@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   buildGuardrailsForOutputType,
   formatMetricsBlock,
+  formatCreativeBlock,
   buildAnalysisRequest,
   type CampaignSummary,
+  type CreativeSummary,
   type AnalysisPromptInput,
 } from "@/domain/meta/analysis";
 import type { DerivedMetrics } from "@/domain/meta/metrics";
@@ -145,13 +147,16 @@ describe("formatMetricsBlock: deterministic text from metrics", () => {
 describe("buildAnalysisRequest: ties everything together", () => {
   const voice = assembleVoicePrompt(VOICE_PROFILE);
 
-  it("includes the voice system prompt", () => {
+  it("uses creative strategist system prompt for analysis", () => {
     const req = buildAnalysisRequest({
       campaigns: [SAMPLE_CAMPAIGN],
       voice,
       outputType: "analysis",
     });
-    expect(req.system).toContain("Rad & Happy");
+    expect(req.system).toContain("creative strategist");
+    expect(req.system).toContain("Advantage+");
+    expect(req.system).toContain("Do NOT suggest budget changes");
+    expect(req.system).toContain("what to shoot next");
   });
 
   it("includes formatted metrics in the user prompt", () => {
@@ -191,5 +196,81 @@ describe("buildAnalysisRequest: ties everything together", () => {
       additionalContext: "CTC recommended increasing spend by 20%",
     });
     expect(req.prompt).toContain("CTC recommended increasing spend by 20%");
+  });
+
+  it("includes creative data when provided", () => {
+    const creatives: CreativeSummary[] = [
+      {
+        adName: "UGC Reel - Planner Haul",
+        campaignName: "Summer Sale",
+        creativeTitle: "New planners are here!",
+        creativeBody: "Check out our latest collection",
+        metrics: SAMPLE_METRICS,
+      },
+    ];
+    const req = buildAnalysisRequest({
+      campaigns: [SAMPLE_CAMPAIGN],
+      creatives,
+      voice,
+      outputType: "analysis",
+    });
+    expect(req.prompt).toContain("UGC Reel - Planner Haul");
+    expect(req.prompt).toContain("New planners are here!");
+    expect(req.prompt).toContain("Creative Performance");
+  });
+});
+
+// ─── Creative block formatting ────────────────────────────────────────
+
+describe("formatCreativeBlock: creative performance data", () => {
+  const CREATIVE_A: CreativeSummary = {
+    adName: "UGC Reel - Planner Haul",
+    campaignName: "Summer Sale",
+    creativeTitle: "New planners just dropped!",
+    creativeBody: "Y'all our best collection yet",
+    metrics: { ...SAMPLE_METRICS, roas: 4.5 },
+  };
+
+  const CREATIVE_B: CreativeSummary = {
+    adName: "Studio Shot - Product Grid",
+    campaignName: "Summer Sale",
+    creativeTitle: "Shop the collection",
+    creativeBody: "Premium stationery for everyday joy",
+    metrics: { ...SAMPLE_METRICS, roas: 1.2 },
+  };
+
+  it("sorts creatives by ROAS descending (best first)", () => {
+    const block = formatCreativeBlock([CREATIVE_B, CREATIVE_A]);
+    const posA = block.indexOf("UGC Reel");
+    const posB = block.indexOf("Studio Shot");
+    expect(posA).toBeLessThan(posB); // 4.5x before 1.2x
+  });
+
+  it("includes ad name, campaign, headline, and copy", () => {
+    const block = formatCreativeBlock([CREATIVE_A]);
+    expect(block).toContain("UGC Reel - Planner Haul");
+    expect(block).toContain("Summer Sale");
+    expect(block).toContain("New planners just dropped!");
+    expect(block).toContain("Y'all our best collection yet");
+  });
+
+  it("includes performance metrics", () => {
+    const block = formatCreativeBlock([CREATIVE_A]);
+    expect(block).toContain("4.50"); // ROAS
+    expect(block).toContain("$50.00"); // spend
+  });
+
+  it("truncates long copy", () => {
+    const longCopy: CreativeSummary = {
+      ...CREATIVE_A,
+      creativeBody: "x".repeat(300),
+    };
+    const block = formatCreativeBlock([longCopy]);
+    expect(block).toContain("...");
+    expect(block.length).toBeLessThan(1000);
+  });
+
+  it("returns empty string for no creatives", () => {
+    expect(formatCreativeBlock([])).toBe("");
   });
 });
