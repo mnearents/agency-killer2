@@ -3,7 +3,7 @@
  * product catalog for email creative, and attribution analysis.
  */
 
-import { eq, gte, desc, sql, and } from "drizzle-orm";
+import { eq, gte, lte, desc, sql, and } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { shopifyOrders, shopifyLineItems } from "@/db/schema";
 import type { SubscriptionOrder } from "./subscription-ltv";
@@ -107,4 +107,44 @@ export async function getOrderSummary(
     subscriptionOrders,
     subscriptionRevenueCents,
   };
+}
+
+export interface DailyOrderMetrics {
+  date: string;
+  orders: number;
+  revenueCents: number;
+  subscriptionOrders: number;
+}
+
+/**
+ * Get daily order metrics for trend charts.
+ */
+export async function getDailyOrders(
+  db: Db,
+  startDate: Date,
+  endDate: Date
+): Promise<DailyOrderMetrics[]> {
+  const rows = await db
+    .select({
+      date: sql<string>`DATE(${shopifyOrders.orderCreatedAt})`.as("date"),
+      orders: sql<number>`COUNT(*)`.as("orders"),
+      revenueCents: sql<number>`SUM(${shopifyOrders.totalPriceCents})`.as("revenue_cents"),
+      subscriptionOrders: sql<number>`SUM(CASE WHEN ${shopifyOrders.isRecurring} = 1 THEN 1 ELSE 0 END)`.as("sub_orders"),
+    })
+    .from(shopifyOrders)
+    .where(
+      and(
+        gte(shopifyOrders.orderCreatedAt, startDate),
+        lte(shopifyOrders.orderCreatedAt, endDate)
+      )
+    )
+    .groupBy(sql`DATE(${shopifyOrders.orderCreatedAt})`)
+    .orderBy(sql`DATE(${shopifyOrders.orderCreatedAt})`);
+
+  return rows.map((r) => ({
+    date: String(r.date).split("T")[0],
+    orders: Number(r.orders ?? 0),
+    revenueCents: Number(r.revenueCents ?? 0),
+    subscriptionOrders: Number(r.subscriptionOrders ?? 0),
+  }));
 }

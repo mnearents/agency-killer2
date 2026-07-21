@@ -23,10 +23,22 @@ async function getOverview() {
       .from(metaInsights)
       .where(gte(metaInsights.date, sevenDaysAgo));
 
-    const [orderCount] = await d
-      .select({ count: count() })
+    const orderRows = await d
+      .select({
+        totalPriceCents: shopifyOrders.totalPriceCents,
+        isRecurring: shopifyOrders.isRecurring,
+      })
       .from(shopifyOrders)
       .where(gte(shopifyOrders.orderCreatedAt, sevenDaysAgo));
+
+    let weeklyOrders = 0;
+    let weeklyShopifyRevenue = 0;
+    let weeklySubOrders = 0;
+    for (const row of orderRows) {
+      weeklyOrders++;
+      weeklyShopifyRevenue += Number(row.totalPriceCents);
+      if (row.isRecurring === 1) weeklySubOrders++;
+    }
 
     const [pendingTopics] = await d
       .select({ count: count() })
@@ -36,9 +48,11 @@ async function getOverview() {
     return {
       activeCampaigns: campaignCount?.count ?? 0,
       weeklySpend: Number(insightAgg?.totalSpendCents ?? 0) / 100,
-      weeklyRevenue: Number(insightAgg?.totalRevenueCents ?? 0) / 100,
+      weeklyAdRevenue: Number(insightAgg?.totalRevenueCents ?? 0) / 100,
       weeklyImpressions: Number(insightAgg?.totalImpressions ?? 0),
-      weeklyOrders: orderCount?.count ?? 0,
+      weeklyOrders,
+      weeklyShopifyRevenue: weeklyShopifyRevenue / 100,
+      weeklySubOrders,
       pendingBlogTopics: pendingTopics?.count ?? 0,
     };
   } catch {
@@ -95,7 +109,7 @@ export default async function Home() {
 
   const roas =
     data.weeklySpend > 0
-      ? (data.weeklyRevenue / data.weeklySpend).toFixed(2)
+      ? (data.weeklyAdRevenue / data.weeklySpend).toFixed(2)
       : "N/A";
 
   return (
@@ -123,19 +137,24 @@ export default async function Home() {
           sub="last 7 days"
         />
         <StatCard
-          label="Revenue"
-          value={`$${data.weeklyRevenue.toFixed(2)}`}
-          sub="from ads"
+          label="Ad Revenue"
+          value={`$${data.weeklyAdRevenue.toFixed(2)}`}
+          sub="attributed to ads"
         />
         <StatCard label="ROAS" value={`${roas}x`} />
         <StatCard
-          label="Impressions"
-          value={data.weeklyImpressions.toLocaleString()}
+          label="Shopify Revenue"
+          value={`$${data.weeklyShopifyRevenue.toFixed(2)}`}
+          sub="all orders"
         />
         <StatCard
           label="Orders"
           value={String(data.weeklyOrders)}
-          sub="last 7 days"
+          sub={data.weeklySubOrders > 0 ? `${data.weeklySubOrders} subscriptions` : "last 7 days"}
+        />
+        <StatCard
+          label="Impressions"
+          value={data.weeklyImpressions.toLocaleString()}
         />
         <StatCard
           label="Blog Topics"
