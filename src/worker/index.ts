@@ -27,6 +27,8 @@ import { syncOrders } from "@/domain/shopify/sync";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
+import { getSubscriptionOrders, getTopProducts, getOrderSummary } from "@/domain/shopify/queries";
+import { computeLtvSummary } from "@/domain/shopify/subscription-ltv";
 import { ingestDocument } from "@/domain/knowledge/ingestion";
 import { retrieveContext } from "@/domain/knowledge/retrieval";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
@@ -351,15 +353,65 @@ async function main() {
       text: "Inventory alerts coming soon!",
       isError: false,
     }),
+    "shopify:status": async () => {
+      try {
+        const summary = await getOrderSummary(db, 30);
+        if (summary.totalOrders === 0) {
+          return {
+            text: "No Shopify orders in the last 30 days. Run `!sync shopify` to pull order data.",
+            isError: false,
+          };
+        }
+        const lines = [
+          "*Shopify Status* (last 30 days)",
+          "",
+          `• *${summary.totalOrders}* orders`,
+          `• *$${(summary.totalRevenueCents / 100).toFixed(2)}* total revenue`,
+          `• *${summary.subscriptionOrders}* subscription orders ($${(summary.subscriptionRevenueCents / 100).toFixed(2)})`,
+        ];
+        return { text: lines.join("\n"), isError: false };
+      } catch {
+        return { text: "Failed to fetch Shopify data. Make sure sync has run.", isError: true };
+      }
+    },
+    "shopify:ltv": async () => {
+      try {
+        const orders = await getSubscriptionOrders(db);
+        if (orders.length === 0) {
+          return {
+            text: "No subscription orders found. Make sure Shopify sync has run and your subscriptions use the `recurring-order` tag.",
+            isError: false,
+          };
+        }
+        const summary = computeLtvSummary(orders, new Date());
+        const lines = [
+          "*Subscription LTV Summary*",
+          "",
+          `• *${summary.totalSubscribers}* total subscribers`,
+          `• *${summary.activeSubscribers}* active / *${summary.churnedSubscribers}* churned`,
+          `• Avg tenure: *${summary.avgTenureMonths.toFixed(1)}* months`,
+          `• Avg LTV: *$${(summary.avgLtvCents / 100).toFixed(2)}*`,
+          `• Avg monthly revenue: *$${(summary.avgMonthlyRevenueCents / 100).toFixed(2)}*/subscriber`,
+          `• Median tenure: *${summary.medianTenureMonths.toFixed(1)}* months`,
+        ];
+        return { text: lines.join("\n"), isError: false };
+      } catch {
+        return { text: "Failed to compute LTV. Make sure Shopify sync has run.", isError: true };
+      }
+    },
     "inventory:overview": async () => ({
       text: "Inventory overview coming soon!",
       isError: false,
     }),
-    "sync:meta": async () => {
+    "sync:meta": async (args) => {
       if (!metaClient || !metaAccountId) {
         return { text: "Meta sync unavailable — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set.", isError: true };
       }
-      const result = await syncIncremental({ client: metaClient, db, accountId: metaAccountId });
+      // Parse optional day count: "!sync meta 90" pulls 90 days of insights
+      const days = args ? parseInt(args, 10) : 7;
+      const lookbackDays = isNaN(days) ? 7 : days;
+
+      const result = await syncIncremental({ client: metaClient, db, accountId: metaAccountId }, lookbackDays);
       if (result.errors.length > 0) {
         return {
           text: `Meta sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`,
@@ -367,15 +419,22 @@ async function main() {
         };
       }
       return {
-        text: `*Meta sync complete!*\n• ${result.campaigns} campaigns\n• ${result.adSets} ad sets\n• ${result.ads} ads\n• ${result.creatives} creatives\n• ${result.insights} insights (last 7 days)`,
+        text: `*Meta sync complete!* (last ${lookbackDays} days)\n• ${result.campaigns} campaigns\n• ${result.adSets} ad sets\n• ${result.ads} ads\n• ${result.creatives} creatives\n• ${result.insights} insights`,
         isError: false,
       };
     },
-    "sync:shopify": async () => {
+    "sync:shopify": async (args) => {
       if (!shopifyClient) {
         return { text: "Shopify sync unavailable — SHOPIFY_ACCESS_TOKEN not set.", isError: true };
       }
-      const result = await syncOrders({ client: shopifyClient, db });
+      // Parse optional day count: "!sync shopify 90" pulls 90 days
+      const days = args ? parseInt(args, 10) : 30;
+      const lookbackDays = isNaN(days) ? 30 : days;
+      const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0];
+
+      const result = await syncOrders({ client: shopifyClient, db }, since);
       if (result.errors.length > 0) {
         return {
           text: `Shopify sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}`,
@@ -383,7 +442,7 @@ async function main() {
         };
       }
       return {
-        text: `*Shopify sync complete!*\n• ${result.orders} orders\n• ${result.lineItems} line items`,
+        text: `*Shopify sync complete!* (last ${lookbackDays} days)\n• ${result.orders} orders\n• ${result.lineItems} line items`,
         isError: false,
       };
     },
