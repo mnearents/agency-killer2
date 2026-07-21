@@ -61,6 +61,21 @@ describe("formatCreativeForSlack", () => {
   });
 });
 
+describe("formatCreativeForSlack: edge cases", () => {
+  it("handles CTA without URL", () => {
+    const spec = { ...VALID_SPEC, ctaUrl: "" };
+    const text = formatCreativeForSlack(spec, "test");
+    expect(text).toContain("*CTA:* Shop Now");
+    expect(text).not.toContain("→");
+  });
+
+  it("handles missing alt text", () => {
+    const spec = { ...VALID_SPEC, altText: "" };
+    const text = formatCreativeForSlack(spec, "test");
+    expect(text).toContain("*Alt Text:*");
+  });
+});
+
 describe("formatEmailOutput", () => {
   it("parses JSON and formats cleanly when valid", () => {
     const text = formatEmailOutput(JSON.stringify(VALID_SPEC), "summer sale");
