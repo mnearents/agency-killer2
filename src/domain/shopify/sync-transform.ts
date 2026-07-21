@@ -41,7 +41,7 @@ export function transformOrder(
     fulfillmentStatus: raw.displayFulfillmentStatus ?? null,
     customerId: raw.customer?.id ?? null,
     sourceName: raw.sourceIdentifier ?? null,
-    referringSite: raw.referringSite ?? null,
+    referringSite: null,
     isRecurring: isSubscriptionOrder(raw.tags) ? 1 : 0,
     tags: raw.tags,
     discountCodes: raw.discountCodes,

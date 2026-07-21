@@ -23,8 +23,6 @@ const BASE_ORDER: ShopifyApiOrder = {
   tags: ["wholesale", "vip"],
   discountCodes: ["SUMMER10"],
   sourceIdentifier: "web",
-  referringSite: "https://google.com",
-  landingSite: null,
   lineItems: { nodes: [] },
 };
 

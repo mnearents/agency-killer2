@@ -23,8 +23,6 @@ export interface ShopifyApiOrder {
   tags: string[];
   discountCodes: string[];
   sourceIdentifier: string | null;
-  referringSite: string | null;
-  landingSite: string | null;
   lineItems: { nodes: ShopifyApiLineItem[] };
 }
 
@@ -59,8 +57,6 @@ const ORDERS_QUERY = `
         tags
         discountCodes
         sourceIdentifier
-        referringSite
-        landingSite
         lineItems(first: 50) {
           nodes {
             id title quantity
