@@ -28,6 +28,7 @@ import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
 import { ingestDocument } from "@/domain/knowledge/ingestion";
+import { retrieveContext } from "@/domain/knowledge/retrieval";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
@@ -166,7 +167,9 @@ async function main() {
       const result = await generateBlogArticle({
         db,
         runOrchestrator: (req) => orchestrator.run(req),
-        getBrandContext: async () => "",
+        getBrandContext: embeddingClient
+          ? () => retrieveContext({ db, embeddingClient }, "brand philosophy goals strategy")
+          : async () => "",
         voiceBannedWords: voiceProfile.bannedWords,
       });
       console.log(
@@ -183,7 +186,14 @@ async function main() {
         return;
       }
       const result = await analyzeAdPerformance(
-        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        {
+          db,
+          voice,
+          runOrchestrator: (req) => orchestrator.run(req),
+          getKbContext: embeddingClient
+            ? () => retrieveContext({ db, embeddingClient }, "ad performance strategy creative recommendations")
+            : undefined,
+        },
         7
       );
       console.log(
@@ -240,7 +250,14 @@ async function main() {
         return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
       }
       const result = await analyzeAdPerformance(
-        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        {
+          db,
+          voice,
+          runOrchestrator: (req) => orchestrator.run(req),
+          getKbContext: embeddingClient
+            ? () => retrieveContext({ db, embeddingClient }, "ad performance strategy creative recommendations")
+            : undefined,
+        },
         7
       );
       return { text: result.text, isError: !result.ok };
@@ -282,7 +299,9 @@ async function main() {
         {
           db,
           runOrchestrator: (req) => orchestrator.run(req),
-          getBrandContext: async () => "",
+          getBrandContext: embeddingClient
+          ? () => retrieveContext({ db, embeddingClient }, "brand philosophy goals strategy")
+          : async () => "",
           voiceBannedWords: voiceProfile.bannedWords,
         },
         args || undefined
@@ -481,6 +500,9 @@ async function main() {
       return orchestrator.run(request);
     },
     handlers: slackHandlers,
+    getKbContext: embeddingClient
+      ? async (query) => retrieveContext({ db, embeddingClient }, query)
+      : undefined,
   });
 
   if (slackApp) {

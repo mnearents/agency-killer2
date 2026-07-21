@@ -19,6 +19,7 @@ export interface AnalyzeDeps {
   db: Db;
   voice: VoicePromptResult;
   runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
+  getKbContext?: () => Promise<string>;
 }
 
 export interface AnalyzeResult {
@@ -62,11 +63,18 @@ export async function analyzeAdPerformance(
     metrics: aggregateAndCompute(c.rows),
   }));
 
-  // Step 3: Build the analysis request
+  // Step 3: Get KB context (strategy notes, CTC guidance, goals)
+  let additionalContext: string | undefined;
+  if (deps.getKbContext) {
+    additionalContext = await deps.getKbContext();
+  }
+
+  // Step 4: Build the analysis request
   const request = buildAnalysisRequest({
     campaigns,
     voice: deps.voice,
     outputType: "analysis",
+    additionalContext,
   });
 
   // Step 4: Run through orchestrator

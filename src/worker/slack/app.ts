@@ -14,6 +14,7 @@ import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator"
 export interface SlackAppDeps {
   runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   handlers: Record<string, (args: string) => Promise<SlackResponse>>;
+  getKbContext?: (query: string) => Promise<string>;
 }
 
 /** Acknowledgment messages for slow commands so the user knows we heard them. */
@@ -64,9 +65,19 @@ export function createSlackApp(deps: SlackAppDeps) {
         // Acknowledge natural language — AI takes a moment
         await say("Thinking...");
 
+        // Retrieve relevant KB context for the query
+        let kbContext = "";
+        if (deps.getKbContext) {
+          kbContext = await deps.getKbContext(parsed.text);
+        }
+
+        const prompt = kbContext
+          ? `${parsed.text}\n\n${kbContext}`
+          : parsed.text;
+
         const result = await deps.runOrchestrator({
-          prompt: parsed.text,
-          system: "You are a marketing assistant for Rad & Happy, a stationery brand. Answer the user's question based on available data. Be friendly, specific, and actionable.",
+          prompt,
+          system: "You are a marketing assistant for Rad & Happy, a stationery brand. Answer the user's question based on available data and the knowledge base context provided. Be friendly, specific, and actionable. If knowledge base context is provided, use it to inform your answer.",
         });
         response = formatOrchestratorResult(result);
       } else {
