@@ -10,6 +10,7 @@ import type { Db } from "@/db/client";
 import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
 import type { VoicePromptResult } from "@/domain/voice/voice";
 import { buildEmailCreativeRequest, type ProductInfo, type EmailBrief } from "./creative";
+import { formatEmailOutput } from "./format";
 import { shopifyLineItems } from "@/db/schema";
 import { sql } from "drizzle-orm";
 
@@ -89,7 +90,7 @@ export async function generateEmailCreative(
 
   return {
     ok: true,
-    text: result.text,
+    text: formatEmailOutput(result.text, briefText),
     brief: briefText,
   };
 }
