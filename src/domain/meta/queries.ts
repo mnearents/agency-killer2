@@ -115,6 +115,47 @@ export async function getInsightTotals(
   }));
 }
 
+export interface DailyMetrics {
+  date: string; // YYYY-MM-DD
+  spendCents: number;
+  revenueCents: number;
+  impressions: number;
+  clicks: number;
+  purchases: number;
+}
+
+/**
+ * Get daily aggregated metrics for trending charts.
+ */
+export async function getDailyMetrics(
+  db: Db,
+  startDate: Date,
+  endDate: Date
+): Promise<DailyMetrics[]> {
+  const rows = await db
+    .select({
+      date: sql<string>`DATE(${metaInsights.date})`.as("date"),
+      spendCents: sql<number>`SUM(${metaInsights.spendCents})`.as("spend_cents"),
+      revenueCents: sql<number>`SUM(${metaInsights.purchaseValueCents})`.as("revenue_cents"),
+      impressions: sql<number>`SUM(${metaInsights.impressions})`.as("impressions"),
+      clicks: sql<number>`SUM(${metaInsights.clicks})`.as("clicks"),
+      purchases: sql<number>`SUM(${metaInsights.purchases})`.as("purchases"),
+    })
+    .from(metaInsights)
+    .where(and(gte(metaInsights.date, startDate), lte(metaInsights.date, endDate)))
+    .groupBy(sql`DATE(${metaInsights.date})`)
+    .orderBy(sql`DATE(${metaInsights.date})`);
+
+  return rows.map((r) => ({
+    date: String(r.date).split("T")[0],
+    spendCents: Number(r.spendCents ?? 0),
+    revenueCents: Number(r.revenueCents ?? 0),
+    impressions: Number(r.impressions ?? 0),
+    clicks: Number(r.clicks ?? 0),
+    purchases: Number(r.purchases ?? 0),
+  }));
+}
+
 export interface AdCreativeInsight {
   adId: string;
   adName: string;

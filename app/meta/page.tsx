@@ -2,6 +2,8 @@ import { db } from "@/lib/db";
 import { metaCampaigns, metaInsights } from "@/db/schema";
 import { eq, gte, and, desc } from "drizzle-orm";
 import { aggregateAndCompute, type InsightRow } from "@/domain/meta/metrics";
+import { getDailyMetrics } from "@/domain/meta/queries";
+import { LineChart, BarChart } from "../components/chart";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +61,9 @@ async function getCampaignData() {
       });
     }
 
-    return results;
+    const daily = await getDailyMetrics(d, thirtyDaysAgo, new Date());
+
+    return { campaigns: results, daily };
   } catch {
     return null;
   }
@@ -70,10 +74,14 @@ function fmt(v: number | null, decimals = 2): string {
   return v.toFixed(decimals);
 }
 
-export default async function MetaPage() {
-  const campaigns = await getCampaignData();
+function fmtDollar(v: number): string {
+  return `$${v.toFixed(2)}`;
+}
 
-  if (!campaigns) {
+export default async function MetaPage() {
+  const data = await getCampaignData();
+
+  if (!data) {
     return (
       <div>
         <h1>Meta Ads</h1>
@@ -83,6 +91,25 @@ export default async function MetaPage() {
       </div>
     );
   }
+
+  const { campaigns, daily } = data;
+
+  const spendData = daily.map((d) => ({
+    label: d.date,
+    value: d.spendCents / 100,
+  }));
+  const revenueData = daily.map((d) => ({
+    label: d.date,
+    value: d.revenueCents / 100,
+  }));
+  const roasData = daily.map((d) => ({
+    label: d.date,
+    value: d.spendCents > 0 ? d.revenueCents / d.spendCents : 0,
+  }));
+  const purchaseData = daily.map((d) => ({
+    label: d.date,
+    value: d.purchases,
+  }));
 
   if (campaigns.length === 0) {
     return (
@@ -103,6 +130,30 @@ export default async function MetaPage() {
         {campaigns.length !== 1 ? "s" : ""}
       </p>
 
+      {daily.length > 0 && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "16px",
+            marginBottom: "32px",
+          }}
+        >
+          <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
+            <LineChart data={spendData} label="Daily Spend" color="#d1242f" formatValue={fmtDollar} />
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
+            <LineChart data={revenueData} label="Daily Revenue" color="#1a7f37" formatValue={fmtDollar} />
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
+            <LineChart data={roasData} label="Daily ROAS" color="#6f42c1" formatValue={(v) => `${v.toFixed(1)}x`} />
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
+            <BarChart data={purchaseData} label="Daily Purchases" color="#0969da" />
+          </div>
+        </div>
+      )}
+
       <div style={{ overflowX: "auto" }}>
         <table
           style={{
@@ -115,70 +166,42 @@ export default async function MetaPage() {
           }}
         >
           <thead>
-            <tr
-              style={{
-                borderBottom: "2px solid #e8e4df",
-                textAlign: "left",
-              }}
-            >
+            <tr style={{ borderBottom: "2px solid #e8e4df", textAlign: "left" }}>
               <th style={{ padding: "12px 16px" }}>Campaign</th>
               <th style={{ padding: "12px 16px" }}>Status</th>
-              <th style={{ padding: "12px 16px", textAlign: "right" }}>
-                Spend
-              </th>
-              <th style={{ padding: "12px 16px", textAlign: "right" }}>
-                Revenue
-              </th>
-              <th style={{ padding: "12px 16px", textAlign: "right" }}>
-                ROAS
-              </th>
+              <th style={{ padding: "12px 16px", textAlign: "right" }}>Spend</th>
+              <th style={{ padding: "12px 16px", textAlign: "right" }}>Revenue</th>
+              <th style={{ padding: "12px 16px", textAlign: "right" }}>ROAS</th>
               <th style={{ padding: "12px 16px", textAlign: "right" }}>CTR</th>
               <th style={{ padding: "12px 16px", textAlign: "right" }}>CPC</th>
-              <th style={{ padding: "12px 16px", textAlign: "right" }}>
-                Purchases
-              </th>
+              <th style={{ padding: "12px 16px", textAlign: "right" }}>Purchases</th>
             </tr>
           </thead>
           <tbody>
             {campaigns.map((c) => (
-              <tr
-                key={c.id}
-                style={{ borderBottom: "1px solid #f0ece8" }}
-              >
-                <td style={{ padding: "12px 16px", fontWeight: 500 }}>
-                  {c.name}
-                </td>
+              <tr key={c.id} style={{ borderBottom: "1px solid #f0ece8" }}>
+                <td style={{ padding: "12px 16px", fontWeight: 500 }}>{c.name}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <span
                     style={{
                       fontSize: "12px",
                       padding: "2px 8px",
                       borderRadius: "4px",
-                      backgroundColor:
-                        c.status === "ACTIVE" ? "#e6f4ea" : "#f4f0e6",
+                      backgroundColor: c.status === "ACTIVE" ? "#e6f4ea" : "#f4f0e6",
                       color: c.status === "ACTIVE" ? "#1a7f37" : "#8a7a5a",
                     }}
                   >
                     {c.status}
                   </span>
                 </td>
-                <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  ${fmt(c.metrics.spendDollars)}
-                </td>
-                <td style={{ padding: "12px 16px", textAlign: "right" }}>
-                  ${fmt(c.metrics.revenueDollars)}
-                </td>
+                <td style={{ padding: "12px 16px", textAlign: "right" }}>${fmt(c.metrics.spendDollars)}</td>
+                <td style={{ padding: "12px 16px", textAlign: "right" }}>${fmt(c.metrics.revenueDollars)}</td>
                 <td
                   style={{
                     padding: "12px 16px",
                     textAlign: "right",
                     fontWeight: 600,
-                    color:
-                      c.metrics.roas !== null && c.metrics.roas >= 1
-                        ? "#1a7f37"
-                        : c.metrics.roas !== null
-                          ? "#d1242f"
-                          : "#888",
+                    color: c.metrics.roas !== null && c.metrics.roas >= 1 ? "#1a7f37" : c.metrics.roas !== null ? "#d1242f" : "#888",
                   }}
                 >
                   {c.metrics.roas !== null ? `${fmt(c.metrics.roas)}x` : "—"}
@@ -191,10 +214,7 @@ export default async function MetaPage() {
                 </td>
                 <td style={{ padding: "12px 16px", textAlign: "right" }}>
                   {c.metrics.revenueDollars > 0 && c.metrics.costPerPurchaseDollars
-                    ? Math.round(
-                        c.metrics.revenueDollars /
-                          c.metrics.costPerPurchaseDollars
-                      )
+                    ? Math.round(c.metrics.revenueDollars / c.metrics.costPerPurchaseDollars)
                     : "—"}
                 </td>
               </tr>
