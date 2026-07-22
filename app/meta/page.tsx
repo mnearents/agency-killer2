@@ -140,13 +140,13 @@ export default async function MetaPage() {
           }}
         >
           <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
-            <LineChart data={spendData} label="Daily Spend" color="#d1242f" formatValue={fmtDollar} />
+            <LineChart data={spendData} label="Daily Spend" color="#d1242f" format="dollar" />
           </div>
           <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
-            <LineChart data={revenueData} label="Daily Revenue" color="#1a7f37" formatValue={fmtDollar} />
+            <LineChart data={revenueData} label="Daily Revenue" color="#1a7f37" format="dollar" />
           </div>
           <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
-            <LineChart data={roasData} label="Daily ROAS" color="#6f42c1" formatValue={(v) => `${v.toFixed(1)}x`} />
+            <LineChart data={roasData} label="Daily ROAS" color="#6f42c1" format="roas" />
           </div>
           <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
             <BarChart data={purchaseData} label="Daily Purchases" color="#0969da" />

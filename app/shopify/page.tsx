@@ -167,7 +167,7 @@ export default async function ShopifyPage() {
               data={revenueData}
               label="Daily Revenue"
               color="#1a7f37"
-              formatValue={(v) => `$${v.toFixed(0)}`}
+              format="dollar"
             />
           </div>
           <div style={{ background: "#fff", border: "1px solid #e8e4df", borderRadius: "8px", padding: "16px" }}>
