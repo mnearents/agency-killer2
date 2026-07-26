@@ -103,15 +103,24 @@ describe("transformOrder: field mapping", () => {
 
 describe("transformOrder: subscription detection", () => {
   it("sets isRecurring=1 when tags contain 'recurring-order'", () => {
-    const order = {
-      ...BASE_ORDER,
-      tags: ["recurring-order", "subscription"],
-    };
+    const order = { ...BASE_ORDER, tags: ["recurring-order", "subscription"] };
     const result = transformOrder(order, SYNCED_AT);
     expect(result.isRecurring).toBe(1);
   });
 
-  it("sets isRecurring=0 when tags do not contain 'recurring-order'", () => {
+  it("sets isRecurring=1 when tags contain 'colorhappy-first'", () => {
+    const order = { ...BASE_ORDER, tags: ["colorhappy-first"] };
+    const result = transformOrder(order, SYNCED_AT);
+    expect(result.isRecurring).toBe(1);
+  });
+
+  it("sets isRecurring=1 when tags contain 'rad-first'", () => {
+    const order = { ...BASE_ORDER, tags: ["rad-first"] };
+    const result = transformOrder(order, SYNCED_AT);
+    expect(result.isRecurring).toBe(1);
+  });
+
+  it("sets isRecurring=0 when tags do not contain any subscription tag", () => {
     const result = transformOrder(BASE_ORDER, SYNCED_AT);
     expect(result.isRecurring).toBe(0);
   });

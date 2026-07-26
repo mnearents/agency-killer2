@@ -29,7 +29,15 @@ describe("isSubscriptionOrder: tag detection", () => {
     expect(isSubscriptionOrder(["sale", "recurring-order", "vip"])).toBe(true);
   });
 
-  it("returns false when tags do not contain 'recurring-order'", () => {
+  it("returns true when tags contain 'colorhappy-first' (initial sub order)", () => {
+    expect(isSubscriptionOrder(["colorhappy-first"])).toBe(true);
+  });
+
+  it("returns true when tags contain 'rad-first' (initial RAD sub order)", () => {
+    expect(isSubscriptionOrder(["rad-first"])).toBe(true);
+  });
+
+  it("returns false when tags do not contain any subscription tag", () => {
     expect(isSubscriptionOrder(["sale", "vip"])).toBe(false);
   });
 

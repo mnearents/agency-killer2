@@ -39,12 +39,27 @@ export interface LtvSummary {
 const DEFAULT_CHURN_THRESHOLD_DAYS = 45;
 
 /**
+ * Subscription order tags:
+ * - "colorhappy-first" — initial Color Happy subscription order
+ * - "rad-first" — initial Really Awesome Doodles subscription order
+ * - "recurring-order" — all subsequent subscription renewals
+ *
+ * Color Happy was migrated to Really Awesome Doodles. Both are the
+ * same subscription for LTV purposes.
+ */
+const SUBSCRIPTION_TAGS = [
+  "recurring-order",
+  "colorhappy-first",
+  "rad-first",
+];
+
+/**
  * Check if a Shopify order is a subscription based on its tags.
  * Tags come from Shopify as a JSONB array of strings.
  */
 export function isSubscriptionOrder(tags: unknown): boolean {
   if (!Array.isArray(tags)) return false;
-  return tags.includes("recurring-order");
+  return tags.some((tag) => SUBSCRIPTION_TAGS.includes(tag));
 }
 
 /**
