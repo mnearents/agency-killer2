@@ -379,7 +379,7 @@ async function main() {
         const orders = await getSubscriptionOrders(db);
         if (orders.length === 0) {
           return {
-            text: "No subscription orders found. Make sure Shopify sync has run and your subscriptions use the `recurring-order` tag.",
+            text: "No subscription orders found. Make sure Shopify sync has run and your subscriptions use the `recurring-order`, `colorhappy-first`, or `rad-first` tags.",
             isError: false,
           };
         }
@@ -387,15 +387,27 @@ async function main() {
         const lines = [
           "*Subscription LTV Summary*",
           "",
-          `• *${summary.totalSubscribers}* total subscribers`,
-          `• *${summary.activeSubscribers}* active / *${summary.churnedSubscribers}* churned`,
-          `• Avg tenure: *${summary.avgTenureMonths.toFixed(1)}* months`,
-          `• Avg LTV: *$${(summary.avgLtvCents / 100).toFixed(2)}*`,
-          `• Avg monthly revenue: *$${(summary.avgMonthlyRevenueCents / 100).toFixed(2)}*/subscriber`,
-          `• Median tenure: *${summary.medianTenureMonths.toFixed(1)}* months`,
+          `*${summary.totalSubscribers}* subscribers (*${summary.activeSubscribers}* active, *${summary.churnedSubscribers}* churned)`,
+          `Avg tenure: *${summary.avgTenureMonths.toFixed(1)}* months | Median: *${summary.medianTenureMonths.toFixed(1)}* months`,
+          `Avg LTV: *$${(summary.avgLtvCents / 100).toFixed(2)}* | Avg monthly: *$${(summary.avgMonthlyRevenueCents / 100).toFixed(2)}*/subscriber`,
         ];
+
+        if (summary.tiers.length > 0) {
+          lines.push("", "*By Tier:*");
+          for (const tier of summary.tiers) {
+            const tierName = tier.tier === "color-happy" ? "Color Happy"
+              : tier.tier === "rad-tier-1" ? "RAD Tier 1"
+              : tier.tier === "rad-tier-2" ? "RAD Tier 2"
+              : "Other";
+            lines.push(
+              `• *${tierName}* (${tier.monthlyPrice}) — ${tier.subscribers} subscribers (${tier.active} active), avg tenure ${tier.avgTenureMonths.toFixed(1)}mo, avg LTV $${(tier.avgLtvCents / 100).toFixed(2)}`
+            );
+          }
+        }
+
         return { text: lines.join("\n"), isError: false };
-      } catch {
+      } catch (err) {
+        console.error("[shopify:ltv]", err);
         return { text: "Failed to compute LTV. Make sure Shopify sync has run.", isError: true };
       }
     },

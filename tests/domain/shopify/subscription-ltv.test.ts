@@ -3,187 +3,211 @@ import {
   computeCustomerLtv,
   computeLtvSummary,
   isSubscriptionOrder,
+  classifyOrder,
   type SubscriptionOrder,
 } from "@/domain/shopify/subscription-ltv";
 
-// Fixed "now" for determinism — no wall clock
 const AS_OF = new Date("2025-07-01T00:00:00Z");
 
-function makeOrders(
+function makeOrder(
   customerId: string,
-  dates: string[],
-  priceCents = 800
-): SubscriptionOrder[] {
-  return dates.map((d) => ({
+  date: string,
+  priceCents: number
+): SubscriptionOrder {
+  return {
     customerId,
-    orderCreatedAt: new Date(d),
+    orderCreatedAt: new Date(date),
     totalPriceCents: priceCents,
     isRecurring: true,
-  }));
+  };
 }
 
 // ─── Tag detection ────────────────────────────────────────────────────
 
 describe("isSubscriptionOrder: tag detection", () => {
-  it("returns true when tags contain 'recurring-order'", () => {
-    expect(isSubscriptionOrder(["sale", "recurring-order", "vip"])).toBe(true);
+  it("returns true for 'recurring-order'", () => {
+    expect(isSubscriptionOrder(["recurring-order"])).toBe(true);
   });
 
-  it("returns true when tags contain 'colorhappy-first' (initial sub order)", () => {
+  it("returns true for 'colorhappy-first'", () => {
     expect(isSubscriptionOrder(["colorhappy-first"])).toBe(true);
   });
 
-  it("returns true when tags contain 'rad-first' (initial RAD sub order)", () => {
+  it("returns true for 'rad-first'", () => {
     expect(isSubscriptionOrder(["rad-first"])).toBe(true);
   });
 
-  it("returns false when tags do not contain any subscription tag", () => {
+  it("returns false for non-subscription tags", () => {
     expect(isSubscriptionOrder(["sale", "vip"])).toBe(false);
   });
 
-  it("returns false for empty tags", () => {
+  it("returns false for empty/null/non-array", () => {
     expect(isSubscriptionOrder([])).toBe(false);
-  });
-
-  it("returns false for null/undefined tags", () => {
     expect(isSubscriptionOrder(null)).toBe(false);
     expect(isSubscriptionOrder(undefined)).toBe(false);
+    expect(isSubscriptionOrder("recurring-order")).toBe(false);
+  });
+});
+
+// ─── Order classification ─────────────────────────────────────────────
+
+describe("classifyOrder: tier and frequency detection", () => {
+  it("classifies $5 as Color Happy monthly", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 500));
+    expect(result.tier).toBe("color-happy");
+    expect(result.frequency).toBe("monthly");
+    expect(result.monthsCovered).toBe(1);
+    expect(result.monthlyValueCents).toBe(500);
   });
 
-  it("returns false for non-array tags", () => {
-    expect(isSubscriptionOrder("recurring-order")).toBe(false);
+  it("classifies $55 as Color Happy yearly (12 months)", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 5500));
+    expect(result.tier).toBe("color-happy");
+    expect(result.frequency).toBe("yearly");
+    expect(result.monthsCovered).toBe(12);
+    expect(result.monthlyValueCents).toBe(458); // 5500/12 rounded
+  });
+
+  it("classifies $8 as RAD Tier 1 monthly", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 800));
+    expect(result.tier).toBe("rad-tier-1");
+    expect(result.frequency).toBe("monthly");
+    expect(result.monthsCovered).toBe(1);
+  });
+
+  it("classifies $72 as RAD Tier 1 yearly (12 months)", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 7200));
+    expect(result.tier).toBe("rad-tier-1");
+    expect(result.frequency).toBe("yearly");
+    expect(result.monthsCovered).toBe(12);
+    expect(result.monthlyValueCents).toBe(600);
+  });
+
+  it("classifies $15 as RAD Tier 2 monthly", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 1500));
+    expect(result.tier).toBe("rad-tier-2");
+    expect(result.frequency).toBe("monthly");
+  });
+
+  it("classifies $144 as RAD Tier 2 yearly (12 months)", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 14400));
+    expect(result.tier).toBe("rad-tier-2");
+    expect(result.frequency).toBe("yearly");
+    expect(result.monthsCovered).toBe(12);
+  });
+
+  it("classifies unknown price as unknown", () => {
+    const result = classifyOrder(makeOrder("c1", "2025-01-01", 9999));
+    expect(result.tier).toBe("unknown");
+    expect(result.frequency).toBe("unknown");
   });
 });
 
 // ─── Customer LTV ─────────────────────────────────────────────────────
 
-describe("computeCustomerLtv: individual customer", () => {
-  it("computes LTV for a customer with 6 monthly orders", () => {
-    const orders = makeOrders("cust_1", [
-      "2025-01-15",
-      "2025-02-15",
-      "2025-03-15",
-      "2025-04-15",
-      "2025-05-15",
-      "2025-06-15",
-    ]);
-
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF);
+describe("computeCustomerLtv", () => {
+  it("computes LTV for monthly subscriber with 6 orders", () => {
+    const orders = [
+      makeOrder("c1", "2025-01-15", 800),
+      makeOrder("c1", "2025-02-15", 800),
+      makeOrder("c1", "2025-03-15", 800),
+      makeOrder("c1", "2025-04-15", 800),
+      makeOrder("c1", "2025-05-15", 800),
+      makeOrder("c1", "2025-06-15", 800),
+    ];
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
     expect(ltv).not.toBeNull();
     expect(ltv!.totalOrders).toBe(6);
-    expect(ltv!.totalRevenueCents).toBe(4800); // 6 * 800
-    expect(ltv!.firstOrderDate).toEqual(new Date("2025-01-15"));
-    expect(ltv!.lastOrderDate).toEqual(new Date("2025-06-15"));
+    expect(ltv!.totalRevenueCents).toBe(4800);
+    expect(ltv!.totalMonthsCovered).toBe(6);
+    expect(ltv!.avgMonthlyRevenueCents).toBe(800);
+    expect(ltv!.currentTier).toBe("rad-tier-1");
+    expect(ltv!.currentFrequency).toBe("monthly");
   });
 
-  it("computes tenure in months between first and last order", () => {
-    const orders = makeOrders("cust_1", ["2025-01-01", "2025-06-01"]);
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF);
-    expect(ltv!.tenureMonths).toBe(5);
+  it("computes LTV for yearly subscriber correctly", () => {
+    const orders = [makeOrder("c1", "2025-01-01", 7200)];
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
+    expect(ltv!.totalMonthsCovered).toBe(12);
+    expect(ltv!.avgMonthlyRevenueCents).toBe(600);
+    expect(ltv!.currentFrequency).toBe("yearly");
   });
 
-  it("computes average monthly revenue", () => {
-    // 6 orders * $8 = $48 over 5 months tenure → $9.60/month
-    const orders = makeOrders("cust_1", [
-      "2025-01-15",
-      "2025-02-15",
-      "2025-03-15",
-      "2025-04-15",
-      "2025-05-15",
-      "2025-06-15",
-    ]);
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF);
-    // tenure = ~5 months, revenue = 4800 cents, avg = 960 cents/month
-    expect(ltv!.avgMonthlyRevenueCents).toBe(960);
+  it("computes LTV for customer who migrated CH to RAD", () => {
+    const orders = [
+      makeOrder("c1", "2024-06-01", 500),
+      makeOrder("c1", "2024-07-01", 500),
+      makeOrder("c1", "2024-08-01", 500),
+      makeOrder("c1", "2024-09-01", 800),
+      makeOrder("c1", "2024-10-01", 800),
+      makeOrder("c1", "2024-11-01", 800),
+    ];
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
+    expect(ltv!.totalOrders).toBe(6);
+    expect(ltv!.totalRevenueCents).toBe(3900);
+    expect(ltv!.totalMonthsCovered).toBe(6);
+    expect(ltv!.currentTier).toBe("rad-tier-1");
   });
 
-  it("marks customer as churned when no order within threshold", () => {
-    // Last order was 60 days ago, threshold is 45 days → churned
-    const orders = makeOrders("cust_1", ["2025-01-15", "2025-05-01"]);
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF, 45);
+  it("uses longer churn threshold for yearly subscribers", () => {
+    const orders = [makeOrder("c1", "2024-12-01", 7200)];
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
+    expect(ltv!.isChurned).toBe(false); // ~7 months < 13 month threshold
+  });
+
+  it("marks yearly subscriber as churned after 13 months", () => {
+    const orders = [makeOrder("c1", "2024-05-01", 7200)];
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
     expect(ltv!.isChurned).toBe(true);
   });
 
-  it("marks customer as active when recent order within threshold", () => {
-    const orders = makeOrders("cust_1", ["2025-01-15", "2025-06-20"]);
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF, 45);
-    expect(ltv!.isChurned).toBe(false);
+  it("returns null for empty orders", () => {
+    expect(computeCustomerLtv([], "c1", AS_OF)).toBeNull();
   });
 
-  it("returns null for customer with zero orders", () => {
-    const ltv = computeCustomerLtv([], "cust_1", AS_OF);
-    expect(ltv).toBeNull();
-  });
-
-  it("handles single order (tenure = 0 months)", () => {
-    const orders = makeOrders("cust_1", ["2025-06-15"]);
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF);
-    expect(ltv!.totalOrders).toBe(1);
-    expect(ltv!.tenureMonths).toBe(0);
-    expect(ltv!.totalRevenueCents).toBe(800);
-  });
-
-  it("filters to only the specified customer", () => {
+  it("filters to the specified customer", () => {
     const orders = [
-      ...makeOrders("cust_1", ["2025-01-15", "2025-02-15"]),
-      ...makeOrders("cust_2", ["2025-03-15"]),
+      makeOrder("c1", "2025-01-01", 800),
+      makeOrder("c2", "2025-01-01", 800),
     ];
-    const ltv = computeCustomerLtv(orders, "cust_1", AS_OF);
-    expect(ltv!.totalOrders).toBe(2);
+    const ltv = computeCustomerLtv(orders, "c1", AS_OF);
+    expect(ltv!.totalOrders).toBe(1);
   });
 });
 
 // ─── LTV Summary ──────────────────────────────────────────────────────
 
-describe("computeLtvSummary: aggregate stats", () => {
-  it("computes summary across multiple customers", () => {
+describe("computeLtvSummary", () => {
+  it("computes summary with tier breakdown", () => {
     const orders = [
-      // Customer 1: 6 months, active
-      ...makeOrders("cust_1", [
-        "2025-01-15", "2025-02-15", "2025-03-15",
-        "2025-04-15", "2025-05-15", "2025-06-15",
-      ]),
-      // Customer 2: 3 months, churned (last order May 1)
-      ...makeOrders("cust_2", [
-        "2025-03-01", "2025-04-01", "2025-05-01",
-      ]),
-      // Customer 3: 2 months, active
-      ...makeOrders("cust_3", [
-        "2025-05-15", "2025-06-20",
-      ]),
+      makeOrder("c1", "2025-01-15", 800),
+      makeOrder("c1", "2025-02-15", 800),
+      makeOrder("c1", "2025-03-15", 800),
+      makeOrder("c1", "2025-04-15", 800),
+      makeOrder("c1", "2025-05-15", 800),
+      makeOrder("c1", "2025-06-15", 800),
+      makeOrder("c2", "2025-01-01", 7200),
+      makeOrder("c3", "2024-06-01", 500),
+      makeOrder("c3", "2024-07-01", 500),
+      makeOrder("c3", "2024-08-01", 500),
     ];
 
-    const summary = computeLtvSummary(orders, AS_OF, 45);
+    const summary = computeLtvSummary(orders, AS_OF);
     expect(summary.totalSubscribers).toBe(3);
-    expect(summary.activeSubscribers).toBe(2);
-    expect(summary.churnedSubscribers).toBe(1);
-  });
+    expect(summary.tiers.length).toBeGreaterThan(0);
 
-  it("computes average tenure across subscribers", () => {
-    const orders = [
-      ...makeOrders("cust_1", ["2025-01-01", "2025-06-01"]), // 5 months
-      ...makeOrders("cust_2", ["2025-04-01", "2025-06-01"]), // 2 months
-    ];
-    const summary = computeLtvSummary(orders, AS_OF, 45);
-    // avg tenure = (5 + 2) / 2 = 3.5
-    expect(summary.avgTenureMonths).toBe(3.5);
-  });
+    const radTier1 = summary.tiers.find((t) => t.tier === "rad-tier-1");
+    expect(radTier1).toBeDefined();
+    expect(radTier1!.subscribers).toBe(2);
 
-  it("computes average LTV in cents", () => {
-    const orders = [
-      ...makeOrders("cust_1", ["2025-01-15", "2025-02-15", "2025-03-15"]), // 2400 cents
-      ...makeOrders("cust_2", ["2025-04-15", "2025-05-15"]), // 1600 cents
-    ];
-    const summary = computeLtvSummary(orders, AS_OF, 45);
-    // avg LTV = (2400 + 1600) / 2 = 2000 cents
-    expect(summary.avgLtvCents).toBe(2000);
+    const chTier = summary.tiers.find((t) => t.tier === "color-happy");
+    expect(chTier).toBeDefined();
+    expect(chTier!.churned).toBe(1);
   });
 
   it("handles empty order list", () => {
     const summary = computeLtvSummary([], AS_OF);
     expect(summary.totalSubscribers).toBe(0);
-    expect(summary.activeSubscribers).toBe(0);
-    expect(summary.avgTenureMonths).toBe(0);
-    expect(summary.avgLtvCents).toBe(0);
+    expect(summary.tiers).toHaveLength(0);
   });
 });

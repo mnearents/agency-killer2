@@ -149,6 +149,42 @@ export default async function ShopifyPage() {
               </div>
             </div>
           </div>
+
+          {ltvSummary.tiers.length > 0 && (
+            <div style={{ marginTop: "20px" }}>
+              <div style={{ fontSize: "13px", color: "#888", marginBottom: "8px" }}>By Tier</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #e8e4df", textAlign: "left" }}>
+                    <th style={{ padding: "8px 0" }}>Tier</th>
+                    <th style={{ padding: "8px 0", textAlign: "right" }}>Subscribers</th>
+                    <th style={{ padding: "8px 0", textAlign: "right" }}>Active</th>
+                    <th style={{ padding: "8px 0", textAlign: "right" }}>Avg Tenure</th>
+                    <th style={{ padding: "8px 0", textAlign: "right" }}>Avg LTV</th>
+                    <th style={{ padding: "8px 0", textAlign: "right" }}>Monthly</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ltvSummary.tiers.map((t) => (
+                    <tr key={t.tier} style={{ borderBottom: "1px solid #f0ece8" }}>
+                      <td style={{ padding: "8px 0", fontWeight: 500 }}>
+                        {t.tier === "color-happy" ? "Color Happy"
+                          : t.tier === "rad-tier-1" ? "RAD Tier 1"
+                          : t.tier === "rad-tier-2" ? "RAD Tier 2"
+                          : "Other"}{" "}
+                        <span style={{ color: "#aaa", fontWeight: 400 }}>({t.monthlyPrice})</span>
+                      </td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.subscribers}</td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.active}</td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.avgTenureMonths.toFixed(1)}mo</td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>{fmtDollar(t.avgLtvCents)}</td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>{fmtDollar(t.avgMonthlyRevenueCents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
