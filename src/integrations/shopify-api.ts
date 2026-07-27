@@ -104,7 +104,26 @@ export function createShopifyApiClient(
 ): ShopifyApiClient {
   const endpoint = `https://${storeDomain}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`;
 
+  /**
+   * Shopify GraphQL rate limiting uses "calculated query cost".
+   * Each response includes extensions.cost with:
+   *   - requestedQueryCost: points this query costs
+   *   - actualQueryCost: actual points used
+   *   - throttleStatus.currentlyAvailable: points remaining
+   *   - throttleStatus.restoreRate: points refilled per second
+   *
+   * We track available points and sleep when running low.
+   */
+  let availablePoints = 100; // Conservative starting assumption
+
   async function graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+    // If we're running low on points, wait for them to refill
+    if (availablePoints < 20) {
+      const waitMs = Math.ceil((20 - availablePoints) / 50 * 1000); // ~50 points/sec restore
+      console.log(`[shopify] Rate limit: ${availablePoints} points left, waiting ${waitMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
@@ -115,13 +134,36 @@ export function createShopifyApiClient(
     });
 
     if (!response.ok) {
+      // Handle 429 throttle responses
+      if (response.status === 429) {
+        const retryAfter = response.headers.get("Retry-After");
+        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
+        console.log(`[shopify] Throttled (429), retrying in ${waitMs}ms`);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        return graphql<T>(query, variables); // Retry once
+      }
       const error = await response.text();
       throw new Error(`Shopify API error (${response.status}): ${error}`);
     }
 
     const json = await response.json();
+
+    // Check for throttle errors in the GraphQL response
     if (json.errors) {
+      const throttleError = json.errors.find(
+        (e: { extensions?: { code?: string } }) => e.extensions?.code === "THROTTLED"
+      );
+      if (throttleError) {
+        console.log("[shopify] Throttled (GraphQL), waiting 2s...");
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        return graphql<T>(query, variables); // Retry once
+      }
       throw new Error(`Shopify GraphQL error: ${JSON.stringify(json.errors)}`);
+    }
+
+    // Update available points from response
+    if (json.extensions?.cost?.throttleStatus) {
+      availablePoints = json.extensions.cost.throttleStatus.currentlyAvailable;
     }
 
     return json.data;
@@ -157,7 +199,7 @@ export function createShopifyApiClient(
     },
 
     async getCustomersWithEnrollments(params) {
-      const limit = params?.limit ?? 50;
+      const limit = params?.limit ?? 25;
       const allCustomers: ShopifyApiCustomer[] = [];
       let after: string | null = null;
 
@@ -175,13 +217,13 @@ export function createShopifyApiClient(
       }
 
       do {
+        // graphql() handles rate limiting internally
         const data: CustomersResponse = await graphql<CustomersResponse>(
           CUSTOMERS_QUERY,
           { first: limit, after }
         );
 
         for (const node of data.customers.nodes) {
-          // Only include customers that have enrollment data
           if (node.metafield?.value) {
             allCustomers.push({
               id: node.id,
