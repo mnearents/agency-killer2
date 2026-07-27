@@ -114,12 +114,18 @@ export function createShopifyApiClient(
    *
    * We track available points and sleep when running low.
    */
-  let availablePoints = 100; // Conservative starting assumption
+  let availablePoints = 100;
 
-  async function graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-    // If we're running low on points, wait for them to refill
+  async function graphql<T>(
+    query: string,
+    variables: Record<string, unknown> = {},
+    retryCount = 0
+  ): Promise<T> {
+    const MAX_RETRIES = 3;
+
+    // Pre-check: if low on points, wait for restore
     if (availablePoints < 20) {
-      const waitMs = Math.ceil((20 - availablePoints) / 50 * 1000); // ~50 points/sec restore
+      const waitMs = Math.max(1000, Math.ceil((20 - availablePoints) / 50 * 1000));
       console.log(`[shopify] Rate limit: ${availablePoints} points left, waiting ${waitMs}ms`);
       await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
@@ -134,13 +140,12 @@ export function createShopifyApiClient(
     });
 
     if (!response.ok) {
-      // Handle 429 throttle responses
-      if (response.status === 429) {
+      if (response.status === 429 && retryCount < MAX_RETRIES) {
         const retryAfter = response.headers.get("Retry-After");
-        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 2000;
-        console.log(`[shopify] Throttled (429), retrying in ${waitMs}ms`);
+        const waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 4000;
+        console.log(`[shopify] Throttled (429), retry ${retryCount + 1}/${MAX_RETRIES} in ${waitMs}ms`);
         await new Promise((resolve) => setTimeout(resolve, waitMs));
-        return graphql<T>(query, variables); // Retry once
+        return graphql<T>(query, variables, retryCount + 1);
       }
       const error = await response.text();
       throw new Error(`Shopify API error (${response.status}): ${error}`);
@@ -148,22 +153,24 @@ export function createShopifyApiClient(
 
     const json = await response.json();
 
-    // Check for throttle errors in the GraphQL response
-    if (json.errors) {
-      const throttleError = json.errors.find(
-        (e: { extensions?: { code?: string } }) => e.extensions?.code === "THROTTLED"
-      );
-      if (throttleError) {
-        console.log("[shopify] Throttled (GraphQL), waiting 2s...");
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        return graphql<T>(query, variables); // Retry once
-      }
-      throw new Error(`Shopify GraphQL error: ${JSON.stringify(json.errors)}`);
-    }
-
-    // Update available points from response
+    // Update available points from response (do this before error check)
     if (json.extensions?.cost?.throttleStatus) {
       availablePoints = json.extensions.cost.throttleStatus.currentlyAvailable;
+    }
+
+    if (json.errors) {
+      const isThrottled = json.errors.some(
+        (e: { extensions?: { code?: string } }) => e.extensions?.code === "THROTTLED"
+      );
+      if (isThrottled && retryCount < MAX_RETRIES) {
+        // Exponential backoff: 2s, 4s, 8s
+        const waitMs = 2000 * Math.pow(2, retryCount);
+        console.log(`[shopify] Throttled (GraphQL), retry ${retryCount + 1}/${MAX_RETRIES} in ${waitMs}ms`);
+        availablePoints = 0; // Force pre-check wait on next call too
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        return graphql<T>(query, variables, retryCount + 1);
+      }
+      throw new Error(`Shopify GraphQL error: ${JSON.stringify(json.errors)}`);
     }
 
     return json.data;
