@@ -1,6 +1,5 @@
 import { db } from "@/lib/db";
-import { getOrderSummary, getTopProducts, getDailyOrders, getSubscriptionOrders } from "@/domain/shopify/queries";
-import { computeLtvSummary } from "@/domain/shopify/subscription-ltv";
+import { getOrderSummary, getTopProducts, getDailyOrders } from "@/domain/shopify/queries";
 import { LineChart, BarChart } from "../components/chart";
 
 export const dynamic = "force-dynamic";
@@ -14,17 +13,7 @@ async function getShopifyData() {
     const products = await getTopProducts(d, 15);
     const daily = await getDailyOrders(d, thirtyDaysAgo, new Date());
 
-    let ltvSummary = null;
-    try {
-      const subOrders = await getSubscriptionOrders(d);
-      if (subOrders.length > 0) {
-        ltvSummary = computeLtvSummary(subOrders, new Date());
-      }
-    } catch {
-      // LTV computation is non-fatal
-    }
-
-    return { summary, products, daily, ltvSummary };
+    return { summary, products, daily };
   } catch {
     return null;
   }
@@ -49,7 +38,7 @@ export default async function ShopifyPage() {
     );
   }
 
-  const { summary, products, daily, ltvSummary } = data;
+  const { summary, products, daily } = data;
 
   const revenueData = daily.map((d) => ({
     label: d.date,
@@ -103,90 +92,20 @@ export default async function ShopifyPage() {
         </div>
       </div>
 
-      {/* LTV Summary */}
-      {ltvSummary && (
-        <div
-          style={{
-            background: "#fff",
-            border: "1px solid #e8e4df",
-            borderRadius: "8px",
-            padding: "20px",
-            marginBottom: "32px",
-          }}
-        >
-          <h2 style={{ marginTop: 0, fontSize: "16px", marginBottom: "16px" }}>
-            Subscription LTV
-          </h2>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-              gap: "16px",
-            }}
-          >
-            <div>
-              <div style={{ fontSize: "12px", color: "#888" }}>Subscribers</div>
-              <div style={{ fontSize: "20px", fontWeight: 600 }}>
-                {ltvSummary.activeSubscribers} active / {ltvSummary.churnedSubscribers} churned
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: "12px", color: "#888" }}>Avg LTV</div>
-              <div style={{ fontSize: "20px", fontWeight: 600 }}>
-                {fmtDollar(ltvSummary.avgLtvCents)}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: "12px", color: "#888" }}>Avg Tenure</div>
-              <div style={{ fontSize: "20px", fontWeight: 600 }}>
-                {ltvSummary.avgTenureMonths.toFixed(1)} months
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: "12px", color: "#888" }}>Monthly/Subscriber</div>
-              <div style={{ fontSize: "20px", fontWeight: 600 }}>
-                {fmtDollar(ltvSummary.avgMonthlyRevenueCents)}
-              </div>
-            </div>
-          </div>
-
-          {ltvSummary.tiers.length > 0 && (
-            <div style={{ marginTop: "20px" }}>
-              <div style={{ fontSize: "13px", color: "#888", marginBottom: "8px" }}>By Tier</div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid #e8e4df", textAlign: "left" }}>
-                    <th style={{ padding: "8px 0" }}>Tier</th>
-                    <th style={{ padding: "8px 0", textAlign: "right" }}>Subscribers</th>
-                    <th style={{ padding: "8px 0", textAlign: "right" }}>Active</th>
-                    <th style={{ padding: "8px 0", textAlign: "right" }}>Avg Tenure</th>
-                    <th style={{ padding: "8px 0", textAlign: "right" }}>Avg LTV</th>
-                    <th style={{ padding: "8px 0", textAlign: "right" }}>Monthly</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ltvSummary.tiers.map((t) => (
-                    <tr key={t.tier} style={{ borderBottom: "1px solid #f0ece8" }}>
-                      <td style={{ padding: "8px 0", fontWeight: 500 }}>
-                        {t.tier === "color-happy" ? "Color Happy"
-                          : t.tier === "rad-tier-1" ? "RAD Tier 1"
-                          : t.tier === "rad-tier-2" ? "RAD Tier 2"
-                          : "Other"}{" "}
-                        <span style={{ color: "#aaa", fontWeight: 400 }}>({t.monthlyPrice})</span>
-                      </td>
-                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.subscribers}</td>
-                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.active}</td>
-                      <td style={{ padding: "8px 0", textAlign: "right" }}>{t.avgTenureMonths.toFixed(1)}mo</td>
-                      <td style={{ padding: "8px 0", textAlign: "right" }}>{fmtDollar(t.avgLtvCents)}</td>
-                      <td style={{ padding: "8px 0", textAlign: "right" }}>{fmtDollar(t.avgMonthlyRevenueCents)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
+      {/* LTV: use !shopify ltv in Slack for enrollment-based LTV */}
+      <div
+        style={{
+          background: "#fff",
+          border: "1px solid #e8e4df",
+          borderRadius: "8px",
+          padding: "16px",
+          marginBottom: "32px",
+          color: "#888",
+          fontSize: "14px",
+        }}
+      >
+        For subscription LTV analysis, use <code>!shopify ltv</code> in Slack — it pulls live enrollment data from Shopify customer metafields.
+      </div>
 
       {/* Trend Charts */}
       {daily.length > 0 && (

@@ -6,6 +6,7 @@ export function createMockShopifyApiClient(
 ): ShopifyApiClient {
   return {
     getOrders: vi.fn().mockResolvedValue([]),
+    getCustomersWithEnrollments: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }

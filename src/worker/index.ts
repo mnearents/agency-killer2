@@ -27,8 +27,8 @@ import { syncOrders } from "@/domain/shopify/sync";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
-import { getSubscriptionOrders, getTopProducts, getOrderSummary } from "@/domain/shopify/queries";
-import { computeLtvSummary } from "@/domain/shopify/subscription-ltv";
+import { getTopProducts, getOrderSummary } from "@/domain/shopify/queries";
+import { computeEnrollmentLtvSummary, type CustomerEnrollmentData } from "@/domain/shopify/enrollment-ltv";
 import { ingestDocument } from "@/domain/knowledge/ingestion";
 import { retrieveContext } from "@/domain/knowledge/retrieval";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
@@ -375,40 +375,40 @@ async function main() {
       }
     },
     "shopify:ltv": async () => {
+      if (!shopifyClient) {
+        return { text: "Shopify not configured — SHOPIFY_ACCESS_TOKEN not set.", isError: true };
+      }
       try {
-        const orders = await getSubscriptionOrders(db);
-        if (orders.length === 0) {
+        // Fetch customer enrollment metafields directly from Shopify
+        const customers = await shopifyClient.getCustomersWithEnrollments();
+        if (customers.length === 0) {
           return {
-            text: "No subscription orders found. Make sure Shopify sync has run and your subscriptions use the `recurring-order`, `colorhappy-first`, or `rad-first` tags.",
+            text: "No customers with enrollment data found. Make sure the `automatik.enrollments` metafield exists on your customers.",
             isError: false,
           };
         }
-        const summary = computeLtvSummary(orders, new Date());
+
+        const enrollmentData: CustomerEnrollmentData[] = customers
+          .filter((c) => c.enrollments)
+          .map((c) => ({ customerId: c.id, enrollments: c.enrollments! }));
+
+        const summary = computeEnrollmentLtvSummary(enrollmentData);
         const lines = [
-          "*Subscription LTV Summary*",
+          "*Subscription LTV Summary* (from enrollment data)",
           "",
           `*${summary.totalSubscribers}* subscribers (*${summary.activeSubscribers}* active, *${summary.churnedSubscribers}* churned)`,
           `Avg tenure: *${summary.avgTenureMonths.toFixed(1)}* months | Median: *${summary.medianTenureMonths.toFixed(1)}* months`,
-          `Avg LTV: *$${(summary.avgLtvCents / 100).toFixed(2)}* | Avg monthly: *$${(summary.avgMonthlyRevenueCents / 100).toFixed(2)}*/subscriber`,
+          `Avg LTV: *$${(summary.avgLtvCents / 100).toFixed(2)}* | Avg monthly: *$${(summary.avgMonthlyValueCents / 100).toFixed(2)}*/subscriber`,
+          "",
+          "*By Tier:*",
+          `• *Tier 1* — ${summary.t1Summary.subscribers} subscribers (${summary.t1Summary.active} active), avg tenure ${summary.t1Summary.avgTenure.toFixed(1)}mo, avg LTV $${(summary.t1Summary.avgLtv / 100).toFixed(2)}`,
+          `• *Tier 2* — ${summary.t2Summary.subscribers} subscribers (${summary.t2Summary.active} active), avg tenure ${summary.t2Summary.avgTenure.toFixed(1)}mo, avg LTV $${(summary.t2Summary.avgLtv / 100).toFixed(2)}`,
         ];
-
-        if (summary.tiers.length > 0) {
-          lines.push("", "*By Tier:*");
-          for (const tier of summary.tiers) {
-            const tierName = tier.tier === "color-happy" ? "Color Happy"
-              : tier.tier === "rad-tier-1" ? "RAD Tier 1"
-              : tier.tier === "rad-tier-2" ? "RAD Tier 2"
-              : "Other";
-            lines.push(
-              `• *${tierName}* (${tier.monthlyPrice}) — ${tier.subscribers} subscribers (${tier.active} active), avg tenure ${tier.avgTenureMonths.toFixed(1)}mo, avg LTV $${(tier.avgLtvCents / 100).toFixed(2)}`
-            );
-          }
-        }
 
         return { text: lines.join("\n"), isError: false };
       } catch (err) {
         console.error("[shopify:ltv]", err);
-        return { text: "Failed to compute LTV. Make sure Shopify sync has run.", isError: true };
+        return { text: `Failed to compute LTV: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     },
     "inventory:overview": async () => ({

@@ -35,11 +35,22 @@ export interface ShopifyApiLineItem {
   variant: { id: string; sku: string | null } | null;
 }
 
+export interface ShopifyApiCustomer {
+  id: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  enrollments: string | null; // JSON string of automatik.enrollments metafield
+}
+
 export interface ShopifyApiClient {
   getOrders(params: {
     since?: string;
     limit?: number;
   }): Promise<ShopifyApiOrder[]>;
+  getCustomersWithEnrollments(params?: {
+    limit?: number;
+  }): Promise<ShopifyApiCustomer[]>;
 }
 
 const ORDERS_QUERY = `
@@ -64,6 +75,23 @@ const ORDERS_QUERY = `
             product { id productType }
             variant { id sku }
           }
+        }
+      }
+    }
+  }
+`;
+
+const CUSTOMERS_QUERY = `
+  query GetCustomers($first: Int!, $after: String) {
+    customers(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        email
+        firstName
+        lastName
+        metafield(namespace: "automatik", key: "enrollments") {
+          value
         }
       }
     }
@@ -126,6 +154,51 @@ export function createShopifyApiClient(
       } while (after);
 
       return allOrders;
+    },
+
+    async getCustomersWithEnrollments(params) {
+      const limit = params?.limit ?? 50;
+      const allCustomers: ShopifyApiCustomer[] = [];
+      let after: string | null = null;
+
+      interface CustomersResponse {
+        customers: {
+          pageInfo: { hasNextPage: boolean; endCursor: string };
+          nodes: Array<{
+            id: string;
+            email: string | null;
+            firstName: string | null;
+            lastName: string | null;
+            metafield: { value: string } | null;
+          }>;
+        };
+      }
+
+      do {
+        const data: CustomersResponse = await graphql<CustomersResponse>(
+          CUSTOMERS_QUERY,
+          { first: limit, after }
+        );
+
+        for (const node of data.customers.nodes) {
+          // Only include customers that have enrollment data
+          if (node.metafield?.value) {
+            allCustomers.push({
+              id: node.id,
+              email: node.email,
+              firstName: node.firstName,
+              lastName: node.lastName,
+              enrollments: node.metafield.value,
+            });
+          }
+        }
+
+        after = data.customers.pageInfo.hasNextPage
+          ? data.customers.pageInfo.endCursor
+          : null;
+      } while (after);
+
+      return allCustomers;
     },
   };
 }
