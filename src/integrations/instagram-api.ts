@@ -118,11 +118,12 @@ async function fetchAllPages<T>(url: string): Promise<T[]> {
   let nextUrl: string | null = url;
 
   while (nextUrl) {
-    const json = await fetchJson<{ data?: T[]; paging?: { next?: string } }>(nextUrl);
-    if (json.data) {
-      results.push(...json.data);
+    const response: { data?: T[]; paging?: { next?: string } } =
+      await fetchJson<{ data?: T[]; paging?: { next?: string } }>(nextUrl);
+    if (response.data) {
+      results.push(...response.data);
     }
-    nextUrl = json.paging?.next ?? null;
+    nextUrl = response.paging?.next ?? null;
   }
 
   return results;

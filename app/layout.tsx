@@ -41,6 +41,9 @@ export default function RootLayout({
           <a href="/shopify" style={{ color: "#666", textDecoration: "none" }}>
             Shopify
           </a>
+          <a href="/social" style={{ color: "#666", textDecoration: "none" }}>
+            Social
+          </a>
           <a href="/blog" style={{ color: "#666", textDecoration: "none" }}>
             Blog
           </a>

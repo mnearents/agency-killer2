@@ -118,6 +118,70 @@ export function LineChart({
   );
 }
 
+interface HorizontalBarChartProps {
+  data: Array<{ label: string; value: number; color?: string }>;
+  height?: number;
+  label?: string;
+  format?: FormatType;
+}
+
+export function HorizontalBarChart({
+  data,
+  height,
+  label,
+  format = "number",
+}: HorizontalBarChartProps) {
+  if (data.length === 0) {
+    return (
+      <div style={{ height: height ?? 100, display: "flex", alignItems: "center", justifyContent: "center", color: "#aaa" }}>
+        No data
+      </div>
+    );
+  }
+
+  const maxVal = Math.max(...data.map((d) => d.value), 1);
+  const barHeight = 32;
+  const gap = 8;
+  const svgHeight = height ?? data.length * (barHeight + gap) + 20;
+  const width = 500;
+  const labelWidth = 80;
+  const valueWidth = 60;
+  const barArea = width - labelWidth - valueWidth - 20;
+
+  const defaultColors = ["#0969da", "#1a7f37", "#6f42c1", "#d1242f", "#e09b13"];
+
+  return (
+    <div>
+      {label && (
+        <div style={{ fontSize: "13px", color: "#888", marginBottom: "8px" }}>
+          {label}
+        </div>
+      )}
+      <svg
+        viewBox={`0 0 ${width} ${svgHeight}`}
+        style={{ width: "100%", height: "auto" }}
+      >
+        {data.map((d, i) => {
+          const barW = (d.value / maxVal) * barArea;
+          const y = i * (barHeight + gap) + 10;
+          const color = d.color ?? defaultColors[i % defaultColors.length];
+          return (
+            <g key={i}>
+              <text x={labelWidth - 8} y={y + barHeight / 2 + 4} textAnchor="end" fontSize="12" fill="#555">
+                {d.label}
+              </text>
+              <rect x={labelWidth} y={y} width={Math.max(barW, 2)} height={barHeight} fill={color} rx={4} opacity={0.85} />
+              <text x={labelWidth + barW + 8} y={y + barHeight / 2 + 4} fontSize="12" fill="#555" fontWeight="600">
+                {formatVal(d.value, format)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 interface BarChartProps {
   data: DataPoint[];
   height?: number;

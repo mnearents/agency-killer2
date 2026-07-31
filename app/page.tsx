@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { metaCampaigns, metaInsights, shopifyOrders, blogTopics } from "@/db/schema";
+import { metaCampaigns, metaInsights, shopifyOrders, blogTopics, socialPosts } from "@/db/schema";
 import { eq, gte, count, sum, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -45,6 +45,26 @@ async function getOverview() {
       .from(blogTopics)
       .where(eq(blogTopics.status, "pending"));
 
+    // Social overview (last 7 days)
+    const [socialAgg] = await d
+      .select({
+        totalPosts: count(),
+        totalReach: sql<number>`COALESCE(SUM(${socialPosts.reach}), 0)`,
+        totalSaves: sql<number>`COALESCE(SUM(${socialPosts.saved}), 0)`,
+        totalLikes: sql<number>`COALESCE(SUM(${socialPosts.likeCount}), 0)`,
+        totalComments: sql<number>`COALESCE(SUM(${socialPosts.commentsCount}), 0)`,
+        totalShares: sql<number>`COALESCE(SUM(${socialPosts.shares}), 0)`,
+      })
+      .from(socialPosts)
+      .where(gte(socialPosts.postedAt, sevenDaysAgo));
+
+    const socialEng =
+      Number(socialAgg?.totalLikes ?? 0) +
+      Number(socialAgg?.totalComments ?? 0) +
+      Number(socialAgg?.totalSaves ?? 0) +
+      Number(socialAgg?.totalShares ?? 0);
+    const socialReach = Number(socialAgg?.totalReach ?? 0);
+
     return {
       activeCampaigns: campaignCount?.count ?? 0,
       weeklySpend: Number(insightAgg?.totalSpendCents ?? 0) / 100,
@@ -54,6 +74,10 @@ async function getOverview() {
       weeklyShopifyRevenue: weeklyShopifyRevenue / 100,
       weeklySubOrders,
       pendingBlogTopics: pendingTopics?.count ?? 0,
+      socialPosts: Number(socialAgg?.totalPosts ?? 0),
+      socialReach,
+      socialEngRate: socialReach > 0 ? (socialEng / socialReach) * 100 : null,
+      socialSaves: Number(socialAgg?.totalSaves ?? 0),
     };
   } catch {
     return null;
@@ -161,6 +185,13 @@ export default async function Home() {
           value={String(data.pendingBlogTopics)}
           sub="pending"
         />
+        {data.socialPosts > 0 && (
+          <StatCard
+            label="IG Engagement"
+            value={data.socialEngRate !== null ? `${data.socialEngRate.toFixed(1)}%` : "—"}
+            sub={`${data.socialPosts} posts, ${data.socialSaves} saves`}
+          />
+        )}
       </div>
 
       <div
@@ -187,6 +218,9 @@ export default async function Home() {
           </li>
           <li>
             <code>!blog list</code> — Pending blog topics
+          </li>
+          <li>
+            <code>!social analyze</code> — AI content strategy insights
           </li>
           <li>Or just ask anything in plain English</li>
         </ul>
