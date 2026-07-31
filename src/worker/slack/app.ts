@@ -27,6 +27,8 @@ const ACK_MESSAGES: Record<string, string> = {
   "meta:analysis": "Analyzing ad performance...",
   "email:design": "Generating email creative...",
   "blog:create": "Generating blog article...",
+  "social:analyze": "Analyzing social performance...",
+  "sync:social": "Syncing Instagram data...",
 };
 
 export function createSlackApp(deps: SlackAppDeps) {
@@ -101,7 +103,9 @@ export function createSlackApp(deps: SlackAppDeps) {
               "• `!sync meta [days]` — Pull Meta ads data (default 7 days)",
               "• `!sync shopify [days]` — Pull Shopify orders (default 30 days)",
               "• `!sync all` — Sync everything",
-              "• `!social analyze` — Organic social performance",
+              "• `!social analyze` — AI-generated content strategy insights",
+              "• `!social` — Quick organic social stats",
+              "• `!sync social` — Pull Instagram posts and insights",
               "• `!inventory check` — Stock level alerts",
               "• `!help` — Show this message",
               "",

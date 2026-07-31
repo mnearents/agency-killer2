@@ -14,6 +14,7 @@ import type { SlackResponse } from "./slack/formatter";
 
 // Real API clients
 import { createMetaApiClient } from "@/integrations/meta-api";
+import { createInstagramApiClient } from "@/integrations/instagram-api";
 import { createShopifyApiClient } from "@/integrations/shopify-api";
 import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
@@ -34,6 +35,10 @@ import { retrieveContext } from "@/domain/knowledge/retrieval";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
+import { syncSocialPosts } from "@/domain/social/sync";
+import { analyzeSocialPerformance } from "@/domain/social/analyze";
+import { getPostSummary } from "@/domain/social/queries";
+import { formatStatusBlock } from "@/domain/social/analysis";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -89,7 +94,12 @@ async function main() {
     ? createEmbeddingClient(getEnv("OPENAI_API_KEY"))
     : null;
 
+  const igClient = getEnvOptional("META_ACCESS_TOKEN")
+    ? createInstagramApiClient(getEnv("META_ACCESS_TOKEN"))
+    : null;
+
   const metaAccountId = getEnvOptional("META_AD_ACCOUNT_ID");
+  const igUserId = getEnvOptional("INSTAGRAM_BUSINESS_ACCOUNT_ID");
   const dropboxKbRoot = getEnvOptional("DROPBOX_KB_ROOT") ?? "/RAD/Agency";
 
   // ─── Build orchestrator ─────────────────────────────────────────────
@@ -158,6 +168,20 @@ async function main() {
         console.log(
           `[sync:kb] Storage: ${storageResult.stored} stored, ${storageResult.skipped} skipped, ${storageResult.failed} failed`
         );
+      }
+    },
+
+    "sync:social": async () => {
+      if (!igClient || !igUserId) {
+        console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
+        return;
+      }
+      const result = await syncSocialPosts({ client: igClient, db, igUserId });
+      console.log(
+        `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed)`
+      );
+      if (result.errors.length > 0) {
+        console.error("[sync:social] Errors:", result.errors);
       }
     },
 
@@ -333,14 +357,50 @@ async function main() {
       text: "Blog overview coming soon!",
       isError: false,
     }),
-    "social:analyze": async () => ({
-      text: "Social analytics coming soon!",
-      isError: false,
-    }),
-    "social:overview": async () => ({
-      text: "Social overview coming soon!",
-      isError: false,
-    }),
+    "social:analyze": async () => {
+      if (!orchestrator) {
+        return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
+      }
+      const result = await analyzeSocialPerformance(
+        {
+          db,
+          voice,
+          runOrchestrator: (req) => orchestrator.run(req),
+          igClient: igClient ?? undefined,
+          igUserId: igUserId ?? undefined,
+          getKbContext: embeddingClient
+            ? () => retrieveContext({ db, embeddingClient }, "social media content strategy instagram engagement")
+            : undefined,
+        },
+        30
+      );
+      return { text: result.text, isError: !result.ok };
+    },
+    "social:overview": async () => {
+      const endDate = new Date();
+      const startDate = new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const summary = await getPostSummary(db, 30);
+
+      let followerCount: number | null = null;
+      if (igClient && igUserId) {
+        try {
+          const account = await igClient.getAccountInfo(igUserId);
+          followerCount = account.followers_count;
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      const text = formatStatusBlock({
+        ...summary,
+        dateRange: {
+          start: startDate.toISOString().split("T")[0],
+          end: endDate.toISOString().split("T")[0],
+        },
+        followerCount,
+      });
+      return { text, isError: false };
+    },
     "social:reel": async () => ({
       text: "Reel creation coming soon!",
       isError: false,
@@ -458,6 +518,22 @@ async function main() {
         isError: false,
       };
     },
+    "sync:social": async () => {
+      if (!igClient || !igUserId) {
+        return { text: "Social sync unavailable — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set.", isError: true };
+      }
+      const result = await syncSocialPosts({ client: igClient, db, igUserId });
+      if (result.errors.length > 0) {
+        return {
+          text: `Social sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.posts} posts`,
+          isError: true,
+        };
+      }
+      return {
+        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable`,
+        isError: false,
+      };
+    },
     "sync:knowledge-base": async () => {
       if (!dropboxClient) {
         return { text: "KB sync unavailable — Dropbox credentials not set.", isError: true };
@@ -481,6 +557,12 @@ async function main() {
         results.push(`Shopify: ${r.orders} orders${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
       } else {
         results.push("Shopify: skipped (no credentials)");
+      }
+      if (igClient && igUserId) {
+        const r = await syncSocialPosts({ client: igClient, db, igUserId });
+        results.push(`Instagram: ${r.posts} posts${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
+      } else {
+        results.push("Instagram: skipped (no credentials)");
       }
       if (dropboxClient) {
         const r = await syncKnowledgeBase(dropboxClient, dropboxKbRoot, new Map(), new Set());

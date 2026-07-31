@@ -312,3 +312,43 @@ export type NewBlogTopic = typeof blogTopics.$inferInsert;
 
 export type BlogGeneration = typeof blogGenerations.$inferSelect;
 export type NewBlogGeneration = typeof blogGenerations.$inferInsert;
+
+// ─── Social (Organic Instagram) ──────────────────────────────────────
+
+export const socialPosts = pgTable(
+  "social_posts",
+  {
+    id: text("id").primaryKey(), // Instagram media ID
+    igUserId: text("ig_user_id").notNull(),
+    caption: text("caption"),
+    mediaType: text("media_type").notNull(), // IMAGE, VIDEO, CAROUSEL_ALBUM
+    mediaProductType: text("media_product_type"), // FEED, REELS, STORY
+    permalink: text("permalink"),
+    thumbnailUrl: text("thumbnail_url"),
+
+    // Engagement (from media object — lightweight, always available)
+    likeCount: integer("like_count").notNull().default(0),
+    commentsCount: integer("comments_count").notNull().default(0),
+
+    // Insights (from media insights endpoint — richer metrics)
+    impressions: integer("impressions").notNull().default(0),
+    reach: integer("reach").notNull().default(0),
+    saved: integer("saved").notNull().default(0),
+    shares: integer("shares").notNull().default(0),
+    plays: integer("plays").notNull().default(0), // video/reel only
+    totalInteractions: integer("total_interactions").notNull().default(0),
+
+    postedAt: timestamp("posted_at", { withTimezone: true }).notNull(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("social_posts_posted_idx").on(table.postedAt),
+    index("social_posts_media_type_idx").on(table.mediaType),
+    index("social_posts_ig_user_idx").on(table.igUserId),
+  ]
+);
+
+export type SocialPost = typeof socialPosts.$inferSelect;
+export type NewSocialPost = typeof socialPosts.$inferInsert;
