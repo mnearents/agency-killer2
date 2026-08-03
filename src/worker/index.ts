@@ -244,26 +244,38 @@ async function main() {
     handlerFns,
   };
 
+  let schedulerRunning = false;
+
   cron.schedule(SCHEDULER_CRON, async () => {
+    if (schedulerRunning) return;
+
     const now = new Date();
     const dueTasks = getDueTasks(state, now);
     if (dueTasks.length === 0) return;
 
+    schedulerRunning = true;
+
+    // Mark tasks as "running" immediately so the next tick doesn't re-dispatch
+    for (const task of dueTasks) {
+      state = recordTaskRun(state, task.id, now);
+    }
+
     console.log(`[scheduler] ${dueTasks.length} task(s) due at ${now.toISOString()}`);
 
-    const results = await dispatchDueTasks(
-      dueTasks.map((t) => t.id),
-      config,
-      () => Date.now()
-    );
-
-    for (const result of results) {
-      if (result.status === "success" || result.status === "failed") {
-        state = recordTaskRun(state, result.taskId, now);
-      }
-      console.log(
-        `[scheduler] ${result.taskId}: ${result.status}${result.error ? ` (${result.error})` : ""} [${result.durationMs}ms]`
+    try {
+      const results = await dispatchDueTasks(
+        dueTasks.map((t) => t.id),
+        config,
+        () => Date.now()
       );
+
+      for (const result of results) {
+        console.log(
+          `[scheduler] ${result.taskId}: ${result.status}${result.error ? ` (${result.error})` : ""} [${result.durationMs}ms]`
+        );
+      }
+    } finally {
+      schedulerRunning = false;
     }
   });
 
