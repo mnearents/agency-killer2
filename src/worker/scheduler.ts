@@ -31,10 +31,24 @@ export interface SchedulerState {
   lastRuns: Map<string, Date>;
 }
 
-export function createSchedulerState(tasks: TaskDefinition[]): SchedulerState {
+/**
+ * Create scheduler state. Seeds lastRuns with the current time so tasks
+ * don't all fire immediately on container start — they wait for their
+ * next scheduled time. Pass `seedTime` to override (tests use this).
+ */
+export function createSchedulerState(
+  tasks: TaskDefinition[],
+  seedTime?: Date
+): SchedulerState {
+  const lastRuns = new Map<string, Date>();
+  if (seedTime) {
+    for (const task of tasks) {
+      lastRuns.set(task.id, seedTime);
+    }
+  }
   return {
     tasks: [...tasks],
-    lastRuns: new Map(),
+    lastRuns,
   };
 }
 
@@ -93,18 +107,9 @@ export function getDueTasks(
     const lastRun = state.lastRuns.get(task.id);
 
     if (!lastRun) {
-      // Never run — due if any scheduled time has passed
-      // For interval tasks, they're always due on first check
-      if (task.schedule.type === "interval") return true;
-
-      // For daily/weekly, check if the scheduled time today (or this week) has passed
-      const nextRun = getNextRunTime(task, new Date(0));
-      // Find the most recent scheduled time before now
-      let candidate = getNextRunTime(task, new Date(now.getTime() - 24 * 60 * 60 * 1000));
-      if (task.schedule.type === "weekly") {
-        candidate = getNextRunTime(task, new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
-      }
-      return candidate.getTime() <= now.getTime();
+      // No seed time — shouldn't happen with createSchedulerState(tasks, now),
+      // but if it does, don't fire. Wait for the next scheduled time.
+      return false;
     }
 
     const nextRun = getNextRunTime(task, lastRun);

@@ -233,7 +233,7 @@ async function main() {
 
   // ─── Start scheduler ────────────────────────────────────────────────
   const tasks = getPhase1Tasks();
-  let state = createSchedulerState(tasks);
+  let state = createSchedulerState(tasks, new Date());
   console.log(`[worker] Registered ${tasks.length} tasks:`);
   for (const task of tasks) {
     console.log(`  - ${task.name} (${task.id}) [${task.enabled ? "enabled" : "disabled"}]`);

@@ -96,12 +96,19 @@ describe("Phase 1 tasks integrate with scheduler", () => {
     }
   });
 
-  it("on fresh start, all enabled tasks are due", () => {
+  it("on fresh start with seed, no tasks fire immediately", () => {
+    const tasks = getPhase1Tasks();
+    const now = new Date("2025-06-15T23:59:00Z");
+    const state = createSchedulerState(tasks, now);
+    // Seeded at now — nothing should be due yet
+    const due = getDueTasks(state, now);
+    expect(due.length).toBe(0);
+  });
+
+  it("on fresh start without seed, no tasks fire (cold start safety)", () => {
     const tasks = getPhase1Tasks();
     const state = createSchedulerState(tasks);
-    // At a time well past any scheduled hour, all should be due
     const due = getDueTasks(state, new Date("2025-06-15T23:59:00Z"));
-    const enabledCount = tasks.filter((t) => t.enabled).length;
-    expect(due.length).toBe(enabledCount);
+    expect(due.length).toBe(0);
   });
 });

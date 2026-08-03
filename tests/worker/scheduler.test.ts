@@ -39,10 +39,19 @@ const DISABLED_TASK: TaskDefinition = {
 // ─── Scheduler state ──────────────────────────────────────────────────
 
 describe("createSchedulerState", () => {
-  it("initializes with tasks and empty lastRuns", () => {
+  it("initializes with tasks and empty lastRuns when no seed", () => {
     const state = createSchedulerState([DAILY_TASK, HOURLY_TASK]);
     expect(state.tasks).toHaveLength(2);
     expect(state.lastRuns.size).toBe(0);
+  });
+
+  it("seeds lastRuns with provided time to prevent run-on-startup", () => {
+    const seed = new Date("2025-06-15T16:00:00Z");
+    const state = createSchedulerState([DAILY_TASK, HOURLY_TASK], seed);
+    expect(state.tasks).toHaveLength(2);
+    expect(state.lastRuns.size).toBe(2);
+    expect(state.lastRuns.get("meta-sync")).toEqual(seed);
+    expect(state.lastRuns.get("health-check")).toEqual(seed);
   });
 });
 
@@ -117,10 +126,18 @@ describe("getNextRunTime: weekly tasks", () => {
 // ─── Due task selection ───────────────────────────────────────────────
 
 describe("getDueTasks", () => {
-  it("returns tasks that have never run and are past their first scheduled time", () => {
+  it("does not return tasks with no lastRun (prevents run-on-startup)", () => {
     const state = createSchedulerState([DAILY_TASK]);
-    // It's 7am, daily task at 6am has never run → due
+    // No seed, no lastRun → should NOT fire (cold start safety)
     const due = getDueTasks(state, new Date("2025-06-15T07:00:00Z"));
+    expect(due).toHaveLength(0);
+  });
+
+  it("returns seeded tasks when their next scheduled time passes", () => {
+    // Seeded at 4pm, daily task at 6am → next run is tomorrow 6am
+    const state = createSchedulerState([DAILY_TASK], new Date("2025-06-15T16:00:00Z"));
+    // Now it's 7am the next day → due
+    const due = getDueTasks(state, new Date("2025-06-16T07:00:00Z"));
     expect(due).toHaveLength(1);
     expect(due[0].id).toBe("meta-sync");
   });
@@ -149,8 +166,11 @@ describe("getDueTasks", () => {
   });
 
   it("returns multiple due tasks in registration order", () => {
-    const state = createSchedulerState([DAILY_TASK, HOURLY_TASK]);
-    // Both have never run, both are past their time
+    // Seeded yesterday — both tasks are now past their next run
+    const state = createSchedulerState(
+      [DAILY_TASK, HOURLY_TASK],
+      new Date("2025-06-14T07:00:00Z")
+    );
     const due = getDueTasks(state, new Date("2025-06-15T07:00:00Z"));
     expect(due).toHaveLength(2);
     expect(due[0].id).toBe("meta-sync");
