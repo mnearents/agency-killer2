@@ -45,25 +45,35 @@ async function getOverview() {
       .from(blogTopics)
       .where(eq(blogTopics.status, "pending"));
 
-    // Social overview (last 7 days)
-    const [socialAgg] = await d
-      .select({
-        totalPosts: count(),
-        totalReach: sql<number>`COALESCE(SUM(${socialPosts.reach}), 0)`,
-        totalSaves: sql<number>`COALESCE(SUM(${socialPosts.saved}), 0)`,
-        totalLikes: sql<number>`COALESCE(SUM(${socialPosts.likeCount}), 0)`,
-        totalComments: sql<number>`COALESCE(SUM(${socialPosts.commentsCount}), 0)`,
-        totalShares: sql<number>`COALESCE(SUM(${socialPosts.shares}), 0)`,
-      })
-      .from(socialPosts)
-      .where(gte(socialPosts.postedAt, sevenDaysAgo));
+    // Social overview (last 7 days) — table may not exist yet
+    let socialReach = 0;
+    let socialEng = 0;
+    let socialPostCount = 0;
+    let socialSavesCount = 0;
+    try {
+      const [socialAgg] = await d
+        .select({
+          totalPosts: count(),
+          totalReach: sql<number>`COALESCE(SUM(${socialPosts.reach}), 0)`,
+          totalSaves: sql<number>`COALESCE(SUM(${socialPosts.saved}), 0)`,
+          totalLikes: sql<number>`COALESCE(SUM(${socialPosts.likeCount}), 0)`,
+          totalComments: sql<number>`COALESCE(SUM(${socialPosts.commentsCount}), 0)`,
+          totalShares: sql<number>`COALESCE(SUM(${socialPosts.shares}), 0)`,
+        })
+        .from(socialPosts)
+        .where(gte(socialPosts.postedAt, sevenDaysAgo));
 
-    const socialEng =
-      Number(socialAgg?.totalLikes ?? 0) +
-      Number(socialAgg?.totalComments ?? 0) +
-      Number(socialAgg?.totalSaves ?? 0) +
-      Number(socialAgg?.totalShares ?? 0);
-    const socialReach = Number(socialAgg?.totalReach ?? 0);
+      socialPostCount = Number(socialAgg?.totalPosts ?? 0);
+      socialSavesCount = Number(socialAgg?.totalSaves ?? 0);
+      socialReach = Number(socialAgg?.totalReach ?? 0);
+      socialEng =
+        Number(socialAgg?.totalLikes ?? 0) +
+        Number(socialAgg?.totalComments ?? 0) +
+        Number(socialAgg?.totalSaves ?? 0) +
+        Number(socialAgg?.totalShares ?? 0);
+    } catch {
+      // Table may not exist yet — non-fatal
+    }
 
     return {
       activeCampaigns: campaignCount?.count ?? 0,
@@ -74,10 +84,10 @@ async function getOverview() {
       weeklyShopifyRevenue: weeklyShopifyRevenue / 100,
       weeklySubOrders,
       pendingBlogTopics: pendingTopics?.count ?? 0,
-      socialPosts: Number(socialAgg?.totalPosts ?? 0),
+      socialPosts: socialPostCount,
       socialReach,
       socialEngRate: socialReach > 0 ? (socialEng / socialReach) * 100 : null,
-      socialSaves: Number(socialAgg?.totalSaves ?? 0),
+      socialSaves: socialSavesCount,
     };
   } catch {
     return null;

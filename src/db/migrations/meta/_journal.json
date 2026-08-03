@@ -15,6 +15,13 @@
       "when": 1784164092697,
       "tag": "0001_breezy_franklin_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785733861990,
+      "tag": "0002_chubby_morlocks",
+      "breakpoints": true
     }
   ]
 }
