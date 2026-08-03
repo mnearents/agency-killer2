@@ -80,28 +80,31 @@ export function parseInsightsResponse(
 
   return {
     mediaId,
-    impressions: byName.get("impressions") ?? 0,
+    impressions: byName.get("views") ?? byName.get("impressions") ?? 0,
     reach: byName.get("reach") ?? 0,
     saved: byName.get("saved") ?? 0,
     shares: byName.get("shares") ?? 0,
-    plays: byName.get("plays") ?? byName.get("ig_reels_video_view_total") ?? 0,
+    plays: byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0,
     totalInteractions: byName.get("total_interactions") ?? 0,
   };
 }
 
 /**
  * Pick the right insight metrics based on media type.
- * Reels and videos support "plays" and "shares"; images don't.
+ * Reels/videos support video-specific metrics; images don't.
+ *
+ * Meta deprecated "impressions" (use "views") and "plays"
+ * (use "ig_reels_video_view_total") as of v22.0.
  */
 function getMetricsForMediaType(mediaType: string, mediaProductType?: string): string {
   const isReel = mediaProductType === "REELS" || mediaType === "VIDEO";
 
   if (isReel) {
-    return "impressions,reach,saved,shares,plays,total_interactions";
+    return "reach,saved,shares,ig_reels_video_view_total,total_interactions,views";
   }
 
   // IMAGE and CAROUSEL_ALBUM
-  return "impressions,reach,saved,total_interactions";
+  return "reach,saved,shares,total_interactions,views";
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
