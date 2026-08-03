@@ -105,25 +105,36 @@ function getMetricsForMediaType(mediaType: string, mediaProductType?: string): s
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
+  const safeUrl = url.replace(/access_token=[^&]+/, "access_token=***");
+  console.log(`[instagram-api] GET ${safeUrl}`);
   const response = await fetch(url);
   if (!response.ok) {
     const errorText = await response.text();
+    console.error(`[instagram-api] Error ${response.status}: ${errorText.slice(0, 300)}`);
     throw new Error(`Instagram API error (${response.status}): ${errorText}`);
   }
   return response.json() as Promise<T>;
 }
 
+const MAX_PAGES = 20;
+
 async function fetchAllPages<T>(url: string): Promise<T[]> {
   const results: T[] = [];
   let nextUrl: string | null = url;
+  let page = 0;
 
-  while (nextUrl) {
+  while (nextUrl && page < MAX_PAGES) {
     const response: { data?: T[]; paging?: { next?: string } } =
       await fetchJson<{ data?: T[]; paging?: { next?: string } }>(nextUrl);
     if (response.data) {
       results.push(...response.data);
     }
     nextUrl = response.paging?.next ?? null;
+    page++;
+  }
+
+  if (page >= MAX_PAGES) {
+    console.warn(`[instagram-api] Hit max page limit (${MAX_PAGES}), stopping pagination with ${results.length} results`);
   }
 
   return results;

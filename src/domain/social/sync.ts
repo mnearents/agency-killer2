@@ -70,7 +70,9 @@ export async function syncSocialPosts(
   const errors: string[] = [];
 
   // Step 1: Fetch recent media
+  console.log(`[sync:social] Fetching media for IG user ${igUserId}...`);
   const mediaList = await client.getRecentMedia(igUserId, limit);
+  console.log(`[sync:social] Got ${mediaList.length} posts`);
 
   // Step 2: Fetch insights for each post
   let insightsFetched = 0;
@@ -92,7 +94,13 @@ export async function syncSocialPosts(
     }
 
     rows.push(transformMediaToPost({ media, insights, igUserId, syncedAt }));
+
+    if (rows.length % 10 === 0) {
+      console.log(`[sync:social] Progress: ${rows.length}/${mediaList.length} posts processed`);
+    }
   }
+
+  console.log(`[sync:social] Insights: ${insightsFetched} fetched, ${insightsFailed} failed. Upserting to DB...`);
 
   // Step 3: Upsert to DB
   for (const row of rows) {
