@@ -36,6 +36,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "social-sync",
+      name: "Instagram Social Sync",
+      schedule: { type: "daily", hour: 8, minute: 0 },
+      enabled: true,
+    },
+    {
       id: "ads-analysis",
       name: "Ad Performance Analysis",
       schedule: { type: "daily", hour: 7, minute: 0 },
@@ -48,6 +54,7 @@ export function getTaskHandlerMap(): Record<string, string> {
   return {
     "meta-sync": "sync:meta",
     "shopify-sync": "sync:shopify",
+    "social-sync": "sync:social",
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
     "ads-analysis": "meta:analysis",
