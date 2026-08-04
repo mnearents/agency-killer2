@@ -50,10 +50,13 @@ export function createSlackApp(deps: SlackAppDeps) {
     socketMode: true,
   });
 
-  // Listen for messages that mention the bot or are DMs
+  // Listen for all messages in channels the bot is in + DMs.
+  // Requires 'message.channels' and 'message.im' bot event subscriptions.
   app.message(async ({ message, say, client }) => {
-    // Only handle messages with text
+    // Only handle user messages with text (skip bot messages, edits, etc.)
     if (!("text" in message) || !message.text) return;
+    if ("bot_id" in message && message.bot_id) return; // ignore our own messages
+    if ("subtype" in message && message.subtype) return; // ignore edits, joins, etc.
 
     const text = message.text
       // Strip bot mention if present (e.g., "<@U12345> !ads report" → "!ads report")
@@ -61,6 +64,13 @@ export function createSlackApp(deps: SlackAppDeps) {
       .trim();
 
     if (!text) return;
+
+    // Only respond to ! commands or DMs — ignore casual channel chatter
+    const isDm = "channel_type" in message && message.channel_type === "im";
+    const isCommand = text.startsWith("!");
+    if (!isDm && !isCommand) return;
+
+    console.log(`[slack] Received: "${text.slice(0, 80)}" (${isDm ? "DM" : "channel"}, files: ${"files" in message ? (message.files as unknown[])?.length ?? 0 : 0})`);
 
     const parsed = parseMessage(text);
 
