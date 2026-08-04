@@ -352,3 +352,55 @@ export const socialPosts = pgTable(
 
 export type SocialPost = typeof socialPosts.$inferSelect;
 export type NewSocialPost = typeof socialPosts.$inferInsert;
+
+// ─── Attentive (Email/SMS) ───────────────────────────────────────────
+
+export const attentiveCampaigns = pgTable(
+  "attentive_campaigns",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    messageVariant: text("message_variant").notNull(), // Email, SMS
+    hasMedia: integer("has_media").notNull().default(0),
+    delivered: integer("delivered").notNull().default(0),
+    totalClicks: integer("total_clicks").notNull().default(0),
+    totalClickRate: real("total_click_rate"),
+    conversions: integer("conversions").notNull().default(0),
+    conversionRate: real("conversion_rate"),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    unsubscribes: integer("unsubscribes").notNull().default(0),
+    unsubscribeRate: real("unsubscribe_rate"),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attentive_campaigns_date_idx").on(table.date),
+    index("attentive_campaigns_variant_idx").on(table.messageVariant),
+    uniqueIndex("attentive_campaigns_dedup_idx").on(table.date, table.messageVariant),
+  ]
+);
+
+export const attentiveRevenue = pgTable(
+  "attentive_revenue",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    conversions: integer("conversions").notNull().default(0),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    avgOrderValueCents: integer("avg_order_value_cents").notNull().default(0),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attentive_revenue_date_idx").on(table.date),
+    uniqueIndex("attentive_revenue_dedup_idx").on(table.date),
+  ]
+);
+
+export type AttentiveCampaign = typeof attentiveCampaigns.$inferSelect;
+export type NewAttentiveCampaign = typeof attentiveCampaigns.$inferInsert;
+
+export type AttentiveRevenue = typeof attentiveRevenue.$inferSelect;
+export type NewAttentiveRevenue = typeof attentiveRevenue.$inferInsert;

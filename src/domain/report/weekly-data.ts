@@ -69,6 +69,21 @@ export interface SocialWeekData {
   reelPlays: number;
 }
 
+// ─── Email/SMS (Attentive) ────────────────────────────────────────────
+
+export interface EmailSmsWeekData {
+  emailDelivered: number;
+  emailClicks: number;
+  emailConversions: number;
+  emailRevenueDollars: number;
+  emailUnsubscribes: number;
+  smsDelivered: number;
+  smsClicks: number;
+  smsConversions: number;
+  smsRevenueDollars: number;
+  smsUnsubscribes: number;
+}
+
 // ─── Combined ─────────────────────────────────────────────────────────
 
 export interface WeeklyReportData {
@@ -76,6 +91,7 @@ export interface WeeklyReportData {
   ads: AdsWeekData;
   shopify: ShopifyWeekData;
   social: SocialWeekData;
+  emailSms?: EmailSmsWeekData;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -219,6 +235,47 @@ export function formatSocialSummary(data: SocialWeekData): string {
   return lines.join("\n");
 }
 
+export function formatEmailSmsSummary(data: EmailSmsWeekData): string {
+  const hasEmail = data.emailDelivered > 0;
+  const hasSms = data.smsDelivered > 0;
+
+  if (!hasEmail && !hasSms) {
+    return "No email/SMS data for this week. Import Attentive reports with `!import attentive`.";
+  }
+
+  const lines: string[] = [];
+
+  if (hasEmail) {
+    const emailCtr = data.emailDelivered > 0
+      ? ((data.emailClicks / data.emailDelivered) * 100).toFixed(2) + "%"
+      : "N/A";
+    lines.push(`*Email:* ${fmtNum(data.emailDelivered)} delivered | ${fmtNum(data.emailClicks)} clicks (${emailCtr}) | ${data.emailConversions} conversions | ${fmtDollars(data.emailRevenueDollars)} revenue`);
+    if (data.emailUnsubscribes > 0) {
+      lines.push(`  Unsubscribes: ${fmtNum(data.emailUnsubscribes)}`);
+    }
+  }
+
+  if (hasSms) {
+    const smsCtr = data.smsDelivered > 0
+      ? ((data.smsClicks / data.smsDelivered) * 100).toFixed(2) + "%"
+      : "N/A";
+    lines.push(`*SMS:* ${fmtNum(data.smsDelivered)} delivered | ${fmtNum(data.smsClicks)} clicks (${smsCtr}) | ${data.smsConversions} conversions | ${fmtDollars(data.smsRevenueDollars)} revenue`);
+    if (data.smsUnsubscribes > 0) {
+      lines.push(`  Unsubscribes: ${fmtNum(data.smsUnsubscribes)}`);
+    }
+  }
+
+  if (hasEmail && hasSms) {
+    const totalRevenue = data.emailRevenueDollars + data.smsRevenueDollars;
+    const smsShare = totalRevenue > 0
+      ? ((data.smsRevenueDollars / totalRevenue) * 100).toFixed(0)
+      : "0";
+    lines.push(`SMS drove ${smsShare}% of email/SMS revenue`);
+  }
+
+  return lines.join("\n");
+}
+
 export function formatWeeklyDataBlock(data: WeeklyReportData): string {
   const sections = [
     `# Weekly Performance: ${data.weekRange.label}`,
@@ -228,6 +285,9 @@ export function formatWeeklyDataBlock(data: WeeklyReportData): string {
     "",
     "## Shopify",
     formatShopifySummary(data.shopify),
+    "",
+    "## Email & SMS",
+    data.emailSms ? formatEmailSmsSummary(data.emailSms) : "No Attentive data imported yet.",
     "",
     "## Organic Social",
     formatSocialSummary(data.social),

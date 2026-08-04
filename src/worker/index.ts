@@ -41,6 +41,7 @@ import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
+import { importAttentiveCsv } from "@/domain/attentive/import";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -726,6 +727,26 @@ async function main() {
       return orchestrator.run(request);
     },
     handlers: slackHandlers,
+    fileHandlers: {
+      "import:attentive": async (fileContent) => {
+        try {
+          const result = await importAttentiveCsv(db, fileContent);
+          if (result.errors.length > 0) {
+            return {
+              text: `Attentive ${result.type} import completed with errors:\n${result.errors.slice(0, 5).map(e => `• ${e}`).join("\n")}\n\nImported: ${result.imported} rows, skipped: ${result.skipped}`,
+              isError: true,
+            };
+          }
+          return {
+            text: `*Attentive ${result.type} data imported!*\n• ${result.imported} rows imported`,
+            isError: false,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { text: `Import failed: ${msg}`, isError: true };
+        }
+      },
+    },
     getKbContext: embeddingClient
       ? async (query) => retrieveContext({ db, embeddingClient }, query)
       : undefined,

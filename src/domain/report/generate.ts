@@ -20,10 +20,12 @@ import {
   type AdsWeekData,
   type ShopifyWeekData,
   type SocialWeekData,
+  type EmailSmsWeekData,
   type WeeklyReportData,
   type CreativeSummary,
 } from "./weekly-data";
 import { buildWeeklyReportRequest } from "./weekly-analysis";
+import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
 
 export interface WeeklyReportDeps {
   db: Db;
@@ -181,8 +183,30 @@ export async function generateWeeklyReport(
     console.error("[weekly-report] Failed to fetch social data:", err);
   }
 
+  // ─── Attentive (Email/SMS) data ───────────────────────────────────
+  let emailSms: EmailSmsWeekData | undefined;
+  try {
+    const attentive = await getAttentiveWeekSummary(deps.db, startDate, endDate);
+    if (attentive.emailDelivered > 0 || attentive.smsDelivered > 0) {
+      emailSms = {
+        emailDelivered: attentive.emailDelivered,
+        emailClicks: attentive.emailClicks,
+        emailConversions: attentive.emailConversions,
+        emailRevenueDollars: attentive.emailRevenueCents / 100,
+        emailUnsubscribes: attentive.emailUnsubscribes,
+        smsDelivered: attentive.smsDelivered,
+        smsClicks: attentive.smsClicks,
+        smsConversions: attentive.smsConversions,
+        smsRevenueDollars: attentive.smsRevenueCents / 100,
+        smsUnsubscribes: attentive.smsUnsubscribes,
+      };
+    }
+  } catch {
+    // Table may not exist yet — non-fatal
+  }
+
   // ─── Assemble and generate ───────────────────────────────────────
-  const reportData: WeeklyReportData = { weekRange, ads, shopify, social };
+  const reportData: WeeklyReportData = { weekRange, ads, shopify, social, emailSms };
   const dataBlock = formatWeeklyDataBlock(reportData);
 
   let kbContext: string | undefined;

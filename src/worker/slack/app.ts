@@ -14,6 +14,8 @@ import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator"
 export interface SlackAppDeps {
   runOrchestrator: (request: OrchestratorRequest) => Promise<OrchestratorResult>;
   handlers: Record<string, (args: string) => Promise<SlackResponse>>;
+  /** Handlers that receive file content (e.g., CSV imports) */
+  fileHandlers?: Record<string, (fileContent: string, args: string) => Promise<SlackResponse>>;
   getKbContext?: (query: string) => Promise<string>;
 }
 
@@ -30,6 +32,7 @@ const ACK_MESSAGES: Record<string, string> = {
   "social:analyze": "Analyzing social performance...",
   "sync:social": "Syncing Instagram data...",
   "report:weekly": "Generating weekly report...",
+  "import:attentive": "Importing Attentive data...",
 };
 
 export function createSlackApp(deps: SlackAppDeps) {
@@ -48,8 +51,8 @@ export function createSlackApp(deps: SlackAppDeps) {
   });
 
   // Listen for messages that mention the bot or are DMs
-  app.message(async ({ message, say }) => {
-    // Only handle messages with text (not file uploads, etc.)
+  app.message(async ({ message, say, client }) => {
+    // Only handle messages with text
     if (!("text" in message) || !message.text) return;
 
     const text = message.text
@@ -108,6 +111,7 @@ export function createSlackApp(deps: SlackAppDeps) {
               "• `!social` — Quick organic social stats",
               "• `!report weekly` — Monday morning cross-channel briefing",
               "• `!sync social` — Pull Instagram posts and insights",
+              "• `!import attentive` — Import Attentive CSV (attach file)",
               "• `!inventory check` — Stock level alerts",
               "• `!help` — Show this message",
               "",
@@ -122,19 +126,45 @@ export function createSlackApp(deps: SlackAppDeps) {
             await say(ack);
           }
 
-          // Dispatch to the registered handler
-          const handler = deps.handlers[route.handler];
-          if (handler) {
-            // For notes, the "action" is part of the content — reconstruct full text
-            const handlerArgs = route.handler === "notes:add" && parsed.action
-              ? `${parsed.action} ${parsed.args}`.trim()
-              : parsed.args;
-            response = await handler(handlerArgs);
-          } else {
+          // Check if this is a file-based handler (e.g., CSV import)
+          const fileHandler = deps.fileHandlers?.[route.handler];
+          if (fileHandler && "files" in message && Array.isArray(message.files) && message.files.length > 0) {
+            const file = message.files[0] as { url_private_download?: string; name?: string };
+            if (file.url_private_download) {
+              await say("Downloading and importing file...");
+              try {
+                const fileResp = await fetch(file.url_private_download, {
+                  headers: { Authorization: `Bearer ${botToken}` },
+                });
+                const fileContent = await fileResp.text();
+                response = await fileHandler(fileContent, parsed.args);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                response = { text: `Failed to download file: ${msg}`, isError: true };
+              }
+            } else {
+              response = { text: "Could not access the uploaded file. Try re-uploading.", isError: true };
+            }
+          } else if (fileHandler) {
             response = {
-              text: `The command was recognized but the handler "${route.handler}" isn't wired up yet.`,
+              text: "This command requires a file attachment. Upload a CSV file with the command.",
               isError: true,
             };
+          } else {
+            // Dispatch to the registered handler
+            const handler = deps.handlers[route.handler];
+            if (handler) {
+              // For notes, the "action" is part of the content — reconstruct full text
+              const handlerArgs = route.handler === "notes:add" && parsed.action
+                ? `${parsed.action} ${parsed.args}`.trim()
+                : parsed.args;
+              response = await handler(handlerArgs);
+            } else {
+              response = {
+                text: `The command was recognized but the handler "${route.handler}" isn't wired up yet.`,
+                isError: true,
+              };
+            }
           }
         }
       }
