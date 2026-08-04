@@ -56,7 +56,8 @@ export function createSlackApp(deps: SlackAppDeps) {
     // Only handle user messages with text (skip bot messages, edits, etc.)
     if (!("text" in message) || !message.text) return;
     if ("bot_id" in message && message.bot_id) return; // ignore our own messages
-    if ("subtype" in message && message.subtype) return; // ignore edits, joins, etc.
+    // Allow file_share (file uploads with text), skip other subtypes (edits, joins, etc.)
+    if ("subtype" in message && message.subtype && message.subtype !== "file_share") return;
 
     const text = message.text
       // Strip bot mention if present (e.g., "<@U12345> !ads report" → "!ads report")
