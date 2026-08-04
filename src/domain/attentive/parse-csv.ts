@@ -30,9 +30,39 @@ export interface AttributedRevenueRow {
 }
 
 function parseNum(val: string): number {
-  const cleaned = val.replace(/,/g, "").trim();
+  // Strip quotes and commas used as thousands separators
+  const cleaned = val.replace(/^"|"$/g, "").replace(/,/g, "").trim();
   const n = Number(cleaned);
   return isNaN(n) ? 0 : n;
+}
+
+/**
+ * Detect delimiter (tab or comma) and split a CSV line.
+ * Handles quoted fields with commas inside them.
+ */
+function detectDelimiter(header: string): string {
+  return header.includes("\t") ? "\t" : ",";
+}
+
+function splitCsvLine(line: string, delimiter: string): string[] {
+  if (delimiter === "\t") return line.split("\t");
+
+  // Handle quoted CSV fields (commas inside quotes)
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (const ch of line) {
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === delimiter && !inQuotes) {
+      fields.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  fields.push(current);
+  return fields;
 }
 
 function roundTo(val: number, decimals: number): number {
@@ -44,20 +74,21 @@ export function parseCampaignPerformanceCsv(csv: string): CampaignPerformanceRow
   const lines = csv.trim().split("\n");
   if (lines.length < 2) return [];
 
+  const delimiter = detectDelimiter(lines[0]);
   const rows: CampaignPerformanceRow[] = [];
 
   // Skip header (line 0), skip "Total" row, parse data rows
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split("\t");
-    const dateVal = cols[0]?.trim();
+    const cols = splitCsvLine(lines[i], delimiter);
+    const dateVal = cols[0]?.replace(/^"|"$/g, "").trim();
 
     // Skip the aggregate "Total" row
     if (!dateVal || dateVal === "Total") continue;
 
     rows.push({
       date: dateVal,
-      messageVariant: cols[1]?.trim() ?? "",
-      hasMedia: cols[2]?.trim().toUpperCase() === "TRUE",
+      messageVariant: cols[1]?.replace(/^"|"$/g, "").trim() ?? "",
+      hasMedia: cols[2]?.replace(/^"|"$/g, "").trim().toUpperCase() === "TRUE",
       delivered: parseNum(cols[3] ?? "0"),
       totalClicks: parseNum(cols[4] ?? "0"),
       totalClickRate: parseNum(cols[5] ?? "0"),
@@ -76,11 +107,12 @@ export function parseAttributedRevenueCsv(csv: string): AttributedRevenueRow[] {
   const lines = csv.trim().split("\n");
   if (lines.length < 2) return [];
 
+  const delimiter = detectDelimiter(lines[0]);
   const rows: AttributedRevenueRow[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split("\t");
-    const dateVal = cols[0]?.trim();
+    const cols = splitCsvLine(lines[i], delimiter);
+    const dateVal = cols[0]?.replace(/^"|"$/g, "").trim();
 
     if (!dateVal || dateVal === "Total") continue;
 

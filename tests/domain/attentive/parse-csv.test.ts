@@ -52,6 +52,28 @@ describe("parseCampaignPerformanceCsv", () => {
     const headerOnly = "Message Send Date\tMessage Variant\tHas Media\tDelivered\tTotal Clicks\tTotal Click Rate\tConversions\tConversion Rate\tRevenue ($ USD)\tUnsubscribes\tUnsubscribe Rate";
     expect(parseCampaignPerformanceCsv(headerOnly)).toEqual([]);
   });
+
+  it("parses comma-separated CSV", () => {
+    const commaCsv = `Message Send Date,Message Variant,Has Media,Delivered,Total Clicks,Total Click Rate,Conversions,Conversion Rate,Revenue ($ USD),Unsubscribes,Unsubscribe Rate
+Total,,,"817,415","17,971",0.021985,"1,262",0.070224,"24,453.40","4,599",0.005626
+2026-01-06,Email,FALSE,"62,114","1,470",0.023666,43,0.029252,534.71,547,0.008806`;
+
+    const rows = parseCampaignPerformanceCsv(commaCsv);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].date).toBe("2026-01-06");
+    expect(rows[0].delivered).toBe(62114);
+    expect(rows[0].totalClicks).toBe(1470);
+    expect(rows[0].revenueDollars).toBe(534.71);
+  });
+
+  it("handles quoted fields with commas inside", () => {
+    const quotedCsv = `Message Send Date,Message Variant,Has Media,Delivered,Total Clicks,Total Click Rate,Conversions,Conversion Rate,Revenue ($ USD),Unsubscribes,Unsubscribe Rate
+2026-01-06,Email,FALSE,"62,114","1,470",0.023666,43,0.029252,"1,534.71",547,0.008806`;
+
+    const rows = parseCampaignPerformanceCsv(quotedCsv);
+    expect(rows[0].delivered).toBe(62114);
+    expect(rows[0].revenueDollars).toBe(1534.71);
+  });
 });
 
 describe("parseAttributedRevenueCsv", () => {
