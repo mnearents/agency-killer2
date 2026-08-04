@@ -48,6 +48,7 @@ export interface IgAccountInfo {
 export interface InstagramApiClient {
   getAccountInfo(igUserId: string): Promise<IgAccountInfo>;
   getRecentMedia(igUserId: string, limit?: number): Promise<IgMedia[]>;
+  getStories(igUserId: string): Promise<IgMedia[]>;
   getMediaInsights(mediaId: string, mediaType: string): Promise<IgMediaInsights>;
 }
 
@@ -180,6 +181,19 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
       // controls how many we get (up to 100 per request).
       const json = await fetchJson<{ data?: IgMedia[] }>(url);
       return json.data ?? [];
+    },
+
+    async getStories(igUserId) {
+      // Stories expire after 24h — this returns only currently live stories
+      const url = buildUrl(`${igUserId}/stories`, {
+        fields: "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
+      });
+      const json = await fetchJson<{ data?: IgMedia[] }>(url);
+      // Mark stories with STORY product type for downstream handling
+      return (json.data ?? []).map((s) => ({
+        ...s,
+        media_product_type: "STORY" as const,
+      }));
     },
 
     async getMediaInsights(mediaId, mediaType) {

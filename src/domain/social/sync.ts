@@ -12,10 +12,12 @@
  */
 
 import type { InstagramApiClient, IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
+import type { AssemblyAiClient } from "@/integrations/assemblyai";
+import type { EmbeddingClient } from "@/integrations/openai";
 import type { NewSocialPost } from "@/db/schema";
 import type { Db } from "@/db/client";
-import { socialPosts } from "@/db/schema";
-import { sql } from "drizzle-orm";
+import { socialPosts, kbDocuments } from "@/db/schema";
+import { sql, eq } from "drizzle-orm";
 
 export interface TransformInput {
   media: IgMedia;
@@ -52,12 +54,15 @@ export interface SyncSocialDeps {
   client: InstagramApiClient;
   db: Db;
   igUserId: string;
+  transcriber?: AssemblyAiClient;
+  embeddingClient?: EmbeddingClient;
 }
 
 export interface SyncSocialResult {
   posts: number;
   insightsFetched: number;
   insightsFailed: number;
+  transcribed: number;
   errors: string[];
 }
 
@@ -75,10 +80,23 @@ export async function syncSocialPosts(
   const syncedAt = new Date();
   const errors: string[] = [];
 
-  // Step 1: Fetch recent media
+  // Step 1: Fetch recent media + stories
   console.log(`[sync:social] Fetching media for IG user ${igUserId}...`);
-  const mediaList = await client.getRecentMedia(igUserId, limit);
-  console.log(`[sync:social] Got ${mediaList.length} posts`);
+  const recentMedia = await client.getRecentMedia(igUserId, limit);
+  console.log(`[sync:social] Got ${recentMedia.length} posts`);
+
+  let stories: typeof recentMedia = [];
+  try {
+    stories = await client.getStories(igUserId);
+    if (stories.length > 0) {
+      console.log(`[sync:social] Got ${stories.length} active stories`);
+    }
+  } catch (err) {
+    // Stories endpoint can fail if no stories are live — non-fatal
+    console.log(`[sync:social] Stories fetch skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const mediaList = [...recentMedia, ...stories];
 
   // Step 2: Fetch insights for each post
   // Rate limiting: Instagram Graph API allows ~200 calls/hour per user.
@@ -136,10 +154,79 @@ export async function syncSocialPosts(
       });
   }
 
+  // Step 4: Transcribe new video posts (reels + stories with audio)
+  let transcribed = 0;
+  if (deps.transcriber) {
+    const videoMedia = mediaList.filter(
+      (m) => m.media_url && (m.media_type === "VIDEO" || m.media_product_type === "REELS" || m.media_product_type === "STORY")
+    );
+
+    for (const media of videoMedia) {
+      // Skip if already transcribed (check KB by source_file = ig:media_id)
+      const sourceKey = `ig:${media.id}`;
+      const existing = await db
+        .select({ id: kbDocuments.id })
+        .from(kbDocuments)
+        .where(eq(kbDocuments.sourceFile, sourceKey))
+        .limit(1);
+
+      if (existing.length > 0) continue;
+
+      try {
+        const result = await deps.transcriber.transcribe(media.media_url!);
+        if (result.status === "completed" && result.text && result.text.trim().length > 0) {
+          const caption = media.caption ? media.caption.slice(0, 100) : "untitled";
+          const formatLabel = media.media_product_type === "REELS" ? "Reel"
+            : media.media_product_type === "STORY" ? "Story"
+            : "Video";
+          const postedDate = new Date(media.timestamp).toISOString().split("T")[0];
+
+          const title = `${formatLabel} transcript: ${caption} (${postedDate})`;
+          const content = `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\nTranscript:\n${result.text}`;
+
+          const row = {
+            title,
+            content,
+            category: "social-transcript",
+            sourceFile: sourceKey,
+            contentHash: crypto.randomUUID(), // unique per ingest
+            chunkIndex: 0,
+            totalChunks: 1,
+            contextPrefix: `Instagram ${formatLabel} from ${postedDate}`,
+            documentDate: new Date(media.timestamp),
+            embedding: null as number[] | null,
+          };
+
+          // Embed if possible
+          if (deps.embeddingClient) {
+            try {
+              const embResult = await deps.embeddingClient.embed(content);
+              row.embedding = embResult.embedding;
+            } catch {
+              // Non-fatal — stored without embedding
+            }
+          }
+
+          await db.insert(kbDocuments).values(row);
+          transcribed++;
+          console.log(`[sync:social] Transcribed ${formatLabel}: ${caption.slice(0, 50)}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[sync:social] Transcription failed for ${media.id}: ${msg}`);
+      }
+    }
+
+    if (transcribed > 0) {
+      console.log(`[sync:social] Transcribed ${transcribed} new video posts`);
+    }
+  }
+
   return {
     posts: rows.length,
     insightsFetched,
     insightsFailed,
+    transcribed,
     errors,
   };
 }

@@ -40,6 +40,7 @@ import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
+import { createAssemblyAiClient } from "@/integrations/assemblyai";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -93,6 +94,10 @@ async function main() {
 
   const embeddingClient = getEnvOptional("OPENAI_API_KEY")
     ? createEmbeddingClient(getEnv("OPENAI_API_KEY"))
+    : null;
+
+  const assemblyAiClient = getEnvOptional("ASSEMBLYAI_API_KEY")
+    ? createAssemblyAiClient(getEnv("ASSEMBLYAI_API_KEY"))
     : null;
 
   const igClient = getEnvOptional("META_ACCESS_TOKEN")
@@ -181,7 +186,7 @@ async function main() {
         console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
         return;
       }
-      const result = await syncSocialPosts({ client: igClient, db, igUserId });
+      const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
       console.log(
         `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed)`
       );
@@ -590,7 +595,7 @@ async function main() {
       if (!igClient || !igUserId) {
         return { text: "Social sync unavailable — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set.", isError: true };
       }
-      const result = await syncSocialPosts({ client: igClient, db, igUserId });
+      const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
       if (result.errors.length > 0) {
         return {
           text: `Social sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.posts} posts`,
@@ -598,7 +603,7 @@ async function main() {
         };
       }
       return {
-        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable`,
+        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable${result.transcribed > 0 ? `\n• ${result.transcribed} videos transcribed` : ""}`,
         isError: false,
       };
     },
@@ -627,7 +632,7 @@ async function main() {
         results.push("Shopify: skipped (no credentials)");
       }
       if (igClient && igUserId) {
-        const r = await syncSocialPosts({ client: igClient, db, igUserId });
+        const r = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
         results.push(`Instagram: ${r.posts} posts${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
       } else {
         results.push("Instagram: skipped (no credentials)");

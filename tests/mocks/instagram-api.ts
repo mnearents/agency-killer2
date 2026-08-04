@@ -12,6 +12,7 @@ export function createMockInstagramApiClient(
       media_count: 340,
     }),
     getRecentMedia: vi.fn().mockResolvedValue([]),
+    getStories: vi.fn().mockResolvedValue([]),
     getMediaInsights: vi.fn().mockResolvedValue({
       mediaId: "mock-media-id",
       impressions: 0,
