@@ -118,14 +118,18 @@ export async function importAttentiveCsv(
   db: Db,
   csvContent: string
 ): Promise<ImportResult> {
-  const firstLine = csvContent.split("\n")[0] ?? "";
+  // Strip BOM and normalize line endings
+  const cleaned = csvContent.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const firstLine = cleaned.split("\n")[0] ?? "";
+
+  console.log(`[attentive] Header detected: "${firstLine.slice(0, 80)}..."`);
 
   if (firstLine.includes("Message Variant") || firstLine.includes("Message Send Date")) {
-    return importCampaignPerformance(db, csvContent);
+    return importCampaignPerformance(db, cleaned);
   }
 
   if (firstLine.includes("Conversion Date") || firstLine.includes("Average Order Value")) {
-    return importAttributedRevenue(db, csvContent);
+    return importAttributedRevenue(db, cleaned);
   }
 
   return {
