@@ -95,20 +95,25 @@ export function parseInsightsResponse(
 
 /**
  * Pick the right insight metrics based on media type.
- * Reels/videos support video-specific metrics; images don't.
  *
- * Meta deprecated "impressions" (use "views") and "plays"
- * (use "ig_reels_video_view_total") as of v22.0.
+ * The IG API is picky about which metrics each media type supports.
+ * Stories, older posts, and carousel children reject many metrics.
+ * Use the safest common set per type to minimize 400 errors.
  */
 function getMetricsForMediaType(mediaType: string, mediaProductType?: string): string {
-  const isReel = mediaProductType === "REELS" || mediaType === "VIDEO";
-
-  if (isReel) {
-    return "reach,saved,shares,total_interactions,views,ig_reels_avg_watch_time";
+  if (mediaProductType === "REELS") {
+    // Reels support reel-specific metrics
+    return "reach,saved,shares,total_interactions,ig_reels_avg_watch_time";
   }
 
-  // IMAGE and CAROUSEL_ALBUM
-  return "reach,saved,shares,total_interactions,views";
+  if (mediaProductType === "STORY") {
+    // Stories only support a limited set
+    return "reach";
+  }
+
+  // IMAGE, CAROUSEL_ALBUM, VIDEO (non-reel)
+  // Use the most universally supported metrics
+  return "reach,saved,total_interactions";
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -168,9 +173,13 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
     async getRecentMedia(igUserId, limit = 50) {
       const url = buildUrl(`${igUserId}/media`, {
         fields: MEDIA_FIELDS,
-        limit: String(limit),
+        limit: String(Math.min(limit, 100)), // IG max per page is 100
       });
-      return fetchAllPages<IgMedia>(url);
+      // Single page fetch — no pagination. For daily sync we only need
+      // the most recent posts, not the entire history. The limit param
+      // controls how many we get (up to 100 per request).
+      const json = await fetchJson<{ data?: IgMedia[] }>(url);
+      return json.data ?? [];
     },
 
     async getMediaInsights(mediaId, mediaType) {

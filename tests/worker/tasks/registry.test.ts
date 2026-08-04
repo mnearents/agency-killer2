@@ -27,11 +27,11 @@ describe("getPhase1Tasks: task definitions", () => {
     expect(kb!.enabled).toBe(true);
   });
 
-  it("includes blog generation (weekly Tuesday 9am)", () => {
+  it("includes blog generation (weekly Tuesday 9am PT / 16:00 UTC)", () => {
     const tasks = getPhase1Tasks();
     const blog = tasks.find((t) => t.id === "blog-generate");
     expect(blog).toBeDefined();
-    expect(blog!.schedule).toEqual({ type: "weekly", dayOfWeek: 2, hour: 9, minute: 0 });
+    expect(blog!.schedule).toEqual({ type: "weekly", dayOfWeek: 2, hour: 16, minute: 0 });
     expect(blog!.enabled).toBe(true);
   });
 

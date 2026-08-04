@@ -9,18 +9,33 @@
 
 import type { TaskDefinition } from "@/worker/scheduler";
 
+/**
+ * All schedule times are in UTC. Matt is in Pacific (UTC-7).
+ *
+ *   13:00 UTC (6 AM PT) — Meta ads sync
+ *   13:15 UTC           — Shopify sync
+ *   13:30 UTC           — Instagram sync
+ *   14:00 UTC (7 AM PT) — Ads analysis (after syncs finish)
+ *   16:00 UTC (9 AM PT, Tue) — Blog generation
+ */
 export function getPhase1Tasks(): TaskDefinition[] {
   return [
     {
       id: "meta-sync",
       name: "Meta Ads Data Sync",
-      schedule: { type: "daily", hour: 6, minute: 0 },
+      schedule: { type: "daily", hour: 13, minute: 0 },
       enabled: true,
     },
     {
       id: "shopify-sync",
       name: "Shopify Orders Sync",
-      schedule: { type: "daily", hour: 6, minute: 30 },
+      schedule: { type: "daily", hour: 13, minute: 15 },
+      enabled: true,
+    },
+    {
+      id: "social-sync",
+      name: "Instagram Social Sync",
+      schedule: { type: "daily", hour: 13, minute: 30 },
       enabled: true,
     },
     {
@@ -32,19 +47,13 @@ export function getPhase1Tasks(): TaskDefinition[] {
     {
       id: "blog-generate",
       name: "Blog Article Generation",
-      schedule: { type: "weekly", dayOfWeek: 2, hour: 9, minute: 0 },
-      enabled: true,
-    },
-    {
-      id: "social-sync",
-      name: "Instagram Social Sync",
-      schedule: { type: "daily", hour: 8, minute: 0 },
+      schedule: { type: "weekly", dayOfWeek: 2, hour: 16, minute: 0 },
       enabled: true,
     },
     {
       id: "ads-analysis",
       name: "Ad Performance Analysis",
-      schedule: { type: "daily", hour: 7, minute: 0 },
+      schedule: { type: "daily", hour: 14, minute: 0 },
       enabled: true,
     },
   ];
