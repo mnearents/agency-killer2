@@ -140,13 +140,22 @@ export function createSlackApp(deps: SlackAppDeps) {
           // Check if this is a file-based handler (e.g., CSV import)
           const fileHandler = deps.fileHandlers?.[route.handler];
           if (fileHandler && "files" in message && Array.isArray(message.files) && message.files.length > 0) {
-            const file = message.files[0] as { url_private_download?: string; name?: string };
-            if (file.url_private_download) {
+            const file = message.files[0] as { id?: string; url_private_download?: string; name?: string };
+            if (file.id) {
               await say("Downloading and importing file...");
               try {
-                const fileResp = await fetch(file.url_private_download, {
+                // Use Slack's files.info to get a fresh download URL,
+                // then download with the bot token
+                const fileInfo = await client.files.info({ file: file.id });
+                const downloadUrl = fileInfo.file?.url_private_download;
+                if (!downloadUrl) throw new Error("No download URL available for this file");
+
+                const fileResp = await fetch(downloadUrl, {
                   headers: { Authorization: `Bearer ${botToken}` },
                 });
+                if (!fileResp.ok) {
+                  throw new Error(`File download failed (${fileResp.status})`);
+                }
                 const fileContent = await fileResp.text();
                 response = await fileHandler(fileContent, parsed.args);
               } catch (err) {
