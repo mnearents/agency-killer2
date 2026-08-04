@@ -2,13 +2,13 @@ import { describe, it, expect } from "vitest";
 import { parseInsightsResponse, type IgMediaInsight } from "@/integrations/instagram-api";
 
 describe("parseInsightsResponse", () => {
-  it("extracts all metrics from a complete response", () => {
+  it("extracts all metrics from a reel response", () => {
     const data: IgMediaInsight[] = [
       { name: "views", period: "lifetime", values: [{ value: 5000 }] },
       { name: "reach", period: "lifetime", values: [{ value: 3200 }] },
       { name: "saved", period: "lifetime", values: [{ value: 150 }] },
       { name: "shares", period: "lifetime", values: [{ value: 42 }] },
-      { name: "ig_reels_video_view_total", period: "lifetime", values: [{ value: 8000 }] },
+      { name: "ig_reels_avg_watch_time", period: "lifetime", values: [{ value: 12 }] },
       { name: "total_interactions", period: "lifetime", values: [{ value: 620 }] },
     ];
 
@@ -20,7 +20,7 @@ describe("parseInsightsResponse", () => {
       reach: 3200,
       saved: 150,
       shares: 42,
-      plays: 8000,
+      plays: 5000, // views = plays for reels
       totalInteractions: 620,
     });
   });
@@ -53,14 +53,22 @@ describe("parseInsightsResponse", () => {
     });
   });
 
-  it("reads ig_reels_video_view_total as plays", () => {
-    const data: IgMediaInsight[] = [
-      { name: "ig_reels_video_view_total", period: "lifetime", values: [{ value: 12000 }] },
+  it("reads views as plays only when reel metrics present", () => {
+    // Reel: has ig_reels_avg_watch_time → views counts as plays
+    const reelData: IgMediaInsight[] = [
+      { name: "views", period: "lifetime", values: [{ value: 12000 }] },
+      { name: "ig_reels_avg_watch_time", period: "lifetime", values: [{ value: 8 }] },
     ];
+    const reelResult = parseInsightsResponse("reel-1", reelData);
+    expect(reelResult.plays).toBe(12000);
 
-    const result = parseInsightsResponse("reel-1", data);
-
-    expect(result.plays).toBe(12000);
+    // Image: no reel metrics → views is impressions only, plays stays 0
+    const imageData: IgMediaInsight[] = [
+      { name: "views", period: "lifetime", values: [{ value: 5000 }] },
+    ];
+    const imageResult = parseInsightsResponse("image-1", imageData);
+    expect(imageResult.plays).toBe(0);
+    expect(imageResult.impressions).toBe(5000);
   });
 
   it("reads views as impressions, falls back to legacy impressions", () => {

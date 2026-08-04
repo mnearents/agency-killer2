@@ -84,7 +84,11 @@ export function parseInsightsResponse(
     reach: byName.get("reach") ?? 0,
     saved: byName.get("saved") ?? 0,
     shares: byName.get("shares") ?? 0,
-    plays: byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0,
+    // plays only meaningful for reels — ig_reels_avg_watch_time presence
+    // signals this is a reel response. For images, views = impressions, not plays.
+    plays: byName.has("ig_reels_avg_watch_time")
+      ? (byName.get("views") ?? byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0)
+      : (byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0),
     totalInteractions: byName.get("total_interactions") ?? 0,
   };
 }
@@ -100,7 +104,7 @@ function getMetricsForMediaType(mediaType: string, mediaProductType?: string): s
   const isReel = mediaProductType === "REELS" || mediaType === "VIDEO";
 
   if (isReel) {
-    return "reach,saved,shares,ig_reels_video_view_total,total_interactions,views";
+    return "reach,saved,shares,total_interactions,views,ig_reels_avg_watch_time";
   }
 
   // IMAGE and CAROUSEL_ALBUM

@@ -61,6 +61,12 @@ export interface SyncSocialResult {
   errors: string[];
 }
 
+/**
+ * Sync recent Instagram posts. Default limit is 50 (about 2 weeks
+ * of posts for most accounts). For initial backfill, pass a higher
+ * limit explicitly. Each post requires one API call for insights,
+ * so 50 posts = ~50 API calls, well within IG's hourly rate limit.
+ */
 export async function syncSocialPosts(
   deps: SyncSocialDeps,
   limit = 50
@@ -75,6 +81,8 @@ export async function syncSocialPosts(
   console.log(`[sync:social] Got ${mediaList.length} posts`);
 
   // Step 2: Fetch insights for each post
+  // Rate limiting: Instagram Graph API allows ~200 calls/hour per user.
+  // Pause briefly between requests to stay well under the limit.
   let insightsFetched = 0;
   let insightsFailed = 0;
   const rows: NewSocialPost[] = [];
@@ -98,6 +106,9 @@ export async function syncSocialPosts(
     if (rows.length % 10 === 0) {
       console.log(`[sync:social] Progress: ${rows.length}/${mediaList.length} posts processed`);
     }
+
+    // Throttle: ~2 requests/second to stay under IG rate limits
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
   console.log(`[sync:social] Insights: ${insightsFetched} fetched, ${insightsFailed} failed. Upserting to DB...`);
