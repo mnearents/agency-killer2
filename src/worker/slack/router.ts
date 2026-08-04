@@ -18,6 +18,7 @@ export type CommandCategory =
   | "inventory"
   | "shopify"
   | "sync"
+  | "report"
   | "notes"
   | "help"
   | "unknown";
@@ -51,6 +52,7 @@ const VALID_CATEGORIES = new Set<CommandCategory>([
   "inventory",
   "shopify",
   "sync",
+  "report",
   "notes",
   "help",
 ]);
@@ -112,6 +114,10 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
   },
   notes: {
     "": "notes:add",
+  },
+  report: {
+    weekly: "report:weekly",
+    "": "report:weekly",
   },
   sync: {
     meta: "sync:meta",

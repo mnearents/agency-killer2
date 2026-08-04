@@ -39,6 +39,7 @@ import { syncSocialPosts } from "@/domain/social/sync";
 import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
+import { generateWeeklyReport } from "@/domain/report/generate";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -101,6 +102,10 @@ async function main() {
   const metaAccountId = getEnvOptional("META_AD_ACCOUNT_ID");
   const igUserId = getEnvOptional("INSTAGRAM_BUSINESS_ACCOUNT_ID");
   const dropboxKbRoot = getEnvOptional("DROPBOX_KB_ROOT") ?? "/RAD/Agency";
+  const slackReportChannel = getEnvOptional("SLACK_REPORT_CHANNEL");
+
+  // Proactive Slack messaging — set after Slack app starts
+  let postToSlack: ((channel: string, text: string) => Promise<void>) | null = null;
 
   // ─── Build orchestrator ─────────────────────────────────────────────
   const voiceProfile = loadVoiceProfile();
@@ -227,6 +232,38 @@ async function main() {
       );
       if (!result.ok) {
         console.error("[meta:analysis]", result.text);
+      }
+    },
+
+    "report:weekly": async () => {
+      if (!orchestrator) {
+        console.log("[report:weekly] Skipped — ANTHROPIC_API_KEY not set");
+        return;
+      }
+      console.log("[report:weekly] Generating Monday morning report...");
+      const result = await generateWeeklyReport({
+        db,
+        voice,
+        runOrchestrator: (req) => orchestrator.run(req),
+        getKbContext: embeddingClient
+          ? () => retrieveContext({ db, embeddingClient }, "marketing strategy goals priorities calendar")
+          : undefined,
+      });
+      console.log(`[report:weekly] ${result.ok ? "Done" : "Failed"} (${result.weekRange.label})`);
+
+      // Post to Slack channel proactively
+      if (result.ok && slackReportChannel && postToSlack) {
+        try {
+          await postToSlack(
+            slackReportChannel,
+            `*Monday Morning Report* (${result.weekRange.label})\n\n${result.text}`
+          );
+          console.log("[report:weekly] Posted to Slack channel");
+        } catch (err) {
+          console.error("[report:weekly] Failed to post to Slack:", err);
+        }
+      } else if (!result.ok) {
+        console.error("[report:weekly]", result.text);
       }
     },
   };
@@ -417,6 +454,25 @@ async function main() {
       text: "Reel creation coming soon!",
       isError: false,
     }),
+    "report:weekly": async () => {
+      if (!orchestrator) {
+        return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
+      }
+      const result = await generateWeeklyReport({
+        db,
+        voice,
+        runOrchestrator: (req) => orchestrator.run(req),
+        getKbContext: embeddingClient
+          ? () => retrieveContext({ db, embeddingClient }, "marketing strategy goals priorities calendar")
+          : undefined,
+      });
+      return {
+        text: result.ok
+          ? `*Monday Morning Report* (${result.weekRange.label})\n\n${result.text}`
+          : result.text,
+        isError: !result.ok,
+      };
+    },
     "inventory:check": async () => ({
       text: "Inventory check coming soon!",
       isError: false,
@@ -672,6 +728,10 @@ async function main() {
 
   if (slackApp) {
     await slackApp.start();
+    // Wire proactive messaging now that the app is running
+    postToSlack = async (channel: string, text: string) => {
+      await slackApp.client.chat.postMessage({ channel, text });
+    };
     console.log("[worker] Slack bot started (socket mode)");
   } else {
     console.log("[worker] Slack bot skipped (no tokens configured)");

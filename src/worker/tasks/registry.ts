@@ -56,6 +56,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       schedule: { type: "daily", hour: 14, minute: 0 },
       enabled: true,
     },
+    {
+      id: "weekly-report",
+      name: "Monday Morning Report",
+      schedule: { type: "weekly", dayOfWeek: 1, hour: 14, minute: 30 }, // Monday 7:30 AM PT
+      enabled: true,
+    },
   ];
 }
 
@@ -67,5 +73,6 @@ export function getTaskHandlerMap(): Record<string, string> {
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
     "ads-analysis": "meta:analysis",
+    "weekly-report": "report:weekly",
   };
 }

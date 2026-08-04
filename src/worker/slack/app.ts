@@ -29,6 +29,7 @@ const ACK_MESSAGES: Record<string, string> = {
   "blog:create": "Generating blog article...",
   "social:analyze": "Analyzing social performance...",
   "sync:social": "Syncing Instagram data...",
+  "report:weekly": "Generating weekly report...",
 };
 
 export function createSlackApp(deps: SlackAppDeps) {
@@ -105,6 +106,7 @@ export function createSlackApp(deps: SlackAppDeps) {
               "• `!sync all` — Sync everything",
               "• `!social analyze` — AI-generated content strategy insights",
               "• `!social` — Quick organic social stats",
+              "• `!report weekly` — Monday morning cross-channel briefing",
               "• `!sync social` — Pull Instagram posts and insights",
               "• `!inventory check` — Stock level alerts",
               "• `!help` — Show this message",
