@@ -17,7 +17,7 @@ export interface TaskDefinition {
 
 export type Schedule =
   | { type: "interval"; hours: number }
-  | { type: "daily"; hour: number; minute?: number }
+  | { type: "daily"; hour: number; minute?: number; skipDays?: number[] }
   | { type: "weekly"; dayOfWeek: number; hour: number; minute?: number };
 
 export interface TaskRun {
@@ -113,7 +113,14 @@ export function getDueTasks(
     }
 
     const nextRun = getNextRunTime(task, lastRun);
-    return nextRun.getTime() <= now.getTime();
+    if (nextRun.getTime() > now.getTime()) return false;
+
+    // Skip certain days of the week (0=Sun, 6=Sat)
+    if (task.schedule.type === "daily" && task.schedule.skipDays) {
+      if (task.schedule.skipDays.includes(now.getUTCDay())) return false;
+    }
+
+    return true;
   });
 }
 
