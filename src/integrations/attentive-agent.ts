@@ -115,11 +115,24 @@ async function login(page: Page, username: string, password: string): Promise<vo
     () => !window.location.pathname.includes("/signin"),
     { timeout: 30000 }
   );
+
+  console.log(`[attentive-agent] Post-login URL: ${page.url()}`);
+
+  // Give the SPA a moment to fully initialize auth state
+  await page.waitForTimeout(3000);
 }
 
 async function exportReport(page: Page, reportUrl: string, reportName: string): Promise<string> {
-  console.log(`[attentive-agent] Navigating to ${reportName}...`);
+  console.log(`[attentive-agent] Navigating to ${reportName}: ${reportUrl}`);
+  console.log(`[attentive-agent] Current URL before nav: ${page.url()}`);
+
+  // Navigate via the address bar — cookies should carry over
   await page.goto(reportUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+  // Wait a moment for SPA to render
+  await page.waitForTimeout(5000);
+
+  console.log(`[attentive-agent] After nav URL: ${page.url()}`);
 
   // Wait for the report to load — try multiple possible selectors
   try {
