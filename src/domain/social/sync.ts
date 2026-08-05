@@ -183,48 +183,61 @@ export async function syncSocialPosts(
 
       if (existing.length > 0) continue;
 
+      const caption = media.caption ? media.caption.slice(0, 100) : "untitled";
+      const formatLabel = media.media_product_type === "REELS" ? "Reel"
+        : media.media_product_type === "STORY" ? "Story"
+        : "Video";
+      const postedDate = new Date(media.timestamp).toISOString().split("T")[0];
+
+      let transcriptText: string | null = null;
       try {
         const result = await deps.transcriber.transcribe(media.media_url!);
         if (result.status === "completed" && result.text && result.text.trim().length > 0) {
-          const caption = media.caption ? media.caption.slice(0, 100) : "untitled";
-          const formatLabel = media.media_product_type === "REELS" ? "Reel"
-            : media.media_product_type === "STORY" ? "Story"
-            : "Video";
-          const postedDate = new Date(media.timestamp).toISOString().split("T")[0];
+          transcriptText = result.text;
+        } else {
+          console.log(`[sync:social] Transcription returned no text for ${media.id} (status: ${result.status})`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[sync:social] Transcription failed for ${media.id}: ${msg.slice(0, 150)}`);
+      }
 
-          const title = `${formatLabel} transcript: ${caption} (${postedDate})`;
-          const content = `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\nTranscript:\n${result.text}`;
+      // Always store a KB doc (even without transcript) so we don't retry
+      const content = transcriptText
+        ? `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\nTranscript:\n${transcriptText}`
+        : `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\n(No audio transcript available)`;
 
-          const row = {
-            title,
-            content,
-            category: "social-transcript",
-            sourceFile: sourceKey,
-            contentHash: crypto.randomUUID(), // unique per ingest
-            chunkIndex: 0,
-            totalChunks: 1,
-            contextPrefix: `Instagram ${formatLabel} from ${postedDate}`,
-            documentDate: new Date(media.timestamp),
-            embedding: null as number[] | null,
-          };
+      const row = {
+        title: `${formatLabel}: ${caption} (${postedDate})`,
+        content,
+        category: "social-transcript",
+        sourceFile: sourceKey,
+        contentHash: crypto.randomUUID(),
+        chunkIndex: 0,
+        totalChunks: 1,
+        contextPrefix: `Instagram ${formatLabel} from ${postedDate}`,
+        documentDate: new Date(media.timestamp),
+        embedding: null as number[] | null,
+      };
 
-          // Embed if possible
-          if (deps.embeddingClient) {
-            try {
-              const embResult = await deps.embeddingClient.embed(content);
-              row.embedding = embResult.embedding;
-            } catch {
-              // Non-fatal — stored without embedding
-            }
-          }
+      // Embed if we have a real transcript
+      if (transcriptText && deps.embeddingClient) {
+        try {
+          const embResult = await deps.embeddingClient.embed(content);
+          row.embedding = embResult.embedding;
+        } catch {
+          // Non-fatal — stored without embedding
+        }
+      }
 
-          await db.insert(kbDocuments).values(row);
+      try {
+        await db.insert(kbDocuments).values(row);
+        if (transcriptText) {
           transcribed++;
           console.log(`[sync:social] Transcribed ${formatLabel}: ${caption.slice(0, 50)}`);
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[sync:social] Transcription failed for ${media.id}: ${msg}`);
+        console.error(`[sync:social] Failed to store transcript for ${media.id}:`, err);
       }
     }
 
