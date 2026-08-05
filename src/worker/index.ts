@@ -45,6 +45,8 @@ import { importAttentiveCsv } from "@/domain/attentive/import";
 import { exportAttentiveReports } from "@/integrations/attentive-agent";
 import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 import { backfillSocialInsights } from "@/domain/social/backfill";
+import { runAlertChecks, formatAlerts } from "@/domain/alerts/runner";
+import { isDuringWorkHours, prioritizeAlerts } from "@/domain/alerts/schedule";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -298,6 +300,23 @@ async function main() {
       );
       if (!result.ok) {
         console.error("[meta:analysis]", result.text);
+      }
+    },
+
+    "alerts:check": async () => {
+      if (!isDuringWorkHours(new Date())) {
+        console.log("[alerts] Skipped — outside work hours");
+        return;
+      }
+      console.log("[alerts] Running alert checks...");
+      const allAlerts = await runAlertChecks(db);
+      const alerts = prioritizeAlerts(allAlerts);
+      console.log(`[alerts] ${allAlerts.length} alerts detected, ${alerts.length} after prioritization`);
+
+      if (alerts.length > 0 && slackReportChannel && postToSlack) {
+        const formatted = formatAlerts(alerts);
+        await postToSlack(slackReportChannel, formatted);
+        console.log("[alerts] Posted to Slack");
       }
     },
 

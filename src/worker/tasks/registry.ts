@@ -63,6 +63,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "daily-alerts",
+      name: "Proactive Alert Check",
+      schedule: { type: "daily", hour: 14, minute: 15 }, // 7:15 AM PT, after syncs + analysis
+      enabled: true,
+    },
+    {
       id: "weekly-report",
       name: "Monday Morning Report",
       schedule: { type: "weekly", dayOfWeek: 1, hour: 14, minute: 30 }, // Monday 7:30 AM PT
@@ -80,6 +86,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
     "ads-analysis": "meta:analysis",
+    "daily-alerts": "alerts:check",
     "weekly-report": "report:weekly",
   };
 }
