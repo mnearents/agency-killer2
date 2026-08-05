@@ -186,7 +186,9 @@ export async function generateWeeklyReport(
   // ─── Attentive (Email/SMS) data ───────────────────────────────────
   let emailSms: EmailSmsWeekData | undefined;
   try {
+    console.log(`[weekly-report] Fetching Attentive data for ${weekRange.start} to ${weekRange.end}...`);
     const attentive = await getAttentiveWeekSummary(deps.db, startDate, endDate);
+    console.log(`[weekly-report] Attentive: ${attentive.emailDelivered} email delivered, ${attentive.smsDelivered} SMS delivered`);
     if (attentive.emailDelivered > 0 || attentive.smsDelivered > 0) {
       emailSms = {
         emailDelivered: attentive.emailDelivered,
@@ -201,8 +203,8 @@ export async function generateWeeklyReport(
         smsUnsubscribes: attentive.smsUnsubscribes,
       };
     }
-  } catch {
-    // Table may not exist yet — non-fatal
+  } catch (err) {
+    console.error("[weekly-report] Failed to fetch Attentive data:", err);
   }
 
   // ─── Assemble and generate ───────────────────────────────────────
