@@ -121,8 +121,19 @@ async function exportReport(page: Page, reportUrl: string, reportName: string): 
   console.log(`[attentive-agent] Navigating to ${reportName}...`);
   await page.goto(reportUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
-  // Wait for the report table to load
-  await page.waitForSelector("table", { timeout: 30000 });
+  // Wait for the report to load — try multiple possible selectors
+  try {
+    await page.waitForSelector('button:has-text("Export")', { timeout: 30000 });
+  } catch {
+    // Log what's on the page for debugging
+    const title = await page.title();
+    const url = page.url();
+    const bodyText = await page.textContent("body").catch(() => "(could not read body)");
+    console.error(`[attentive-agent] ${reportName} page did not load expected content`);
+    console.error(`[attentive-agent] URL: ${url}, Title: ${title}`);
+    console.error(`[attentive-agent] Body preview: ${bodyText?.slice(0, 500)}`);
+    throw new Error(`${reportName} page did not show Export button within 30s`);
+  }
 
   // Click the Export button
   console.log(`[attentive-agent] Clicking Export for ${reportName}...`);
