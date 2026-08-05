@@ -405,6 +405,33 @@ export type NewAttentiveCampaign = typeof attentiveCampaigns.$inferInsert;
 export type AttentiveRevenue = typeof attentiveRevenue.$inferSelect;
 export type NewAttentiveRevenue = typeof attentiveRevenue.$inferInsert;
 
+// ─── Marketing Calendar ──────────────────────────────────────────────
+
+export const calendarEntries = pgTable(
+  "calendar_entries",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    channel: text("channel").notNull(), // Email, SMS, Ad, Reel, Post, Story, Blog
+    title: text("title").notNull(),
+    status: text("status").notNull().default("planned"), // idea, planned, scheduled, sent, posted, skipped
+    notes: text("notes"),
+    aiSuggested: integer("ai_suggested").notNull().default(0), // 0 = human, 1 = AI
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("calendar_entries_date_idx").on(table.date),
+    index("calendar_entries_channel_idx").on(table.channel),
+    index("calendar_entries_status_idx").on(table.status),
+  ]
+);
+
+export type CalendarEntry = typeof calendarEntries.$inferSelect;
+export type NewCalendarEntry = typeof calendarEntries.$inferInsert;
+
 // ─── Agent Sessions (cookie persistence) ─────────────────────────────
 
 export const agentSessions = pgTable("agent_sessions", {
