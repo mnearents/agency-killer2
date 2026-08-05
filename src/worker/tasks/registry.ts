@@ -41,7 +41,7 @@ export function getPhase1Tasks(): TaskDefinition[] {
     {
       id: "attentive-sync",
       name: "Attentive Email/SMS Sync",
-      schedule: { type: "daily", hour: 13, minute: 45 }, // 6:45 AM PT
+      schedule: { type: "daily", hour: 15, minute: 0 }, // 8:00 AM PT
       enabled: true,
     },
     {
