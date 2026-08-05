@@ -17,6 +17,8 @@ export interface SlackAppDeps {
   /** Handlers that receive file content (e.g., CSV imports) */
   fileHandlers?: Record<string, (fileContent: string, args: string) => Promise<SlackResponse>>;
   getKbContext?: (query: string) => Promise<string>;
+  /** Pull live metrics from DB based on question topic */
+  getLiveContext?: (question: string) => Promise<string>;
 }
 
 /** Acknowledgment messages for slow commands so the user knows we heard them. */
@@ -82,19 +84,33 @@ export function createSlackApp(deps: SlackAppDeps) {
         // Acknowledge natural language — AI takes a moment
         await say("Thinking...");
 
+        // Pull live metrics from DB based on what the question is about
+        let liveContext = "";
+        if (deps.getLiveContext) {
+          liveContext = await deps.getLiveContext(parsed.text);
+        }
+
         // Retrieve relevant KB context for the query
         let kbContext = "";
         if (deps.getKbContext) {
           kbContext = await deps.getKbContext(parsed.text);
         }
 
-        const prompt = kbContext
-          ? `${parsed.text}\n\n${kbContext}`
-          : parsed.text;
+        const contextParts = [parsed.text];
+        if (liveContext) contextParts.push(liveContext);
+        if (kbContext) contextParts.push(kbContext);
+        const prompt = contextParts.join("\n\n");
 
         const result = await deps.runOrchestrator({
           prompt,
-          system: "You are a marketing assistant for Rad & Happy, a stationery brand. Answer the user's question based on available data and the knowledge base context provided. Be friendly, specific, and actionable. If knowledge base context is provided, use it to inform your answer.",
+          system: `You are the marketing strategist for Rad & Happy, a stationery and lifestyle e-commerce brand. You have access to live data from the store's ad platform, Shopify, Instagram, and email/SMS system.
+
+When the user asks a question:
+- If live data is provided, USE IT — cite specific numbers. These are real, current metrics.
+- Be friendly and specific. Tara (CEO/creative director) is non-technical — no jargon.
+- Be actionable — don't just report numbers, tell them what the numbers mean and what to do.
+- If you don't have the data to answer, say so honestly rather than guessing.
+- Keep answers concise — 2-3 paragraphs max unless they ask for detail.`,
         });
         response = formatOrchestratorResult(result);
       } else {

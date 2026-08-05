@@ -42,6 +42,7 @@ import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
 import { importAttentiveCsv } from "@/domain/attentive/import";
+import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -750,6 +751,10 @@ async function main() {
     getKbContext: embeddingClient
       ? async (query) => retrieveContext({ db, embeddingClient }, query)
       : undefined,
+    getLiveContext: async (question) => {
+      const topics = detectTopics(question);
+      return buildLiveContext(db, topics);
+    },
   });
 
   if (slackApp) {
