@@ -3,7 +3,7 @@
 
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm install --frozen-lockfile && pnpm build"
+buildCommand = "pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium && pnpm build"
 
 [deploy]
 preDeployCommand = ["pnpm db:migrate"]

@@ -2,9 +2,5 @@
 # ffmpeg is needed for video frame extraction (PySceneDetect + FFmpeg pipeline).
 
 [phases.setup]
-nixPkgs = ["nodejs_22", "chromium"]
+nixPkgs = ["nodejs_22"]
 aptPkgs = ["ffmpeg"]
-
-[variables]
-PLAYWRIGHT_BROWSERS_PATH = "/nix/store"
-PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"

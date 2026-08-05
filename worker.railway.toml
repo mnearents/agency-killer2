@@ -4,7 +4,7 @@
 
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm install --frozen-lockfile"
+buildCommand = "pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium"
 
 [deploy]
 startCommand = "pnpm start:worker"
