@@ -43,6 +43,7 @@ import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
 import { importAttentiveCsv } from "@/domain/attentive/import";
 import { detectTopics, buildLiveContext } from "@/domain/qa/context";
+import { backfillSocialInsights } from "@/domain/social/backfill";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -456,6 +457,25 @@ async function main() {
         followerCount,
       });
       return { text, isError: false };
+    },
+    "social:backfill": async () => {
+      if (!igClient) {
+        return { text: "Instagram not configured — META_ACCESS_TOKEN not set.", isError: true };
+      }
+      const result = await backfillSocialInsights(igClient, db);
+      if (result.checked === 0) {
+        return { text: "No posts with missing insights found — nothing to backfill.", isError: false };
+      }
+      const lines = [
+        `*Backfill complete!*`,
+        `• ${result.checked} posts checked`,
+        `• ${result.updated} updated with real insights`,
+        `• ${result.failed} couldn't be fetched (expired stories, etc.)`,
+      ];
+      if (result.errors.length > 0) {
+        lines.push(`\nErrors:\n${result.errors.slice(0, 5).map(e => `• ${e}`).join("\n")}`);
+      }
+      return { text: lines.join("\n"), isError: false };
     },
     "social:reel": async () => ({
       text: "Reel creation coming soon!",

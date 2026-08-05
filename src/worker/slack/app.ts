@@ -34,6 +34,7 @@ const ACK_MESSAGES: Record<string, string> = {
   "social:analyze": "Analyzing social performance...",
   "sync:social": "Syncing Instagram data...",
   "report:weekly": "Generating weekly report...",
+  "social:backfill": "Backfilling Instagram insights (this may take a few minutes)...",
   "import:attentive": "Importing Attentive data...",
 };
 

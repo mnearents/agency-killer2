@@ -101,6 +101,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
   },
   social: {
     analyze: "social:analyze",
+    backfill: "social:backfill",
     reel: "social:reel",
     "": "social:overview",
   },
