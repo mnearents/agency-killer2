@@ -239,9 +239,8 @@ async function loginWith2FA(page: Page, config: AttentiveAgentConfig): Promise<v
     console.log(`[attentive-agent] Received 2FA code (${cleanCode.length} digits)`);
 
     // Find the code input and fill it
-    // Try common selectors for 2FA code inputs
     const codeInput = await page.$(
-      'input[type="text"], input[type="number"], input[type="tel"], input[name*="code"], input[name*="otp"], input[placeholder*="code"]'
+      '#verificationCode, input[name="verificationCode"], input[placeholder="XXXXXX"], input[name*="code"], input[name*="otp"]'
     );
 
     if (codeInput) {
