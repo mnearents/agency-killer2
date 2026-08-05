@@ -15,8 +15,8 @@ const LOGIN_URL = `${ATTENTIVE_BASE}/signin`;
 const REPORTS_URL = `${ATTENTIVE_BASE}/reports`;
 
 // Report URLs (navigated to from the reports library)
-const CAMPAIGN_PERFORMANCE_URL = `${ATTENTIVE_BASE}/reports/campaign-performance`;
-const ATTRIBUTED_REVENUE_URL = `${ATTENTIVE_BASE}/reports/attributed-revenue`;
+const CAMPAIGN_PERFORMANCE_URL = `${ATTENTIVE_BASE}/analytics/reports/library/campaign-performance-aggregate-group`;
+const ATTRIBUTED_REVENUE_URL = `${ATTENTIVE_BASE}/analytics/reports/library/attributed-revenue`;
 
 export interface AttentiveAgentConfig {
   username: string;
