@@ -53,27 +53,33 @@ export function createSlackApp(deps: SlackAppDeps) {
   });
 
   // Listen for all messages in channels the bot is in + DMs.
-  // Requires 'message.channels' and 'message.im' bot event subscriptions.
-  app.message(async ({ message, say, client }) => {
-    // Only handle user messages with text (skip bot messages, edits, etc.)
-    if (!("text" in message) || !message.text) return;
-    if ("bot_id" in message && message.bot_id) return; // ignore our own messages
-    // Allow file_share (file uploads with text), skip other subtypes (edits, joins, etc.)
-    if ("subtype" in message && message.subtype && message.subtype !== "file_share") return;
+  // Using app.event('message') instead of app.message() for reliable
+  // channel message delivery in socket mode.
+  app.event("message", async ({ event, say, client }) => {
+    const message = event as unknown as Record<string, unknown>;
 
-    const text = message.text
+    // Only handle user messages with text (skip bot messages, edits, etc.)
+    if (!message.text || typeof message.text !== "string") return;
+    if (message.bot_id) return; // ignore our own messages
+    // Allow file_share (file uploads with text), skip other subtypes (edits, joins, etc.)
+    if (message.subtype && message.subtype !== "file_share") return;
+
+    const rawText = message.text as string;
+    const text = rawText
       // Strip bot mention if present (e.g., "<@U12345> !ads report" → "!ads report")
       .replace(/<@[A-Z0-9]+>\s*/g, "")
       .trim();
 
     if (!text) return;
 
-    // Only respond to ! commands or DMs — ignore casual channel chatter
-    const isDm = "channel_type" in message && message.channel_type === "im";
+    // Respond to: ! commands, DMs, or messages that @mentioned the bot
+    const isDm = message.channel_type === "im";
     const isCommand = text.startsWith("!");
-    if (!isDm && !isCommand) return;
+    const wasMentioned = /<@[A-Z0-9]+>/.test(rawText);
+    if (!isDm && !isCommand && !wasMentioned) return;
 
-    console.log(`[slack] Received: "${text.slice(0, 80)}" (${isDm ? "DM" : "channel"}, files: ${"files" in message ? (message.files as unknown[])?.length ?? 0 : 0})`);
+    const files = Array.isArray(message.files) ? message.files as Array<Record<string, unknown>> : [];
+    console.log(`[slack] Received: "${text.slice(0, 80)}" (${isDm ? "DM" : "channel"}, files: ${files.length})`);
 
     const parsed = parseMessage(text);
 
@@ -155,8 +161,8 @@ When the user asks a question:
 
           // Check if this is a file-based handler (e.g., CSV import)
           const fileHandler = deps.fileHandlers?.[route.handler];
-          if (fileHandler && "files" in message && Array.isArray(message.files) && message.files.length > 0) {
-            const file = message.files[0] as { id?: string; url_private_download?: string; name?: string };
+          if (fileHandler && files.length > 0) {
+            const file = files[0] as { id?: string; url_private_download?: string; name?: string };
             if (file.id) {
               await say("Downloading and importing file...");
               try {
