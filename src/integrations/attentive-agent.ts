@@ -93,7 +93,8 @@ export async function exportAttentiveReports(
 }
 
 async function login(page: Page, username: string, password: string): Promise<void> {
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle" });
+  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+  await page.waitForSelector("#email", { timeout: 15000 });
 
   // Step 1: Enter email and click Continue
   await page.fill("#email", username);
@@ -109,13 +110,16 @@ async function login(page: Page, username: string, password: string): Promise<vo
   await page.waitForSelector('[data-client-ui-id="login-button"]:not([disabled])', { timeout: 5000 });
   await page.click('[data-client-ui-id="login-button"]');
 
-  // Wait for navigation to complete (dashboard loads)
-  await page.waitForURL("**/home**", { timeout: 30000 });
+  // Wait for navigation away from signin page
+  await page.waitForFunction(
+    () => !window.location.pathname.includes("/signin"),
+    { timeout: 30000 }
+  );
 }
 
 async function exportReport(page: Page, reportUrl: string, reportName: string): Promise<string> {
   console.log(`[attentive-agent] Navigating to ${reportName}...`);
-  await page.goto(reportUrl, { waitUntil: "networkidle" });
+  await page.goto(reportUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
 
   // Wait for the report table to load
   await page.waitForSelector("table", { timeout: 30000 });
