@@ -26,6 +26,7 @@ import {
 } from "./weekly-data";
 import { buildWeeklyReportRequest } from "./weekly-analysis";
 import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
+import { getEntriesByWeek } from "@/domain/calendar/queries";
 
 export interface WeeklyReportDeps {
   db: Db;
@@ -207,9 +208,34 @@ export async function generateWeeklyReport(
     console.error("[weekly-report] Failed to fetch Attentive data:", err);
   }
 
+  // ─── Calendar data ────────────────────────────────────────────────
+  let calendarContext = "";
+  try {
+    // Get this coming week's planned entries
+    const comingWeekStart = new Date();
+    const comingWeekEnd = new Date(comingWeekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const upcoming = await getEntriesByWeek(deps.db, comingWeekStart, comingWeekEnd);
+
+    if (upcoming.length > 0) {
+      const lines = ["## Marketing Calendar (this coming week)"];
+      for (const e of upcoming) {
+        const dateStr = new Date(e.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+        lines.push(`- ${dateStr}: ${e.channel} — ${e.title} [${e.status}]${e.notes ? ` (${e.notes})` : ""}`);
+      }
+      calendarContext = lines.join("\n");
+    } else {
+      calendarContext = "## Marketing Calendar\nNothing planned for the coming week. Suggest entries based on what worked.";
+    }
+  } catch {
+    // Table may not exist yet
+  }
+
   // ─── Assemble and generate ───────────────────────────────────────
   const reportData: WeeklyReportData = { weekRange, ads, shopify, social, emailSms };
-  const dataBlock = formatWeeklyDataBlock(reportData);
+  let dataBlock = formatWeeklyDataBlock(reportData);
+  if (calendarContext) {
+    dataBlock += "\n\n" + calendarContext;
+  }
 
   let kbContext: string | undefined;
   if (deps.getKbContext) {

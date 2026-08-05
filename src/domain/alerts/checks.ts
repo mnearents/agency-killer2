@@ -18,16 +18,21 @@ export interface Alert {
 export interface EmailSendsInput {
   emailDelivered: number;
   smsDelivered: number;
+  hasUpcomingCalendarEntry: boolean;
 }
 
 export function checkNoEmailSends(input: EmailSendsInput): Alert | null {
   if (input.emailDelivered > 0 || input.smsDelivered > 0) return null;
 
+  if (input.hasUpcomingCalendarEntry) {
+    return null; // Something is planned, don't nag
+  }
+
   return {
     type: "no-sends",
     severity: "warning",
     message:
-      "No email or SMS sends in the past 7 days. The calendar should have something going out every week — even a simple freebie drop or behind-the-scenes gives you a reason to send and measure.",
+      "No email or SMS sends in the past 7 days and nothing on the calendar. Add something with `!calendar add` — even a simple freebie drop or behind-the-scenes gives you a reason to send and measure.",
   };
 }
 

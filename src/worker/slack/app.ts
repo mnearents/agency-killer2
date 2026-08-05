@@ -153,6 +153,8 @@ When the user asks a question:
               "• `!social analyze` — AI-generated content strategy insights",
               "• `!social` — Quick organic social stats",
               "• `!report weekly` — Monday morning cross-channel briefing",
+              "• `!calendar` — View upcoming week's calendar",
+              "• `!calendar add <date> <channel> <title>` — Add entry",
               "• `!sync social` — Pull Instagram posts and insights",
               "• `!sync attentive` — Auto-sync Attentive email/SMS data",
               "• `!import attentive` — Import Attentive CSV (attach file)",

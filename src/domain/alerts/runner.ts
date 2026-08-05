@@ -8,6 +8,7 @@ import { gte, and, eq, sql } from "drizzle-orm";
 import { metaInsights, shopifyOrders, socialPosts } from "@/db/schema";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getPostSummary } from "@/domain/social/queries";
+import { getUpcomingEntries } from "@/domain/calendar/queries";
 import {
   checkNoEmailSends,
   checkReelOutperforming,
@@ -35,9 +36,19 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       .from(attentiveCampaigns)
       .where(gte(attentiveCampaigns.date, sevenDaysAgo));
 
+    // Check if there's an upcoming Email or SMS on the calendar
+    let hasUpcoming = false;
+    try {
+      const upcoming = await getUpcomingEntries(db, 7);
+      hasUpcoming = upcoming.some((e) => e.channel === "Email" || e.channel === "SMS");
+    } catch {
+      // Calendar table may not exist yet
+    }
+
     const emailAlert = checkNoEmailSends({
       emailDelivered: Number(emailAgg.emailDelivered),
       smsDelivered: Number(emailAgg.smsDelivered),
+      hasUpcomingCalendarEntry: hasUpcoming,
     });
     if (emailAlert) alerts.push(emailAlert);
   } catch {

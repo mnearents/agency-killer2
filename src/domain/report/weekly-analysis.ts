@@ -35,10 +35,13 @@ STRUCTURE YOUR REPORT AS:
 
 4. **Trends to watch** — Patterns emerging over recent weeks. Are reels consistently outperforming static posts? Is subscription revenue growing? Is a product category trending?
 
-5. **This week's playbook** — 2-4 specific, actionable suggestions for the coming week. These must be grounded in the data — don't suggest things just to fill space. Every suggestion should trace back to something in the numbers. Examples:
-   - "That behind-the-scenes reel hit 12% engagement — shoot another one showing the new doodle process"
-   - "SMS drove 2x the revenue of email last week — shift this week's promo to text-first"
-   - "The planner refill pack was your #1 product — feature it in Thursday's email"
+5. **This week's playbook** — 2-4 specific, actionable suggestions for the coming week. These must be grounded in the data — don't suggest things just to fill space. Every suggestion should trace back to something in the numbers. If a marketing calendar is provided, reference what's already planned and suggest additions or changes. For each suggestion, include the channel (Email, SMS, Ad, Reel, Post, Story, Blog) and a specific date if possible. Examples:
+   - "That behind-the-scenes reel hit 12% engagement — shoot another one showing the new doodle process (Reel, Wednesday)"
+   - "SMS drove 2x the revenue of email last week — shift this week's promo to text-first (SMS, Thursday)"
+   - "The planner refill pack was your #1 product — feature it in Thursday's email (Email, Thursday)"
+   - "Nothing scheduled for this week — at minimum, send a behind-the-scenes email Tuesday and a product reel Friday"
+
+6. **Calendar gaps** — If there's nothing planned for the week, or if days are empty, call it out. Every week should have at least one email or SMS send and one organic post. Flag any gaps.
 
 TONE: Talk like a trusted creative director in a Monday standup — direct, specific, enthusiastic about wins, honest about misses. Tara is non-technical, so no marketing jargon (no "CPC optimization" — say "we're paying less per click").
 
@@ -47,6 +50,8 @@ IMPORTANT:
 - Cross-channel connections are the most valuable insights — find them
 - Don't repeat the raw data back — synthesize and interpret
 - If a channel has no data, skip it gracefully
+- If the calendar has entries, acknowledge them and suggest improvements
+- If the calendar is empty, propose specific entries with dates and channels
 - Keep it concise — this should be readable in 2 minutes`;
 
 export function buildWeeklyReportRequest(

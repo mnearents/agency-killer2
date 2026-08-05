@@ -47,6 +47,7 @@ import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 import { backfillSocialInsights } from "@/domain/social/backfill";
 import { runAlertChecks, formatAlerts } from "@/domain/alerts/runner";
 import { isDuringWorkHours, prioritizeAlerts } from "@/domain/alerts/schedule";
+import { getUpcomingEntries, createEntry } from "@/domain/calendar/queries";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -558,6 +559,68 @@ async function main() {
       text: "Reel creation coming soon!",
       isError: false,
     }),
+    "calendar:view": async () => {
+      try {
+        const entries = await getUpcomingEntries(db, 7);
+        if (entries.length === 0) {
+          return { text: "Nothing on the calendar for the next 7 days. Add entries at `/calendar` on the dashboard or use `!calendar add <date> <channel> <title>`.", isError: false };
+        }
+        const lines = ["*Upcoming (next 7 days):*", ""];
+        for (const e of entries) {
+          const dateStr = new Date(e.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+          const statusIcon = e.status === "scheduled" ? "READY" : e.status === "idea" ? "IDEA" : e.status;
+          lines.push(`• *${dateStr}* — ${e.channel}: ${e.title} [${statusIcon}]${e.notes ? ` — ${e.notes}` : ""}`);
+        }
+        return { text: lines.join("\n"), isError: false };
+      } catch {
+        return { text: "Calendar not available yet. Run a deploy to create the table.", isError: true };
+      }
+    },
+    "calendar:add": async (args) => {
+      // Format: !calendar add 8/15 Email Summer promo
+      if (!args) {
+        return {
+          text: "Usage: `!calendar add <date> <channel> <title>`\nExample: `!calendar add 8/15 Email Summer planner promo`\nChannels: Email, SMS, Ad, Reel, Post, Story, Blog",
+          isError: false,
+        };
+      }
+      const parts = args.split(/\s+/);
+      if (parts.length < 3) {
+        return { text: "Need at least: date, channel, and title.\nExample: `!calendar add 8/15 Email Summer promo`", isError: true };
+      }
+
+      const dateStr = parts[0];
+      const channel = parts[1];
+      const title = parts.slice(2).join(" ");
+
+      const validChannels = ["Email", "SMS", "Ad", "Reel", "Post", "Story", "Blog"];
+      if (!validChannels.includes(channel)) {
+        return { text: `"${channel}" isn't a valid channel. Use one of: ${validChannels.join(", ")}`, isError: true };
+      }
+
+      // Parse date — accept M/D, MM/DD, YYYY-MM-DD
+      let date: Date;
+      if (dateStr.includes("/")) {
+        const [m, d] = dateStr.split("/").map(Number);
+        const year = new Date().getFullYear();
+        date = new Date(Date.UTC(year, m - 1, d));
+      } else {
+        date = new Date(dateStr + "T00:00:00Z");
+      }
+
+      if (isNaN(date.getTime())) {
+        return { text: `Couldn't parse "${dateStr}" as a date. Use M/D (e.g., 8/15) or YYYY-MM-DD.`, isError: true };
+      }
+
+      try {
+        await createEntry(db, { date, channel, title, status: "planned" });
+        const formatted = date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+        return { text: `*Added to calendar:* ${formatted} — ${channel}: ${title}`, isError: false };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { text: `Failed to add entry: ${msg}`, isError: true };
+      }
+    },
     "report:weekly": async () => {
       if (!orchestrator) {
         return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };

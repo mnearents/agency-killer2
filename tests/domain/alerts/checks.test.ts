@@ -9,19 +9,24 @@ import {
 } from "@/domain/alerts/checks";
 
 describe("checkNoEmailSends", () => {
-  it("fires when no emails delivered in 7 days", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 0 });
+  it("fires when no sends and nothing on calendar", () => {
+    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 0, hasUpcomingCalendarEntry: false });
     expect(alert).not.toBeNull();
     expect(alert!.type).toBe("no-sends");
   });
 
   it("does not fire when emails were sent", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 5000, smsDelivered: 0 });
+    const alert = checkNoEmailSends({ emailDelivered: 5000, smsDelivered: 0, hasUpcomingCalendarEntry: false });
     expect(alert).toBeNull();
   });
 
   it("does not fire when SMS was sent", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 1000 });
+    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 1000, hasUpcomingCalendarEntry: false });
+    expect(alert).toBeNull();
+  });
+
+  it("does not fire when something is on the calendar", () => {
+    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 0, hasUpcomingCalendarEntry: true });
     expect(alert).toBeNull();
   });
 });
