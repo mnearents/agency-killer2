@@ -116,6 +116,32 @@ async function main() {
   // Proactive Slack messaging — set after Slack app starts
   let postToSlack: ((channel: string, text: string) => Promise<void>) | null = null;
 
+  // Pending 2FA reply callback — set when agent needs a code
+  let pending2faResolve: ((value: string) => void) | null = null;
+
+  /**
+   * Create a function that posts a question to Slack and waits for a human reply.
+   * Used by the Attentive agent for 2FA codes.
+   */
+  function createSlackAsker(channel: string) {
+    return async (message: string): Promise<string | null> => {
+      if (!postToSlack) return null;
+
+      await postToSlack(channel, message);
+
+      // Wait for a reply (up to 5 minutes)
+      return new Promise<string | null>((resolve) => {
+        pending2faResolve = resolve;
+        setTimeout(() => {
+          if (pending2faResolve === resolve) {
+            pending2faResolve = null;
+            resolve(null);
+          }
+        }, 5 * 60 * 1000);
+      });
+    };
+  }
+
   // ─── Build orchestrator ─────────────────────────────────────────────
   const voiceProfile = loadVoiceProfile();
   console.log(`[worker] Loaded voice profile: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`);
@@ -210,6 +236,8 @@ async function main() {
       const exportResult = await exportAttentiveReports({
         username: attUser,
         password: attPass,
+        db,
+        askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
       });
       let imported = 0;
       if (exportResult.campaignCsv) {
@@ -665,7 +693,12 @@ async function main() {
       if (!attUser || !attPass) {
         return { text: "Attentive sync unavailable — ATTENTIVE_AGENT_USERNAME or ATTENTIVE_AGENT_PASSWORD not set.", isError: true };
       }
-      const exportResult = await exportAttentiveReports({ username: attUser, password: attPass });
+      const exportResult = await exportAttentiveReports({
+        username: attUser,
+        password: attPass,
+        db,
+        askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
+      });
       let imported = 0;
       const lines: string[] = [];
       if (exportResult.campaignCsv) {
@@ -723,7 +756,12 @@ async function main() {
       const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
       if (attUser && attPass) {
         try {
-          const exp = await exportAttentiveReports({ username: attUser, password: attPass });
+          const exp = await exportAttentiveReports({
+            username: attUser,
+            password: attPass,
+            db,
+            askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
+          });
           let rows = 0;
           if (exp.campaignCsv) rows += (await importAttentiveCsv(db, exp.campaignCsv)).imported;
           if (exp.revenueCsv) rows += (await importAttentiveCsv(db, exp.revenueCsv)).imported;
@@ -849,6 +887,15 @@ async function main() {
     getLiveContext: async (question) => {
       const topics = detectTopics(question);
       return buildLiveContext(db, topics);
+    },
+    onMessageInterceptor: (text) => {
+      // If a 2FA code is pending and someone sends a short numeric message, resolve it
+      if (pending2faResolve && /^\d{4,8}$/.test(text.trim())) {
+        pending2faResolve(text.trim());
+        pending2faResolve = null;
+        return true;
+      }
+      return false;
     },
   });
 

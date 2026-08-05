@@ -404,3 +404,11 @@ export type NewAttentiveCampaign = typeof attentiveCampaigns.$inferInsert;
 
 export type AttentiveRevenue = typeof attentiveRevenue.$inferSelect;
 export type NewAttentiveRevenue = typeof attentiveRevenue.$inferInsert;
+
+// ─── Agent Sessions (cookie persistence) ─────────────────────────────
+
+export const agentSessions = pgTable("agent_sessions", {
+  id: text("id").primaryKey(), // e.g., "attentive"
+  cookiesJson: text("cookies_json").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

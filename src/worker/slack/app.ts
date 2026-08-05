@@ -19,6 +19,8 @@ export interface SlackAppDeps {
   getKbContext?: (query: string) => Promise<string>;
   /** Pull live metrics from DB based on question topic */
   getLiveContext?: (question: string) => Promise<string>;
+  /** Intercept a message before normal handling. Returns true if consumed. */
+  onMessageInterceptor?: (text: string) => boolean;
 }
 
 /** Acknowledgment messages for slow commands so the user knows we heard them. */
@@ -73,6 +75,12 @@ export function createSlackApp(deps: SlackAppDeps) {
       .trim();
 
     if (!text) return;
+
+    // Check if an interceptor wants this message (e.g., 2FA code reply)
+    if (deps.onMessageInterceptor?.(text)) {
+      console.log(`[slack] Message intercepted: "${text.slice(0, 20)}"`);
+      return;
+    }
 
     // Respond to: ! commands, DMs, or messages that @mentioned the bot
     const isDm = message.channel_type === "im";
