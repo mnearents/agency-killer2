@@ -39,6 +39,7 @@ function fmtPct(v: number | null): string {
 
 function getFormatLabel(mediaType: string, mediaProductType: string | null): string {
   if (mediaProductType === "REELS") return "Reel";
+  if (mediaProductType === "STORY") return "Story";
   if (mediaType === "CAROUSEL_ALBUM") return "Carousel";
   if (mediaType === "VIDEO") return "Video";
   return "Image";
@@ -46,6 +47,7 @@ function getFormatLabel(mediaType: string, mediaProductType: string | null): str
 
 const FORMAT_COLORS: Record<string, string> = {
   Reel: "#6f42c1",
+  Story: "#e09b13",
   Carousel: "#0969da",
   Image: "#1a7f37",
   Video: "#d1242f",

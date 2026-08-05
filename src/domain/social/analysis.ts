@@ -59,6 +59,7 @@ function fmtNum(value: number): string {
 
 function getFormatLabel(mediaType: string, mediaProductType: string | null): string {
   if (mediaProductType === "REELS") return "Reel";
+  if (mediaProductType === "STORY") return "Story";
   if (mediaType === "CAROUSEL_ALBUM") return "Carousel";
   if (mediaType === "VIDEO") return "Video";
   return "Image";

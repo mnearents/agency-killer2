@@ -91,6 +91,7 @@ export async function getFormatStats(
 
     let format = "Image";
     if (r.mediaProductType === "REELS") format = "Reel";
+    else if (r.mediaProductType === "STORY") format = "Story";
     else if (r.mediaType === "CAROUSEL_ALBUM") format = "Carousel";
     else if (r.mediaType === "VIDEO") format = "Video";
 
