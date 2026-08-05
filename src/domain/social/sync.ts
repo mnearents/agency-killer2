@@ -84,6 +84,12 @@ export async function syncSocialPosts(
   console.log(`[sync:social] Fetching media for IG user ${igUserId}...`);
   const recentMedia = await client.getRecentMedia(igUserId, limit);
   console.log(`[sync:social] Got ${recentMedia.length} posts`);
+  if (recentMedia.length > 0) {
+    // Log first few posts for debugging
+    for (const m of recentMedia.slice(0, 3)) {
+      console.log(`[sync:social] Post ${m.id}: type=${m.media_type} product=${m.media_product_type ?? "?"} date=${m.timestamp} caption="${(m.caption ?? "").slice(0, 50)}"`);
+    }
+  }
 
   let stories: typeof recentMedia = [];
   try {
@@ -110,10 +116,15 @@ export async function syncSocialPosts(
     try {
       insights = await client.getMediaInsights(media.id, media.media_type);
       insightsFetched++;
+      if (rows.length < 3) {
+        console.log(`[sync:social] Insights for ${media.id}: reach=${insights.reach} saved=${insights.saved} shares=${insights.shares}`);
+      }
     } catch (err) {
       insightsFailed++;
       const msg = err instanceof Error ? err.message : String(err);
-      // Don't log every story/low-impression failure — it's expected
+      if (rows.length < 3) {
+        console.log(`[sync:social] Insights failed for ${media.id}: ${msg.slice(0, 150)}`);
+      }
       if (!msg.includes("400")) {
         errors.push(`Insights failed for ${media.id}: ${msg}`);
       }
