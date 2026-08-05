@@ -39,6 +39,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "attentive-sync",
+      name: "Attentive Email/SMS Sync",
+      schedule: { type: "daily", hour: 13, minute: 45 }, // 6:45 AM PT
+      enabled: true,
+    },
+    {
       id: "kb-sync",
       name: "Knowledge Base Sync",
       schedule: { type: "interval", hours: 6 },
@@ -70,6 +76,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "meta-sync": "sync:meta",
     "shopify-sync": "sync:shopify",
     "social-sync": "sync:social",
+    "attentive-sync": "sync:attentive",
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
     "ads-analysis": "meta:analysis",

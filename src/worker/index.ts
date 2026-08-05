@@ -42,6 +42,7 @@ import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
 import { importAttentiveCsv } from "@/domain/attentive/import";
+import { exportAttentiveReports } from "@/integrations/attentive-agent";
 import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 import { backfillSocialInsights } from "@/domain/social/backfill";
 
@@ -195,6 +196,35 @@ async function main() {
       );
       if (result.errors.length > 0) {
         console.error("[sync:social] Errors:", result.errors);
+      }
+    },
+
+    "sync:attentive": async () => {
+      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
+      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
+      if (!attUser || !attPass) {
+        console.log("[sync:attentive] Skipped — ATTENTIVE_AGENT_USERNAME or ATTENTIVE_AGENT_PASSWORD not set");
+        return;
+      }
+      console.log("[sync:attentive] Starting Attentive export agent...");
+      const exportResult = await exportAttentiveReports({
+        username: attUser,
+        password: attPass,
+      });
+      let imported = 0;
+      if (exportResult.campaignCsv) {
+        const r = await importAttentiveCsv(db, exportResult.campaignCsv);
+        imported += r.imported;
+        console.log(`[sync:attentive] Campaign Performance: ${r.imported} rows imported`);
+      }
+      if (exportResult.revenueCsv) {
+        const r = await importAttentiveCsv(db, exportResult.revenueCsv);
+        imported += r.imported;
+        console.log(`[sync:attentive] Attributed Revenue: ${r.imported} rows imported`);
+      }
+      console.log(`[sync:attentive] Done: ${imported} total rows imported`);
+      if (exportResult.errors.length > 0) {
+        console.error("[sync:attentive] Errors:", exportResult.errors);
       }
     },
 
@@ -629,6 +659,36 @@ async function main() {
         isError: false,
       };
     },
+    "sync:attentive": async () => {
+      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
+      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
+      if (!attUser || !attPass) {
+        return { text: "Attentive sync unavailable — ATTENTIVE_AGENT_USERNAME or ATTENTIVE_AGENT_PASSWORD not set.", isError: true };
+      }
+      const exportResult = await exportAttentiveReports({ username: attUser, password: attPass });
+      let imported = 0;
+      const lines: string[] = [];
+      if (exportResult.campaignCsv) {
+        const r = await importAttentiveCsv(db, exportResult.campaignCsv);
+        imported += r.imported;
+        lines.push(`• Campaign Performance: ${r.imported} rows`);
+      }
+      if (exportResult.revenueCsv) {
+        const r = await importAttentiveCsv(db, exportResult.revenueCsv);
+        imported += r.imported;
+        lines.push(`• Attributed Revenue: ${r.imported} rows`);
+      }
+      if (exportResult.errors.length > 0) {
+        return {
+          text: `Attentive sync had errors:\n${exportResult.errors.map(e => `• ${e}`).join("\n")}${lines.length > 0 ? `\n\nPartially imported:\n${lines.join("\n")}` : ""}`,
+          isError: true,
+        };
+      }
+      return {
+        text: `*Attentive sync complete!*\n${lines.join("\n")}\n• ${imported} total rows imported`,
+        isError: false,
+      };
+    },
     "sync:knowledge-base": async () => {
       if (!dropboxClient) {
         return { text: "KB sync unavailable — Dropbox credentials not set.", isError: true };
@@ -658,6 +718,21 @@ async function main() {
         results.push(`Instagram: ${r.posts} posts${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
       } else {
         results.push("Instagram: skipped (no credentials)");
+      }
+      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
+      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
+      if (attUser && attPass) {
+        try {
+          const exp = await exportAttentiveReports({ username: attUser, password: attPass });
+          let rows = 0;
+          if (exp.campaignCsv) rows += (await importAttentiveCsv(db, exp.campaignCsv)).imported;
+          if (exp.revenueCsv) rows += (await importAttentiveCsv(db, exp.revenueCsv)).imported;
+          results.push(`Attentive: ${rows} rows${exp.errors.length > 0 ? ` (${exp.errors.length} errors)` : ""}`);
+        } catch {
+          results.push("Attentive: failed");
+        }
+      } else {
+        results.push("Attentive: skipped (no credentials)");
       }
       if (dropboxClient) {
         const r = await syncKnowledgeBase(dropboxClient, dropboxKbRoot, new Map(), new Set());

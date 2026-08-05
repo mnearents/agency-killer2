@@ -35,6 +35,7 @@ const ACK_MESSAGES: Record<string, string> = {
   "sync:social": "Syncing Instagram data...",
   "report:weekly": "Generating weekly report...",
   "social:backfill": "Backfilling Instagram insights (this may take a few minutes)...",
+  "sync:attentive": "Syncing Attentive email/SMS data (logging in and exporting reports)...",
   "import:attentive": "Importing Attentive data...",
 };
 
@@ -145,6 +146,7 @@ When the user asks a question:
               "• `!social` — Quick organic social stats",
               "• `!report weekly` — Monday morning cross-channel briefing",
               "• `!sync social` — Pull Instagram posts and insights",
+              "• `!sync attentive` — Auto-sync Attentive email/SMS data",
               "• `!import attentive` — Import Attentive CSV (attach file)",
               "• `!inventory check` — Stock level alerts",
               "• `!help` — Show this message",

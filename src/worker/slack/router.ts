@@ -130,6 +130,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     meta: "sync:meta",
     shopify: "sync:shopify",
     social: "sync:social",
+    attentive: "sync:attentive",
     kb: "sync:knowledge-base",
     all: "sync:all",
     "": "sync:all",
