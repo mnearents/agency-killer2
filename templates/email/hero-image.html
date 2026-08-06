@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face {
+    font-family: 'CGPR';
+    src: url('{{font_cgpr_woff2}}') format('woff2');
+  }
+  @font-face {
+    font-family: 'PP Neue Sonder';
+    src: url('{{font_pp_ns_woff2}}') format('woff2');
+  }
+  @font-face {
+    font-family: 'PP Supply Mono';
+    src: url('{{font_pp_sm_woff2}}') format('woff2');
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 1200px;
+    background: {{backgroundColor}};
+  }
+
+  .container {
+    width: 1200px;
+  }
+
+  .header {
+    padding: 60px 80px 40px;
+    text-align: center;
+  }
+
+  .headline {
+    font-family: 'CGPR', serif;
+    font-size: {{headlineFontSize}}px;
+    color: {{headlineColor}};
+    line-height: 1.05;
+    white-space: pre-line;
+  }
+
+  .image-section {
+    padding: 0 60px;
+    position: relative;
+  }
+
+  .hero-image {
+    width: 100%;
+    border-radius: 20px;
+    display: block;
+  }
+
+  .star-badge {
+    position: absolute;
+    top: -20px;
+    left: 40px;
+    width: 180px;
+    height: 180px;
+    z-index: 2;
+  }
+
+  .star-badge img {
+    width: 100%;
+    height: 100%;
+  }
+
+  .star-badge-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-12deg);
+    font-family: 'PP Neue Sonder', sans-serif;
+    font-size: 26px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: #000000;
+    text-align: center;
+    line-height: 1.2;
+    white-space: pre-line;
+  }
+
+  .button-overlay {
+    position: absolute;
+    bottom: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+  }
+
+  .button {
+    display: inline-block;
+    font-family: 'PP Neue Sonder', sans-serif;
+    font-size: 30px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: {{buttonTextColor}};
+    background: {{buttonColor}};
+    padding: 36px 64px;
+    border-radius: 12px;
+    white-space: nowrap;
+  }
+
+  .body-section {
+    padding: 50px 100px;
+    text-align: center;
+  }
+
+  .body-copy {
+    font-family: 'PP Supply Mono', monospace;
+    font-size: 40px;
+    letter-spacing: 0.02em;
+    line-height: 48.6px;
+    color: {{bodyColor}};
+  }
+
+  .separator img {
+    width: 100%;
+    display: block;
+  }
+
+  .footer {
+    padding: 40px 80px;
+    text-align: center;
+  }
+
+  .footer-button {
+    display: inline-block;
+    font-family: 'PP Neue Sonder', sans-serif;
+    font-size: 30px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: {{buttonTextColor}};
+    background: {{buttonColor}};
+    padding: 36px 64px;
+    border-radius: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="headline">{{headline}}</div>
+  </div>
+
+  <div class="image-section">
+    {{#starBadgeText}}
+    <div class="star-badge">
+      <img src="{{starImage}}" alt="">
+      <div class="star-badge-text">{{starBadgeText}}</div>
+    </div>
+    {{/starBadgeText}}
+
+    <img class="hero-image" src="{{imageUrl}}" alt="{{imageAlt}}">
+
+    {{#overlayButtonText}}
+    <div class="button-overlay">
+      <span class="button">{{overlayButtonText}}</span>
+    </div>
+    {{/overlayButtonText}}
+  </div>
+
+  {{#bodyCopy}}
+  <div class="body-section">
+    <div class="body-copy">{{bodyCopy}}</div>
+  </div>
+  {{/bodyCopy}}
+
+  {{#separatorImage}}
+  <div class="separator">
+    <img src="{{separatorImage}}" alt="">
+  </div>
+  {{/separatorImage}}
+
+  {{#footerButtonText}}
+  <div class="footer">
+    <span class="footer-button">{{footerButtonText}}</span>
+  </div>
+  {{/footerButtonText}}
+</div>
+</body>
+</html>
