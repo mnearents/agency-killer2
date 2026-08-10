@@ -65,10 +65,10 @@ describe("buildGuardrailsForOutputType: analysis vs creative", () => {
     expect(creative.checkPii).toBe(true);
   });
 
-  it("keeps banned words for both output types", () => {
+  it("clears banned words for analysis (internal), keeps for creative (customer-facing)", () => {
     const analysis = buildGuardrailsForOutputType(baseGuardrails, "analysis");
     const creative = buildGuardrailsForOutputType(baseGuardrails, "creative");
-    expect(analysis.bannedWords).toEqual(["synergy", "delve"]);
+    expect(analysis.bannedWords).toEqual([]);
     expect(creative.bannedWords).toEqual(["synergy", "delve"]);
   });
 });

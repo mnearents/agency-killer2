@@ -59,9 +59,17 @@ export function buildGuardrailsForOutputType(
   baseGuardrails: GuardrailOptions,
   outputType: OutputType
 ): GuardrailOptions {
+  if (outputType === "analysis") {
+    // Internal analysis — no banned words. Those are for customer-facing copy.
+    return {
+      checkPii: true,
+      checkFabricatedStats: false,
+      bannedWords: [],
+    };
+  }
   return {
     ...baseGuardrails,
-    checkFabricatedStats: outputType === "creative",
+    checkFabricatedStats: true,
   };
 }
 

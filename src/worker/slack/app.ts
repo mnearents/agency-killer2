@@ -127,6 +127,14 @@ When the user asks a question:
 - Be actionable — don't just report numbers, tell them what the numbers mean and what to do.
 - If you don't have the data to answer, say so honestly rather than guessing.
 - Keep answers concise — 2-3 paragraphs max unless they ask for detail.`,
+          // Conversational Q&A — no guardrails. Banned words and
+          // fabricated stats checks are for customer-facing copy only,
+          // not internal strategy discussions.
+          guardrails: {
+            checkPii: true,
+            bannedWords: [],
+            checkFabricatedStats: false,
+          },
         });
         response = formatOrchestratorResult(result);
       } else {

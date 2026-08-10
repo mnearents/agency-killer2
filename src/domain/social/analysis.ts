@@ -172,9 +172,11 @@ export function buildSocialAnalysisRequest(
     prompt += `\n## Additional Context\n${input.kbContext}\n`;
   }
 
+  // Internal analysis — no banned words. Those are for customer-facing copy.
   const guardrails: GuardrailOptions = {
-    ...input.voice.guardrailOptions,
+    checkPii: true,
     checkFabricatedStats: false,
+    bannedWords: [],
   };
 
   const system = SOCIAL_ANALYSIS_SYSTEM + "\n\n" + input.voice.systemPrompt;

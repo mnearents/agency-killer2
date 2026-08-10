@@ -68,9 +68,11 @@ export function buildWeeklyReportRequest(
     prompt += `\n\n## Brand Context & Strategy Notes\n${input.kbContext}`;
   }
 
+  // Internal report — no banned words check. Those are for customer-facing copy.
   const guardrails: GuardrailOptions = {
-    ...input.voice.guardrailOptions,
+    checkPii: true,
     checkFabricatedStats: false,
+    bannedWords: [],
   };
 
   const system = WEEKLY_REPORT_SYSTEM + "\n\n" + input.voice.systemPrompt;
