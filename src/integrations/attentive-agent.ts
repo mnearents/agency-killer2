@@ -103,7 +103,8 @@ export async function exportAttentiveReports(
     let authenticated = false;
     const savedCookies = await loadCookies(config.db);
     if (savedCookies && savedCookies.length > 0) {
-      console.log("[attentive-agent] Loading saved session cookies...");
+      const httpOnlyCookies = savedCookies.filter((c) => c.httpOnly);
+      console.log(`[attentive-agent] Loading ${savedCookies.length} saved cookies (${httpOnlyCookies.length} httpOnly)...`);
       await context.addCookies(savedCookies);
 
       // Test if session is still valid
@@ -112,16 +113,19 @@ export async function exportAttentiveReports(
         waitUntil: "domcontentloaded",
         timeout: 30000,
       });
-      await testPage.waitForTimeout(3000);
+      await testPage.waitForTimeout(5000);
 
       const url = testPage.url();
+      console.log(`[attentive-agent] Cookie test URL: ${url}`);
       if (!url.includes("/signin") && !url.includes("/2fa")) {
         console.log("[attentive-agent] Saved session is valid");
         authenticated = true;
       } else {
         console.log("[attentive-agent] Saved session expired, doing fresh login");
-        await testPage.close();
       }
+      await testPage.close();
+    } else {
+      console.log("[attentive-agent] No saved cookies found");
     }
 
     if (!authenticated) {
@@ -129,8 +133,11 @@ export async function exportAttentiveReports(
       const page = await context.newPage();
       await loginWith2FA(page, config);
 
-      // Save cookies for next run
-      const cookies = await context.cookies();
+      // Save cookies for next run — get from all relevant domains
+      const cookies = await context.cookies([
+        "https://ui.attentivemobile.com",
+        "https://attentivemobile.com",
+      ]);
       const cookieData: CookieData[] = cookies.map((c) => ({
         name: c.name,
         value: c.value,
@@ -141,8 +148,12 @@ export async function exportAttentiveReports(
         secure: c.secure,
         sameSite: c.sameSite,
       }));
+      const httpOnly = cookieData.filter((c) => c.httpOnly);
       await saveCookies(config.db, cookieData);
-      console.log(`[attentive-agent] Saved ${cookieData.length} session cookies`);
+      console.log(`[attentive-agent] Saved ${cookieData.length} cookies (${httpOnly.length} httpOnly)`);
+
+      // Log cookie names for debugging
+      console.log(`[attentive-agent] Cookie names: ${cookieData.map((c) => `${c.name}${c.httpOnly ? "(H)" : ""}`).join(", ")}`);
       await page.close();
     }
 
