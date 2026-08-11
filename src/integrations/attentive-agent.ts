@@ -133,11 +133,8 @@ export async function exportAttentiveReports(
       const page = await context.newPage();
       await loginWith2FA(page, config);
 
-      // Save cookies for next run — get from all relevant domains
-      const cookies = await context.cookies([
-        "https://ui.attentivemobile.com",
-        "https://attentivemobile.com",
-      ]);
+      // Save cookies for next run — get ALL cookies from the context
+      const cookies = await context.cookies();
       const cookieData: CookieData[] = cookies.map((c) => ({
         name: c.name,
         value: c.value,
@@ -268,21 +265,33 @@ async function loginWith2FA(page: Page, config: AttentiveAgentConfig): Promise<v
       }
     }
 
-    // Submit the code
+    // Submit the code — try clicking a button first, then Enter as fallback
     const submitButton = await page.$(
-      'button[type="submit"], button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue")'
+      'button[type="submit"], button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue"), button:has-text("Sign in")'
     );
     if (submitButton) {
+      const btnText = await submitButton.textContent();
+      console.log(`[attentive-agent] Clicking submit button: "${btnText?.trim()}"`);
       await submitButton.click();
+    } else {
+      console.log("[attentive-agent] No submit button found, pressing Enter");
+      await page.keyboard.press("Enter");
     }
 
     // Wait for navigation past 2FA
-    await page.waitForFunction(
-      () => !window.location.pathname.includes("/2fa") && !window.location.pathname.includes("/signin"),
-      { timeout: 30000 }
-    );
-
-    console.log(`[attentive-agent] 2FA complete, URL: ${page.url()}`);
+    try {
+      await page.waitForFunction(
+        () => !window.location.pathname.includes("/2fa") && !window.location.pathname.includes("/signin"),
+        { timeout: 30000 }
+      );
+      console.log(`[attentive-agent] 2FA complete, URL: ${page.url()}`);
+    } catch {
+      const currentUrl = page.url();
+      const bodyText = await page.textContent("body").catch(() => "");
+      console.error(`[attentive-agent] 2FA verification timed out at: ${currentUrl}`);
+      console.error(`[attentive-agent] Page content: ${bodyText?.slice(0, 300)}`);
+      throw new Error(`2FA verification did not complete — stuck at ${currentUrl}`);
+    }
   }
 
   // Give the SPA a moment to initialize
