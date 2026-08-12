@@ -40,18 +40,21 @@ export interface AttentiveExportResult {
 
 // ─── Cookie persistence ───────────────────────────────────────────────
 
-interface CookieData {
-  name: string;
-  value: string;
-  domain: string;
-  path: string;
-  expires: number;
-  httpOnly: boolean;
-  secure: boolean;
-  sameSite: "Strict" | "Lax" | "None";
+interface SessionData {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly: boolean;
+    secure: boolean;
+    sameSite: "Strict" | "Lax" | "None";
+  }>;
+  localStorage?: Record<string, string>;
 }
 
-async function loadCookies(db: Db): Promise<CookieData[] | null> {
+async function loadSession(db: Db): Promise<SessionData | null> {
   try {
     const [row] = await db
       .select({ cookiesJson: agentSessions.cookiesJson })
@@ -60,14 +63,14 @@ async function loadCookies(db: Db): Promise<CookieData[] | null> {
       .limit(1);
 
     if (!row) return null;
-    return JSON.parse(row.cookiesJson) as CookieData[];
+    return JSON.parse(row.cookiesJson) as SessionData;
   } catch {
     return null;
   }
 }
 
-async function saveCookies(db: Db, cookies: CookieData[]): Promise<void> {
-  const json = JSON.stringify(cookies);
+async function saveSession(db: Db, data: SessionData): Promise<void> {
+  const json = JSON.stringify(data);
   await db
     .insert(agentSessions)
     .values({ id: SESSION_ID, cookiesJson: json, updatedAt: new Date() })
@@ -99,16 +102,29 @@ export async function exportAttentiveReports(
 
     const context = await browser.newContext({ acceptDownloads: true });
 
-    // Try saved cookies first
+    // Try saved session (cookies + localStorage) first
     let authenticated = false;
-    const savedCookies = await loadCookies(config.db);
-    if (savedCookies && savedCookies.length > 0) {
-      const httpOnlyCookies = savedCookies.filter((c) => c.httpOnly);
-      console.log(`[attentive-agent] Loading ${savedCookies.length} saved cookies (${httpOnlyCookies.length} httpOnly)...`);
-      await context.addCookies(savedCookies);
+    const savedSession = await loadSession(config.db);
+    if (savedSession && (savedSession.cookies.length > 0 || savedSession.localStorage)) {
+      const httpOnlyCookies = savedSession.cookies.filter((c) => c.httpOnly);
+      console.log(`[attentive-agent] Loading saved session: ${savedSession.cookies.length} cookies (${httpOnlyCookies.length} httpOnly), ${Object.keys(savedSession.localStorage ?? {}).length} localStorage keys`);
+      if (savedSession.cookies.length > 0) {
+        await context.addCookies(savedSession.cookies);
+      }
 
       // Test if session is still valid
       const testPage = await context.newPage();
+
+      // Restore localStorage before navigation
+      if (savedSession.localStorage && Object.keys(savedSession.localStorage).length > 0) {
+        await testPage.goto(ATTENTIVE_BASE, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await testPage.evaluate((storage) => {
+          for (const [key, value] of Object.entries(storage)) {
+            localStorage.setItem(key, value);
+          }
+        }, savedSession.localStorage);
+      }
+
       await testPage.goto(CAMPAIGN_PERFORMANCE_URL, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
@@ -116,7 +132,7 @@ export async function exportAttentiveReports(
       await testPage.waitForTimeout(5000);
 
       const url = testPage.url();
-      console.log(`[attentive-agent] Cookie test URL: ${url}`);
+      console.log(`[attentive-agent] Session test URL: ${url}`);
       if (!url.includes("/signin") && !url.includes("/2fa")) {
         console.log("[attentive-agent] Saved session is valid");
         authenticated = true;
@@ -125,7 +141,7 @@ export async function exportAttentiveReports(
       }
       await testPage.close();
     } else {
-      console.log("[attentive-agent] No saved cookies found");
+      console.log("[attentive-agent] No saved session found");
     }
 
     if (!authenticated) {
@@ -133,24 +149,35 @@ export async function exportAttentiveReports(
       const page = await context.newPage();
       await loginWith2FA(page, config);
 
-      // Save cookies for next run — get ALL cookies from the context
+      // Save cookies + localStorage for next run
       const cookies = await context.cookies();
-      const cookieData: CookieData[] = cookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path,
-        expires: c.expires,
-        httpOnly: c.httpOnly,
-        secure: c.secure,
-        sameSite: c.sameSite,
-      }));
-      const httpOnly = cookieData.filter((c) => c.httpOnly);
-      await saveCookies(config.db, cookieData);
-      console.log(`[attentive-agent] Saved ${cookieData.length} cookies (${httpOnly.length} httpOnly)`);
+      const ls = await page.evaluate(() => {
+        const storage: Record<string, string> = {};
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key) storage[key] = localStorage.getItem(key) ?? "";
+        }
+        return storage;
+      });
 
-      // Log cookie names for debugging
-      console.log(`[attentive-agent] Cookie names: ${cookieData.map((c) => `${c.name}${c.httpOnly ? "(H)" : ""}`).join(", ")}`);
+      const sessionData: SessionData = {
+        cookies: cookies.map((c) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path,
+          expires: c.expires,
+          httpOnly: c.httpOnly,
+          secure: c.secure,
+          sameSite: c.sameSite,
+        })),
+        localStorage: ls,
+      };
+
+      const httpOnly = sessionData.cookies.filter((c) => c.httpOnly);
+      await saveSession(config.db, sessionData);
+      console.log(`[attentive-agent] Saved session: ${sessionData.cookies.length} cookies (${httpOnly.length} httpOnly), ${Object.keys(ls).length} localStorage keys`);
+      console.log(`[attentive-agent] localStorage keys: ${Object.keys(ls).join(", ") || "(none)"}`);
       await page.close();
     }
 
