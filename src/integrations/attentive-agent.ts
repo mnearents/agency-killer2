@@ -63,7 +63,16 @@ async function loadSession(db: Db): Promise<SessionData | null> {
       .limit(1);
 
     if (!row) return null;
-    return JSON.parse(row.cookiesJson) as SessionData;
+    const parsed = JSON.parse(row.cookiesJson);
+
+    // Handle old format (flat cookie array) vs new format ({ cookies, localStorage })
+    if (Array.isArray(parsed)) {
+      return { cookies: parsed, localStorage: undefined };
+    }
+    return {
+      cookies: parsed.cookies ?? [],
+      localStorage: parsed.localStorage,
+    };
   } catch {
     return null;
   }
