@@ -1,18 +1,16 @@
 /**
- * Voice profile loader — reads the seed data file and builds a VoiceProfile.
+ * Voice profile loader — loads from DB first, falls back to seed file.
  *
- * The seed file contains Tara's real writing samples, brand rules, and
- * banned words exported from the Figma plugin voice service.
- *
- * This is used at worker startup to initialize the voice profile.
- * Eventually samples will live in the KB (Postgres), but the seed file
- * ensures the voice works even before KB sync runs.
+ * On first run with an empty DB, seeds the DB from the JSON file so
+ * future edits go to the DB and persist across deploys.
  */
 
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import type { VoiceProfile, WritingSample } from "./voice";
+import type { Db } from "@/db/client";
+import { loadVoiceProfileFromDb, seedVoiceProfileToDb } from "./queries";
 
 interface SeedData {
   samples: Array<{
@@ -27,8 +25,7 @@ interface SeedData {
   promptTemplate?: string;
 }
 
-export function loadVoiceProfile(): VoiceProfile {
-  // Try multiple paths since the working directory varies between dev and prod
+function loadSeedFile(): VoiceProfile {
   const paths = [
     join(dirname(fileURLToPath(import.meta.url)), "voice-profile-seed.json"),
     join(process.cwd(), "src/domain/voice/voice-profile-seed.json"),
@@ -55,17 +52,48 @@ export function loadVoiceProfile(): VoiceProfile {
 
   const seed: SeedData = JSON.parse(raw);
 
-  const samples: WritingSample[] = seed.samples.map((s) => ({
-    id: s.id,
-    title: s.title,
-    content: s.content,
-    tags: s.tags,
-  }));
-
   return {
-    samples,
+    samples: seed.samples.map((s) => ({
+      id: s.id,
+      title: s.title,
+      content: s.content,
+      tags: s.tags,
+    })),
     rules: seed.rules,
     bannedWords: seed.bannedWords,
     promptTemplate: seed.promptTemplate,
   };
+}
+
+/**
+ * Load voice profile from seed file (sync, used at startup before DB is needed).
+ */
+export function loadVoiceProfile(): VoiceProfile {
+  return loadSeedFile();
+}
+
+/**
+ * Load voice profile from DB, seeding from file if DB is empty.
+ * Call this after DB is available for the most up-to-date profile.
+ */
+export async function loadVoiceProfileWithDb(db: Db): Promise<VoiceProfile> {
+  const dbProfile = await loadVoiceProfileFromDb(db);
+
+  if (dbProfile) {
+    console.log(`[voice] Loaded from DB: ${dbProfile.samples.length} samples, ${dbProfile.rules.length} rules, ${dbProfile.bannedWords.length} banned words`);
+    return dbProfile;
+  }
+
+  // DB is empty — seed from file
+  const seedProfile = loadSeedFile();
+  if (seedProfile.samples.length > 0) {
+    try {
+      const count = await seedVoiceProfileToDb(db, seedProfile);
+      console.log(`[voice] Seeded DB with ${count} items from seed file`);
+    } catch (err) {
+      console.warn("[voice] Failed to seed DB:", err);
+    }
+  }
+
+  return seedProfile;
 }

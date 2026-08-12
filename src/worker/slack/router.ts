@@ -20,6 +20,7 @@ export type CommandCategory =
   | "sync"
   | "report"
   | "calendar"
+  | "voice"
   | "import"
   | "notes"
   | "help"
@@ -56,6 +57,7 @@ const VALID_CATEGORIES = new Set<CommandCategory>([
   "sync",
   "report",
   "calendar",
+  "voice",
   "import",
   "notes",
   "help",
@@ -127,6 +129,11 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
   calendar: {
     add: "calendar:add",
     "": "calendar:view",
+  },
+  voice: {
+    add: "voice:add",
+    list: "voice:list",
+    "": "voice:list",
   },
   import: {
     attentive: "import:attentive",

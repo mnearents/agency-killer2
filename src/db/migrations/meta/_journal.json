@@ -43,6 +43,13 @@
       "when": 1785959540255,
       "tag": "0005_normal_black_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786560512042,
+      "tag": "0006_same_squadron_sinister",
+      "breakpoints": true
     }
   ]
 }

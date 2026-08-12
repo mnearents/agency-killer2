@@ -405,6 +405,39 @@ export type NewAttentiveCampaign = typeof attentiveCampaigns.$inferInsert;
 export type AttentiveRevenue = typeof attentiveRevenue.$inferSelect;
 export type NewAttentiveRevenue = typeof attentiveRevenue.$inferInsert;
 
+// ─── Voice Profile ───────────────────────────────────────────────────
+
+export const voiceSamples = pgTable("voice_samples", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  tags: jsonb("tags").$type<string[]>().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const voiceRules = pgTable("voice_rules", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  rule: text("rule").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const voiceBannedWords = pgTable("voice_banned_words", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  word: text("word").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type VoiceSample = typeof voiceSamples.$inferSelect;
+export type VoiceRule = typeof voiceRules.$inferSelect;
+export type VoiceBannedWord = typeof voiceBannedWords.$inferSelect;
+
 // ─── Marketing Calendar ──────────────────────────────────────────────
 
 export const calendarEntries = pgTable(

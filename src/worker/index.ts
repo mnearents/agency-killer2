@@ -48,6 +48,7 @@ import { backfillSocialInsights } from "@/domain/social/backfill";
 import { runAlertChecks, formatAlerts } from "@/domain/alerts/runner";
 import { isDuringWorkHours, prioritizeAlerts } from "@/domain/alerts/schedule";
 import { getUpcomingEntries, createEntry } from "@/domain/calendar/queries";
+import { getAllSamples, addSample } from "@/domain/voice/queries";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
@@ -619,6 +620,55 @@ async function main() {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { text: `Failed to add entry: ${msg}`, isError: true };
+      }
+    },
+    "voice:list": async () => {
+      try {
+        const samples = await getAllSamples(db);
+        if (samples.length === 0) {
+          return { text: "No writing samples yet. Add one with `!voice add <title> | <sample text>` or on the `/voice` dashboard.", isError: false };
+        }
+        const lines = [`*Writing Samples (${samples.length}):*`, ""];
+        for (const s of samples.slice(0, 15)) {
+          const preview = s.content.slice(0, 80).replace(/\n/g, " ");
+          lines.push(`• *${s.title}* — ${preview}${s.content.length > 80 ? "..." : ""}`);
+        }
+        if (samples.length > 15) {
+          lines.push(`\n_...and ${samples.length - 15} more. See all at /voice_`);
+        }
+        return { text: lines.join("\n"), isError: false };
+      } catch {
+        return { text: "Voice samples not available yet. Run a deploy to create the tables.", isError: true };
+      }
+    },
+    "voice:add": async (args) => {
+      if (!args) {
+        return {
+          text: "Usage: `!voice add <title> | <sample text>`\nExample: `!voice add IG Caption | Comments PENS to finally get the answer to what my favorite pen is!`",
+          isError: false,
+        };
+      }
+      const pipeIdx = args.indexOf("|");
+      let title: string;
+      let content: string;
+      if (pipeIdx > 0) {
+        title = args.slice(0, pipeIdx).trim();
+        content = args.slice(pipeIdx + 1).trim();
+      } else {
+        title = `Sample ${Date.now()}`;
+        content = args;
+      }
+
+      if (!content) {
+        return { text: "Sample content is required.", isError: true };
+      }
+
+      try {
+        await addSample(db, title, content);
+        return { text: `*Voice sample added:* "${title}" (${content.length} chars)`, isError: false };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { text: `Failed to add sample: ${msg}`, isError: true };
       }
     },
     "report:weekly": async () => {
