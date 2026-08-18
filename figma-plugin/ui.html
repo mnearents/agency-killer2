@@ -210,22 +210,12 @@
 
     let generatedText = '';
 
-    // Load saved settings from localStorage (with error handling for Figma sandbox)
-    try {
-      const savedApiUrl = localStorage.getItem('apiUrl');
-      if (savedApiUrl) apiUrlInput.value = savedApiUrl;
-      const savedApiKey = localStorage.getItem('apiKey');
-      if (savedApiKey) apiKeyInput.value = savedApiKey;
-    } catch (e) {
-      console.log('localStorage not available:', e);
-    }
-
-    // Save settings when they change
+    // Save settings via Figma clientStorage (persists across sessions)
     apiUrlInput.addEventListener('change', () => {
-      try { localStorage.setItem('apiUrl', apiUrlInput.value); } catch (e) {}
+      parent.postMessage({ pluginMessage: { type: 'save-settings', apiUrl: apiUrlInput.value } }, '*');
     });
     apiKeyInput.addEventListener('change', () => {
-      try { localStorage.setItem('apiKey', apiKeyInput.value); } catch (e) {}
+      parent.postMessage({ pluginMessage: { type: 'save-settings', apiKey: apiKeyInput.value } }, '*');
     });
 
     // Toggle settings panel
@@ -330,6 +320,10 @@
       const msg = event.data.pluginMessage;
       if (msg.type === 'text-inserted') {
         showMessage('Text inserted into Figma!', 'success');
+      }
+      if (msg.type === 'load-settings') {
+        if (msg.apiUrl) apiUrlInput.value = msg.apiUrl;
+        if (msg.apiKey) apiKeyInput.value = msg.apiKey;
       }
     };
 

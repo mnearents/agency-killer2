@@ -1,8 +1,22 @@
 "use strict";
 // Figma Plugin Code - runs in the Figma sandbox
 figma.showUI(__html__, { width: 400, height: 500 });
+// Load saved settings from clientStorage and send to UI
+async function loadSettings() {
+    const apiUrl = await figma.clientStorage.getAsync('apiUrl');
+    const apiKey = await figma.clientStorage.getAsync('apiKey');
+    figma.ui.postMessage({ type: 'load-settings', apiUrl, apiKey });
+}
+loadSettings();
 // Listen for messages from the UI
 figma.ui.onmessage = async (msg) => {
+    if (msg.type === 'save-settings') {
+        if (msg.apiUrl)
+            await figma.clientStorage.setAsync('apiUrl', msg.apiUrl);
+        if (msg.apiKey)
+            await figma.clientStorage.setAsync('apiKey', msg.apiKey);
+        return;
+    }
     if (msg.type === 'insert-text') {
         const { text } = msg;
         // Create a text node with the generated text
