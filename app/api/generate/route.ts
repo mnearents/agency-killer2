@@ -45,7 +45,7 @@ export async function POST(request: Request) {
   if (!checkAuth(request)) {
     return jsonResponse(
       { error: "Missing or invalid API key" },
-      { status: 401 }
+      401
     );
   }
 
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
   if (!anthropicKey) {
     return jsonResponse(
       { error: "ANTHROPIC_API_KEY not configured" },
-      { status: 500 }
+      500
     );
   }
 
@@ -61,12 +61,12 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+    return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
   const prompt = body.prompt?.trim();
   if (!prompt) {
-    return jsonResponse({ error: "Prompt is required" }, { status: 400 });
+    return jsonResponse({ error: "Prompt is required" }, 400);
   }
 
   try {
@@ -77,7 +77,7 @@ export async function POST(request: Request) {
     if (profile.samples.length === 0) {
       return jsonResponse(
         { error: "No writing samples available. Add samples at /voice." },
-        { status: 400 }
+        400
       );
     }
 
@@ -123,7 +123,7 @@ export async function POST(request: Request) {
     console.error("[api/generate] Error:", msg);
     return jsonResponse(
       { error: "Failed to generate text", details: msg },
-      { status: 500 }
+      500
     );
   }
 }
