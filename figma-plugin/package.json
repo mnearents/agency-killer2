@@ -1,0 +1,13 @@
+{
+  "name": "rad-and-happy-figma-plugin",
+  "version": "1.0.0",
+  "description": "Figma plugin for Rad & Happy voice/tone generator",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.103.0",
+    "typescript": "^5.7.3"
+  }
+}

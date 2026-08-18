@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #ffffff;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: #000;
+    }
+
+    .subtitle {
+      margin: 0 0 16px 0;
+      font-size: 12px;
+      color: #666;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: #333;
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 12px;
+      margin-bottom: 12px;
+      resize: vertical;
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: #18a0fb;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      background: #18a0fb;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #0d8de5;
+    }
+
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .secondary-btn {
+      background: #f0f0f0;
+      color: #333;
+      margin-top: 8px;
+    }
+
+    .secondary-btn:hover {
+      background: #e0e0e0;
+    }
+
+    .result {
+      margin-top: 16px;
+      padding: 12px;
+      background: #f9f9f9;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #333;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .error {
+      color: #e74c3c;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .success {
+      color: #27ae60;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .settings {
+      margin-bottom: 12px;
+      padding: 8px;
+      background: #f9f9f9;
+      border-radius: 4px;
+      font-size: 11px;
+    }
+
+    .settings input {
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+
+    .settings-toggle {
+      color: #18a0fb;
+      cursor: pointer;
+      font-size: 11px;
+      margin-bottom: 8px;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Rad & Happy Voice</h1>
+    <p class="subtitle">Generate text in your brand voice</p>
+
+    <!-- Settings Section -->
+    <div class="settings-toggle" id="settingsToggle">Settings</div>
+    <div class="settings hidden" id="settingsPanel">
+      <label for="apiUrl">API URL:</label>
+      <input
+        type="text"
+        id="apiUrl"
+        placeholder="https://agency-killer2-production.up.railway.app"
+        value="https://agency-killer2-production.up.railway.app"
+      />
+      <label for="apiKey">API Key:</label>
+      <input
+        type="password"
+        id="apiKey"
+        placeholder="Enter your API key"
+      />
+    </div>
+
+    <!-- Main Form -->
+    <div>
+      <label for="prompt">What do you want to write or rewrite?</label>
+      <textarea
+        id="prompt"
+        rows="4"
+        placeholder="Paste text to rewrite OR describe what you want to create..."
+      ></textarea>
+      <p style="font-size: 11px; color: #666; margin: -8px 0 12px 0;">
+        <strong>Examples:</strong> "Rewrite this to be shorter: [your text]" or "Write an Instagram caption about our summer sale"
+      </p>
+
+      <label for="instructions">Additional Instructions <span style="color: #999;">(optional)</span></label>
+      <textarea
+        id="instructions"
+        rows="2"
+        placeholder="e.g., Keep it under 50 words, avoid using 'amazing', make it casual..."
+      ></textarea>
+
+      <button id="generateBtn">Generate Text</button>
+
+      <div id="result" class="result hidden"></div>
+
+      <button id="insertBtn" class="secondary-btn hidden">Insert into Figma</button>
+      <button id="copyBtn" class="secondary-btn hidden">Copy to Clipboard</button>
+
+      <div id="message"></div>
+    </div>
+  </div>
+
+  <script>
+    console.log('Plugin UI script loaded');
+
+    const promptInput = document.getElementById('prompt');
+    const generateBtn = document.getElementById('generateBtn');
+    const insertBtn = document.getElementById('insertBtn');
+    const copyBtn = document.getElementById('copyBtn');
+    const resultDiv = document.getElementById('result');
+    const messageDiv = document.getElementById('message');
+    const apiUrlInput = document.getElementById('apiUrl');
+    const apiKeyInput = document.getElementById('apiKey');
+    const settingsToggle = document.getElementById('settingsToggle');
+    const settingsPanel = document.getElementById('settingsPanel');
+
+    let generatedText = '';
+
+    // Load saved settings from localStorage (with error handling for Figma sandbox)
+    try {
+      const savedApiUrl = localStorage.getItem('apiUrl');
+      if (savedApiUrl) apiUrlInput.value = savedApiUrl;
+      const savedApiKey = localStorage.getItem('apiKey');
+      if (savedApiKey) apiKeyInput.value = savedApiKey;
+    } catch (e) {
+      console.log('localStorage not available:', e);
+    }
+
+    // Save settings when they change
+    apiUrlInput.addEventListener('change', () => {
+      try { localStorage.setItem('apiUrl', apiUrlInput.value); } catch (e) {}
+    });
+    apiKeyInput.addEventListener('change', () => {
+      try { localStorage.setItem('apiKey', apiKeyInput.value); } catch (e) {}
+    });
+
+    // Toggle settings panel
+    settingsToggle.addEventListener('click', () => {
+      settingsPanel.classList.toggle('hidden');
+    });
+
+    // Generate text
+    if (generateBtn) {
+      console.log('Attaching click listener to generate button');
+      generateBtn.addEventListener('click', async () => {
+        console.log('Generate button clicked!');
+        const prompt = promptInput.value.trim();
+        const instructions = document.getElementById('instructions').value.trim();
+        console.log('Prompt:', prompt);
+        console.log('Instructions:', instructions);
+
+      if (!prompt) {
+        console.log('No prompt entered');
+        showMessage('Please enter a prompt', 'error');
+        return;
+      }
+
+      // Combine prompt with instructions if provided
+      let fullPrompt = prompt;
+      if (instructions) {
+        fullPrompt = `${prompt}\n\nAdditional instructions: ${instructions}`;
+      }
+
+      const apiUrl = apiUrlInput.value.trim() || 'https://agency-killer2-production.up.railway.app';
+      const apiKey = apiKeyInput.value.trim();
+
+      generateBtn.disabled = true;
+      generateBtn.textContent = 'Generating...';
+      resultDiv.classList.add('hidden');
+      insertBtn.classList.add('hidden');
+      copyBtn.classList.add('hidden');
+      messageDiv.textContent = '';
+
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+
+        const response = await fetch(`${apiUrl}/api/generate`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ prompt: fullPrompt }),
+        });
+
+        console.log('Response status:', response.status);
+        const data = await response.json();
+        console.log('Response data:', data);
+
+        if (response.ok) {
+          generatedText = data.generatedText;
+          resultDiv.textContent = generatedText;
+          resultDiv.classList.remove('hidden');
+          insertBtn.classList.remove('hidden');
+          copyBtn.classList.remove('hidden');
+          showMessage(`Generated using ${data.samplesUsed} writing samples`, 'success');
+        } else {
+          console.error('Generation failed:', data);
+          showMessage(data.error || 'Failed to generate text', 'error');
+        }
+      } catch (error) {
+        console.error('Fetch error:', error);
+        showMessage(`Error: ${error.message}. Make sure the API is running at ${apiUrl}`, 'error');
+      } finally {
+        generateBtn.disabled = false;
+        generateBtn.textContent = 'Generate Text';
+      }
+      });
+    } else {
+      console.error('Generate button not found!');
+    }
+
+    // Insert text into Figma
+    insertBtn.addEventListener('click', () => {
+      parent.postMessage({
+        pluginMessage: {
+          type: 'insert-text',
+          text: generatedText
+        }
+      }, '*');
+    });
+
+    // Copy to clipboard
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(generatedText).then(() => {
+        const originalText = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => {
+          copyBtn.textContent = originalText;
+        }, 2000);
+      });
+    });
+
+    // Listen for messages from Figma
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (msg.type === 'text-inserted') {
+        showMessage('Text inserted into Figma!', 'success');
+      }
+    };
+
+    // Show message
+    function showMessage(message, type) {
+      messageDiv.textContent = message;
+      messageDiv.className = type;
+    }
+
+    // Allow Enter key to submit (with Shift+Enter for new line)
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        generateBtn.click();
+      }
+    });
+  </script>
+</body>
+</html>

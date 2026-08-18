@@ -1,0 +1,16 @@
+{
+  "name": "Rad & Happy Voice",
+  "id": "rad-and-happy-voice",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": [
+    "figma"
+  ],
+  "networkAccess": {
+    "allowedDomains": [
+      "*"
+    ],
+    "reasoning": "This plugin needs to connect to a custom backend API for generating brand-voice text using AI. The API URL is configurable by the user (localhost for development, custom domain for production)."
+  }
+}
