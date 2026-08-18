@@ -3,12 +3,26 @@
  * Used by the Figma plugin to fetch samples, rules, and banned words.
  *
  * GET /api/voice — returns the full profile
- * POST /api/voice/samples — add a new sample
+ * POST /api/voice — add a new sample
  */
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getAllSamples, getAllRules, getAllBannedWords, addSample } from "@/domain/voice/queries";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
+function jsonResponse(data: unknown, status = 200) {
+  return NextResponse.json(data, { status, headers: corsHeaders });
+}
 
 export async function GET() {
   try {
@@ -19,7 +33,7 @@ export async function GET() {
       getAllBannedWords(d),
     ]);
 
-    return NextResponse.json({
+    return jsonResponse({
       samples: samples.map((s) => ({
         id: s.id,
         title: s.title,
@@ -31,10 +45,7 @@ export async function GET() {
       bannedWords: bannedWords.map((b) => b.word),
     });
   } catch {
-    return NextResponse.json(
-      { error: "Voice profile not available" },
-      { status: 500 }
-    );
+    return jsonResponse({ error: "Voice profile not available" }, 500);
   }
 }
 
@@ -44,18 +55,12 @@ export async function POST(request: Request) {
     const { title, content, tags } = body;
 
     if (!title || !content) {
-      return NextResponse.json(
-        { error: "title and content are required" },
-        { status: 400 }
-      );
+      return jsonResponse({ error: "title and content are required" }, 400);
     }
 
     const sample = await addSample(db(), title, content, tags ?? []);
-    return NextResponse.json(sample, { status: 201 });
+    return jsonResponse(sample, 201);
   } catch {
-    return NextResponse.json(
-      { error: "Failed to add sample" },
-      { status: 500 }
-    );
+    return jsonResponse({ error: "Failed to add sample" }, 500);
   }
 }

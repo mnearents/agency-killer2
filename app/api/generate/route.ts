@@ -16,6 +16,20 @@ import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
 import Anthropic from "@anthropic-ai/sdk";
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: corsHeaders });
+}
+
+function jsonResponse(data: unknown, status = 200) {
+  return NextResponse.json(data, { status, headers: corsHeaders });
+}
+
 function checkAuth(request: Request): boolean {
   const apiKey = process.env.VOICE_API_KEY;
   if (!apiKey) return false;
@@ -29,7 +43,7 @@ function checkAuth(request: Request): boolean {
 export async function POST(request: Request) {
   // Auth check
   if (!checkAuth(request)) {
-    return NextResponse.json(
+    return jsonResponse(
       { error: "Missing or invalid API key" },
       { status: 401 }
     );
@@ -37,7 +51,7 @@ export async function POST(request: Request) {
 
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   if (!anthropicKey) {
-    return NextResponse.json(
+    return jsonResponse(
       { error: "ANTHROPIC_API_KEY not configured" },
       { status: 500 }
     );
@@ -47,12 +61,12 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    return jsonResponse({ error: "Invalid JSON body" }, { status: 400 });
   }
 
   const prompt = body.prompt?.trim();
   if (!prompt) {
-    return NextResponse.json({ error: "Prompt is required" }, { status: 400 });
+    return jsonResponse({ error: "Prompt is required" }, { status: 400 });
   }
 
   try {
@@ -61,7 +75,7 @@ export async function POST(request: Request) {
     const profile = await loadVoiceProfileWithDb(d);
 
     if (profile.samples.length === 0) {
-      return NextResponse.json(
+      return jsonResponse(
         { error: "No writing samples available. Add samples at /voice." },
         { status: 400 }
       );
@@ -95,7 +109,7 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({
+    return jsonResponse({
       generatedText,
       samplesUsed: profile.samples.length,
       model: "claude-sonnet-4-5-20250929",
@@ -107,7 +121,7 @@ export async function POST(request: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[api/generate] Error:", msg);
-    return NextResponse.json(
+    return jsonResponse(
       { error: "Failed to generate text", details: msg },
       { status: 500 }
     );
