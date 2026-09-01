@@ -3,19 +3,33 @@
  *
  * Sales velocity comes from line items on orders in the last 30 days,
  * matched to variants. Variants with no matching line items read 0 sold.
+ *
+ * Sales are aggregated in a subquery and LEFT JOINed rather than computed
+ * in a correlated subquery: Drizzle renders an interpolated column as a
+ * bare `"id"` inside raw SQL, which Postgres rejects as ambiguous against
+ * shopify_orders.id and shopify_line_items.id.
  */
 
-import { sql, desc } from "drizzle-orm";
+import { sql, eq, gte, desc } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { shopifyInventory } from "@/db/schema";
+import { shopifyInventory, shopifyLineItems, shopifyOrders } from "@/db/schema";
 import type { InventoryItem } from "./checks";
 
 const SALES_WINDOW_DAYS = 30;
 
-export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
-  const since = new Date(Date.now() - SALES_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+export function buildInventoryItemsQuery(db: Db, since: Date) {
+  const sales = db
+    .select({
+      variantId: shopifyLineItems.variantId,
+      unitsSold: sql<number>`SUM(${shopifyLineItems.quantity})`.as("units_sold"),
+    })
+    .from(shopifyLineItems)
+    .innerJoin(shopifyOrders, eq(shopifyOrders.id, shopifyLineItems.orderId))
+    .where(gte(shopifyOrders.orderCreatedAt, since))
+    .groupBy(shopifyLineItems.variantId)
+    .as("sales");
 
-  const rows = await db
+  return db
     .select({
       variantId: shopifyInventory.id,
       productTitle: shopifyInventory.productTitle,
@@ -24,16 +38,16 @@ export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
       quantity: shopifyInventory.quantity,
       tracked: shopifyInventory.tracked,
       productStatus: shopifyInventory.productStatus,
-      unitsSoldLast30d: sql<number>`COALESCE((
-        SELECT SUM(li.quantity)
-        FROM shopify_line_items li
-        JOIN shopify_orders o ON o.id = li.order_id
-        WHERE li.variant_id = ${shopifyInventory.id}
-          AND o.order_created_at >= ${since}
-      ), 0)`,
+      unitsSoldLast30d: sql<number>`COALESCE(${sales.unitsSold}, 0)`,
     })
     .from(shopifyInventory)
+    .leftJoin(sales, eq(sales.variantId, shopifyInventory.id))
     .orderBy(desc(shopifyInventory.quantity));
+}
+
+export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
+  const since = new Date(Date.now() - SALES_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const rows = await buildInventoryItemsQuery(db, since);
 
   return rows.map((r) => ({
     variantId: r.variantId,
@@ -45,11 +59,4 @@ export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
     productStatus: r.productStatus,
     unitsSoldLast30d: Number(r.unitsSoldLast30d),
   }));
-}
-
-export async function getLastSyncedAt(db: Db): Promise<Date | null> {
-  const [row] = await db
-    .select({ syncedAt: sql<Date | null>`MAX(${shopifyInventory.syncedAt})` })
-    .from(shopifyInventory);
-  return row?.syncedAt ? new Date(row.syncedAt) : null;
 }
