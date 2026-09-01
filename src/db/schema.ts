@@ -231,11 +231,43 @@ export const shopifyLineItems = pgTable(
   (table) => [index("shopify_line_items_product_idx").on(table.productId)]
 );
 
+/**
+ * Variant-level stock levels, refreshed on every inventory sync.
+ *
+ * `tracked` is 0 when Shopify is not tracking stock for the variant — those
+ * rows always report quantity 0 and must never be read as a stockout.
+ * `quantity` may be negative when a variant has been oversold.
+ */
+export const shopifyInventory = pgTable(
+  "shopify_inventory",
+  {
+    id: text("id").primaryKey(), // Shopify variant GID
+    productId: text("product_id"),
+    productTitle: text("product_title").notNull(),
+    variantTitle: text("variant_title"),
+    sku: text("sku"),
+    quantity: integer("quantity").notNull(),
+    tracked: integer("tracked").notNull(), // 0/1
+    productStatus: text("product_status").notNull(), // ACTIVE, DRAFT, ARCHIVED
+    productType: text("product_type"),
+    priceCents: bigint("price_cents", { mode: "number" }).notNull(),
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("shopify_inventory_product_idx").on(table.productId),
+    index("shopify_inventory_status_idx").on(table.productStatus),
+  ]
+);
+
 export type ShopifyOrder = typeof shopifyOrders.$inferSelect;
 export type NewShopifyOrder = typeof shopifyOrders.$inferInsert;
 
 export type ShopifyLineItem = typeof shopifyLineItems.$inferSelect;
 export type NewShopifyLineItem = typeof shopifyLineItems.$inferInsert;
+
+export type ShopifyInventoryRow = typeof shopifyInventory.$inferSelect;
+export type NewShopifyInventoryRow = typeof shopifyInventory.$inferInsert;
 
 // ─── Knowledge Base ────────────────────────────────────────────────────
 

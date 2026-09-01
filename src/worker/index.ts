@@ -25,6 +25,10 @@ import { createDb } from "@/db/client";
 import { syncIncremental } from "@/domain/meta/sync";
 import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
+import { syncInventory } from "@/domain/inventory/sync";
+import { getInventoryItems } from "@/domain/inventory/queries";
+import { runInventoryChecks } from "@/domain/inventory/checks";
+import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
@@ -180,6 +184,18 @@ async function main() {
       console.log(`[sync:shopify] Done: ${result.orders} orders, ${result.lineItems} line items`);
       if (result.errors.length > 0) {
         console.error("[sync:shopify] Errors:", result.errors);
+      }
+    },
+
+    "sync:inventory": async () => {
+      if (!shopifyClient) {
+        console.log("[sync:inventory] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+        return;
+      }
+      const result = await syncInventory({ client: shopifyClient, db });
+      console.log(`[sync:inventory] Done: ${result.variants} variants, ${result.pruned} pruned`);
+      if (result.errors.length > 0) {
+        console.error("[sync:inventory] Errors:", result.errors);
       }
     },
 
@@ -690,14 +706,28 @@ async function main() {
         isError: !result.ok,
       };
     },
-    "inventory:check": async () => ({
-      text: "Inventory check coming soon!",
-      isError: false,
-    }),
-    "inventory:alerts": async () => ({
-      text: "Inventory alerts coming soon!",
-      isError: false,
-    }),
+    "inventory:check": async () => {
+      try {
+        const items = await getInventoryItems(db);
+        return { text: formatInventoryOverview(items), isError: false };
+      } catch (err) {
+        console.error("[inventory:check]", err);
+        return { text: `Couldn't read inventory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
+    "inventory:alerts": async () => {
+      try {
+        const items = await getInventoryItems(db);
+        const alerts = runInventoryChecks(items);
+        if (alerts.length === 0) {
+          return { text: "Nothing to flag — no stockouts and nothing about to run out.", isError: false };
+        }
+        return { text: formatAlerts(alerts), isError: false };
+      } catch (err) {
+        console.error("[inventory:alerts]", err);
+        return { text: `Couldn't read inventory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
     "shopify:status": async () => {
       try {
         const summary = await getOrderSummary(db, 30);
@@ -756,10 +786,15 @@ async function main() {
         return { text: `Failed to compute LTV: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     },
-    "inventory:overview": async () => ({
-      text: "Inventory overview coming soon!",
-      isError: false,
-    }),
+    "inventory:overview": async () => {
+      try {
+        const items = await getInventoryItems(db);
+        return { text: formatInventoryOverview(items), isError: false };
+      } catch (err) {
+        console.error("[inventory:overview]", err);
+        return { text: `Couldn't read inventory: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    },
     "sync:meta": async (args) => {
       if (!metaClient || !metaAccountId) {
         return { text: "Meta sync unavailable — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set.", isError: true };
@@ -800,6 +835,22 @@ async function main() {
       }
       return {
         text: `*Shopify sync complete!* (last ${lookbackDays} days)\n• ${result.orders} orders\n• ${result.lineItems} line items`,
+        isError: false,
+      };
+    },
+    "sync:inventory": async () => {
+      if (!shopifyClient) {
+        return { text: "Inventory sync unavailable — SHOPIFY_ACCESS_TOKEN not set.", isError: true };
+      }
+      const result = await syncInventory({ client: shopifyClient, db });
+      if (result.errors.length > 0) {
+        return {
+          text: `Inventory sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}`,
+          isError: true,
+        };
+      }
+      return {
+        text: `*Inventory sync complete!*\n• ${result.variants} variants synced${result.pruned > 0 ? `\n• ${result.pruned} removed (no longer in Shopify)` : ""}`,
         isError: false,
       };
     },
@@ -877,6 +928,12 @@ async function main() {
         results.push(`Shopify: ${r.orders} orders${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
       } else {
         results.push("Shopify: skipped (no credentials)");
+      }
+      if (shopifyClient) {
+        const r = await syncInventory({ client: shopifyClient, db });
+        results.push(`Inventory: ${r.variants} variants${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
+      } else {
+        results.push("Inventory: skipped (no credentials)");
       }
       if (igClient && igUserId) {
         const r = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });

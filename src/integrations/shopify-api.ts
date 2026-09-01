@@ -43,6 +43,22 @@ export interface ShopifyApiCustomer {
   enrollments: string | null; // JSON string of automatik.enrollments metafield
 }
 
+export interface ShopifyApiVariant {
+  id: string;
+  title: string;
+  sku: string | null;
+  inventoryQuantity: number | null;
+  price: string;
+  /** null when Shopify returns no inventory item — treat as untracked. */
+  inventoryItem: { tracked: boolean } | null;
+  product: {
+    id: string;
+    title: string;
+    status: string; // ACTIVE, DRAFT, ARCHIVED
+    productType: string | null;
+  } | null;
+}
+
 export interface ShopifyApiClient {
   getOrders(params: {
     since?: string;
@@ -51,6 +67,7 @@ export interface ShopifyApiClient {
   getCustomersWithEnrollments(params?: {
     limit?: number;
   }): Promise<ShopifyApiCustomer[]>;
+  getInventory(params?: { limit?: number }): Promise<ShopifyApiVariant[]>;
 }
 
 const ORDERS_QUERY = `
@@ -93,6 +110,23 @@ const CUSTOMERS_QUERY = `
         metafield(namespace: "automatik", key: "enrollments") {
           value
         }
+      }
+    }
+  }
+`;
+
+const INVENTORY_QUERY = `
+  query GetInventory($first: Int!, $after: String) {
+    productVariants(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        title
+        sku
+        inventoryQuantity
+        price
+        inventoryItem { tracked }
+        product { id title status productType }
       }
     }
   }
@@ -248,6 +282,33 @@ export function createShopifyApiClient(
       } while (after);
 
       return allCustomers;
+    },
+
+    async getInventory(params) {
+      const limit = params?.limit ?? 100;
+      const allVariants: ShopifyApiVariant[] = [];
+      let after: string | null = null;
+
+      interface InventoryResponse {
+        productVariants: {
+          pageInfo: { hasNextPage: boolean; endCursor: string };
+          nodes: ShopifyApiVariant[];
+        };
+      }
+
+      do {
+        const data: InventoryResponse = await graphql<InventoryResponse>(
+          INVENTORY_QUERY,
+          { first: limit, after }
+        );
+
+        allVariants.push(...data.productVariants.nodes);
+        after = data.productVariants.pageInfo.hasNextPage
+          ? data.productVariants.pageInfo.endCursor
+          : null;
+      } while (after);
+
+      return allVariants;
     },
   };
 }

@@ -9,6 +9,8 @@ import { metaInsights, shopifyOrders, socialPosts } from "@/db/schema";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getPostSummary } from "@/domain/social/queries";
 import { getUpcomingEntries } from "@/domain/calendar/queries";
+import { getInventoryItems } from "@/domain/inventory/queries";
+import { runInventoryChecks } from "@/domain/inventory/checks";
 import {
   checkNoEmailSends,
   checkReelOutperforming,
@@ -237,6 +239,13 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
     if (subAlert) alerts.push(subAlert);
   } catch {
     // May not have subscription data
+  }
+
+  // ─── Inventory ────────────────────────────────────────────────────
+  try {
+    alerts.push(...runInventoryChecks(await getInventoryItems(db)));
+  } catch {
+    // Inventory table may not exist or have been synced yet
   }
 
   return alerts;

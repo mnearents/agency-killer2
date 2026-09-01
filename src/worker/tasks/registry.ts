@@ -15,6 +15,7 @@ import type { TaskDefinition } from "@/worker/scheduler";
  *   13:00 UTC (6 AM PT) — Meta ads sync
  *   13:15 UTC           — Shopify sync
  *   13:30 UTC           — Instagram sync
+ *   13:45 UTC           — Inventory sync
  *   14:00 UTC (7 AM PT) — Ads analysis (after syncs finish)
  *   16:00 UTC (9 AM PT, Tue) — Blog generation
  */
@@ -36,6 +37,13 @@ export function getPhase1Tasks(): TaskDefinition[] {
       id: "social-sync",
       name: "Instagram Social Sync",
       schedule: { type: "daily", hour: 13, minute: 30 },
+      enabled: true,
+    },
+    {
+      id: "inventory-sync",
+      name: "Shopify Inventory Sync",
+      // After shopify-sync — velocity is computed from freshly synced line items.
+      schedule: { type: "daily", hour: 13, minute: 45 },
       enabled: true,
     },
     {
@@ -82,6 +90,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "meta-sync": "sync:meta",
     "shopify-sync": "sync:shopify",
     "social-sync": "sync:social",
+    "inventory-sync": "sync:inventory",
     "attentive-sync": "sync:attentive",
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
