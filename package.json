@@ -12,6 +12,7 @@
     "build": "next build",
     "start:web": "next start",
     "start:worker": "tsx src/worker/index.ts",
+    "mcp": "tsx src/mcp/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:all": "vitest run --config vitest.config.ts && vitest run --config vitest.evals.config.ts",
@@ -45,6 +46,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@slack/bolt": "^4.7.3",
     "drizzle-orm": "^0.45.2",
     "next": "^15.5.20",

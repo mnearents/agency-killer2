@@ -49,6 +49,31 @@ AssemblyAI, Shotstack, Slack. See `.env.example` for the full list. Never commit
 Attentive and Statlas (CTC) have **no APIs** — data from these is imported
 manually.
 
+### MCP server (Claude Desktop)
+
+A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the
+system directly. Local only — no internet-facing endpoint, no auth layer.
+
+Division of labour with the scheduler: **crons own ingestion and deterministic
+alerting** (no judgment, must run unattended, no token cost); **Claude owns
+interpretation, creative, and decisions**. Crons are reliable at running and
+bad at noticing they're wrong, which is the gap MCP fills.
+
+Rules for tools in `src/mcp/`:
+
+- **Return structured data, never Slack-formatted prose.** Do not wrap the
+  handlers in `src/worker/index.ts` — those return language written for Tara.
+  A model handed a formatted summary cannot check the numbers behind it.
+- **Money is dollars.** No cents-denominated field crosses this boundary;
+  `spendCents: 250000` misread as "$250,000" is a plausible, expensive mistake.
+- **Capped lists report both what was returned and what matched**, so a sample
+  is never mistaken for the whole set.
+- **Unknown arguments are errors**, not ignored — a silently dropped filter
+  leaves the caller believing it narrowed a result set it read whole.
+- **Errors are returned, not thrown**, and never alongside partial data.
+- Tools are read-only. Anything that spends money or sends a message needs an
+  explicit write split and is not built yet.
+
 ## Project structure
 
 ```
@@ -86,6 +111,11 @@ src/
 │   ├── scheduler.ts        # node-cron task registration
 │   ├── tasks/              # One file per scheduled task
 │   └── slack/              # Bolt handlers, commands, message routing
+├── mcp/                    # MCP server (Claude Desktop pilots the app)
+│   ├── index.ts            # stdio entry point
+│   ├── server.ts           # Transport-agnostic server construction
+│   ├── tools.ts            # Tool surface over the domain query layer
+│   └── args.ts             # Fail-closed argument validation
 └── lib/                    # Shared utilities (dates, formatting, etc.)
 
 app/                        # Next.js App Router (dashboard)
