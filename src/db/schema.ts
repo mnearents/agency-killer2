@@ -546,6 +546,9 @@ export const sealSubscriptions = pgTable(
 
     billingInterval: text("billing_interval").notNull(), // raw: "1 month", "12 month", "13 month"
     billingCadence: text("billing_cadence").notNull(), // monthly, annual, other
+    // Set when the cadence was normalised from a non-canonical interval — e.g.
+    // the 13-month pre-sale correction that counts as annual.
+    cadenceNote: text("cadence_note"),
 
     orderPlaced: timestamp("order_placed", { withTimezone: true }),
     nextBillingDate: timestamp("next_billing_date", { withTimezone: true }),
@@ -597,6 +600,7 @@ export const sealSubscriptionSnapshots = pgTable(
     pricingCohort: text("pricing_cohort").notNull(),
     billingInterval: text("billing_interval").notNull(),
     billingCadence: text("billing_cadence").notNull(),
+    cadenceNote: text("cadence_note"),
     priceCents: bigint("price_cents", { mode: "number" }),
     inDunning: integer("in_dunning").notNull().default(0),
 

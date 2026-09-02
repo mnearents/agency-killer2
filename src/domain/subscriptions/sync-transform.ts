@@ -138,12 +138,50 @@ export function isPriceAnomaly(
   return priceCents > expected * 2;
 }
 
+/**
+ * The intervals Seal is known to emit. Anything else is a product decision
+ * nobody told us about, and gets a warning so it surfaces on the next sync
+ * rather than quietly picking a bucket.
+ */
+const KNOWN_INTERVALS = new Set(["1 month", "12 month", "13 month", "1 year"]);
+
+/** The canonical spelling of each cadence. Anything else earns a cadence note. */
+const CANONICAL_INTERVALS = new Set(["1 month", "12 month"]);
+
+/**
+ * Cadence from the raw interval, generically rather than by enumerating
+ * special cases.
+ *
+ * Twelve months or more is annual. This is what puts the 56 grandfathered
+ * Studio subscriptions on a `13 month` cycle into the annual aggregates where
+ * they belong: that extra month was a one-time correction so pre-sale buyers
+ * did not pay for a month with no Studio content. Their June 2027 renewal
+ * dates are already scheduled and correct, and a Seal automation resets the
+ * interval to 12 months on renewal without moving the date — the 13 is a
+ * self-resolving artifact, not a distinct plan.
+ *
+ * A future 14- or 18-month correction lands in annual on its own, with no
+ * further code change.
+ */
 export function toCadence(billingInterval: string): BillingCadence {
-  if (billingInterval === "1 month") return "monthly";
-  if (billingInterval === "12 month" || billingInterval === "1 year") return "annual";
-  // 13 month is a real promo cycle. Folding it into "annual" would silently
-  // inflate the annual count; dropping it would silently lose 56 subscribers.
-  return "other";
+  const match = /^(\d+)\s+(month|year)s?$/i.exec(billingInterval.trim());
+  if (!match) return "other";
+
+  const [, countStr, unit] = match;
+  const count = Number(countStr);
+  if (unit.toLowerCase() === "year") return count >= 1 ? "annual" : "other";
+  if (count >= 12) return "annual";
+  return count === 1 ? "monthly" : "other";
+}
+
+/**
+ * The raw interval, kept only when it is not the canonical spelling for its
+ * cadence. A non-null note therefore means "this cadence was normalised from
+ * something unusual" — which is the question the field exists to answer.
+ * `billing_interval` still holds the raw value unconditionally.
+ */
+export function toCadenceNote(billingInterval: string): string | null {
+  return CANONICAL_INTERVALS.has(billingInterval) ? null : billingInterval || null;
 }
 
 export interface SealSubscriptionRow {
@@ -167,6 +205,8 @@ export interface SealSubscriptionRow {
   currency: string;
   billingInterval: string;
   billingCadence: BillingCadence;
+  /** Set when the cadence was normalised from a non-canonical interval. */
+  cadenceNote: string | null;
   orderPlaced: Date | null;
   nextBillingDate: Date | null;
   cancelledOn: Date | null;
@@ -187,6 +227,7 @@ export interface SealSnapshotRow {
   pricingCohort: PricingCohort;
   billingInterval: string;
   billingCadence: BillingCadence;
+  cadenceNote: string | null;
   priceCents: number | null;
   inDunning: boolean;
   createdAt: Date;
@@ -195,8 +236,12 @@ export interface SealSnapshotRow {
 export interface TransformedSubscription {
   row: SealSubscriptionRow;
   snapshot: SealSnapshotRow;
-  /** Non-null when the record needs a human to look at it. */
-  warning: string | null;
+  /**
+   * Everything about this record a human should look at. A list rather than a
+   * single value so an unmapped variant and an odd interval cannot mask each
+   * other — both are independently actionable.
+   */
+  warnings: string[];
 }
 
 /** Plan names encode a tier. Where that disagrees with the variant, note it. */
@@ -248,6 +293,7 @@ export function transformSubscription(
     currency: sub.currency || "USD",
     billingInterval,
     billingCadence: toCadence(billingInterval),
+    cadenceNote: toCadenceNote(billingInterval),
     orderPlaced: toUtc(sub.order_placed),
     nextBillingDate: deriveNextBillingDate(sub.billing_attempts),
     cancelledOn: toUtc(sub.cancelled_on),
@@ -268,21 +314,34 @@ export function transformSubscription(
     pricingCohort: row.pricingCohort,
     billingInterval: row.billingInterval,
     billingCadence: row.billingCadence,
+    cadenceNote: row.cadenceNote,
     priceCents: row.priceCents,
     inDunning: row.inDunning,
     createdAt: syncedAt,
   };
 
+  const warnings: string[] = [];
+
   // An unmapped variant is a new product we do not know how to price. It must
   // be countable and it must name everything needed to map it.
-  const warning =
-    tier === "unknown"
-      ? `Unmapped Seal variant: subscription=${sub.id} variant_id=${item?.variant_id ?? "(none)"} ` +
+  if (tier === "unknown") {
+    warnings.push(
+      `Unmapped Seal variant: subscription=${sub.id} variant_id=${item?.variant_id ?? "(none)"} ` +
         `selling_plan_id=${sellingPlanId ?? "(empty)"} selling_plan_name=${sellingPlanName ?? "(empty)"} ` +
         `price=${item?.price ?? "(none)"} title=${item?.title ?? "(none)"}`
-      : null;
+    );
+  }
 
-  return { row, snapshot, warning };
+  // An interval outside the known set may still have bucketed correctly, but
+  // nobody decided that it should — so it gets reported either way.
+  if (!KNOWN_INTERVALS.has(billingInterval)) {
+    warnings.push(
+      `Unrecognised Seal billing interval "${billingInterval}": subscription=${sub.id} ` +
+        `bucketed as ${row.billingCadence} tier=${tier} price=${item?.price ?? "(none)"}`
+    );
+  }
+
+  return { row, snapshot, warnings };
 }
 
 export interface TransformSummary {
@@ -316,7 +375,7 @@ export function summariseTransform(items: TransformedSubscription[]): TransformS
     warnings: [],
   };
 
-  for (const { row, warning } of items) {
+  for (const { row, warnings } of items) {
     summary.byStatus[row.status] = (summary.byStatus[row.status] ?? 0) + 1;
     summary.byTier[row.tier] = (summary.byTier[row.tier] ?? 0) + 1;
     summary.byCadence[row.billingCadence] = (summary.byCadence[row.billingCadence] ?? 0) + 1;
@@ -325,7 +384,7 @@ export function summariseTransform(items: TransformedSubscription[]): TransformS
     if (row.tier === "unknown") summary.unknownTier++;
     if (row.planConflict) summary.planConflicts++;
     if (row.manualOrigin) summary.manualOrigin++;
-    if (warning) summary.warnings.push(warning);
+    summary.warnings.push(...warnings);
 
     if (row.priceAnomaly) {
       summary.priceAnomalies++;
@@ -339,10 +398,12 @@ export function summariseTransform(items: TransformedSubscription[]): TransformS
     if (row.billingCadence === "monthly") {
       summary.mrrCents += row.priceCents;
     } else if (row.billingCadence === "annual") {
+      // A twelfth regardless of the raw interval. A 13-month cycle renews at
+      // 12 months, so a twelfth is its steady-state monthly value.
       summary.mrrCents += Math.round(row.priceCents / 12);
     }
-    // "other" contributes nothing until we decide what a 13-month cycle is
-    // worth per month.
+    // "other" contributes nothing — and always carries a warning, so it can
+    // never sit outside the aggregates unnoticed.
   }
 
   return summary;

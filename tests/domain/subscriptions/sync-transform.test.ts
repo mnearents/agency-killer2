@@ -275,13 +275,69 @@ describe("transformSubscription", () => {
     expect(row.billingCadence).toBe("annual");
   });
 
-  // 56 grandfathered Studio subscriptions bill on a 13-month cycle. Folding
-  // them into "annual" would silently change the annual count; dropping them
-  // would silently lose them. They get their own bucket.
-  it("classifies a 13 month interval as other, not annual", () => {
+  // 56 grandfathered Studio subscriptions bill on a 13-month cycle: a one-time
+  // correction so pre-sale buyers did not pay for a month with no content.
+  // They are annual subscribers and belong in every annual aggregate.
+  it("classifies a 13 month interval as annual and keeps the raw value", () => {
     const { row } = transformSubscription(sub({ billing_interval: "13 month" }), SYNCED_AT);
     expect(row.billingInterval).toBe("13 month");
+    expect(row.billingCadence).toBe("annual");
+    expect(row.cadenceNote).toBe("13 month");
+  });
+
+  // Generic, not a special case for 13 — a future 14-month or 18-month
+  // correction must land in annual on its own, without another code change.
+  it("treats any interval of twelve months or more as annual", () => {
+    for (const interval of ["12 month", "13 month", "18 month", "24 month", "1 year"]) {
+      const { row } = transformSubscription(sub({ billing_interval: interval }), SYNCED_AT);
+      expect(row.billingCadence, interval).toBe("annual");
+    }
+  });
+
+  it("leaves a plain interval without a cadence note", () => {
+    expect(transformSubscription(sub({ billing_interval: "1 month" }), SYNCED_AT).row.cadenceNote)
+      .toBeNull();
+    expect(transformSubscription(sub({ billing_interval: "12 month" }), SYNCED_AT).row.cadenceNote)
+      .toBeNull();
+  });
+
+  // Anything outside the four known intervals is a product decision nobody
+  // told us about. It must surface, not quietly pick a bucket.
+  it("warns on an interval nobody has seen before", () => {
+    const { row, warnings } = transformSubscription(
+      sub({ billing_interval: "3 month" }),
+      SYNCED_AT
+    );
     expect(row.billingCadence).toBe("other");
+    expect(warnings.some((w) => w.includes("3 month"))).toBe(true);
+  });
+
+  it("warns on an unrecognised interval even when it maps to annual", () => {
+    const { row, warnings } = transformSubscription(
+      sub({ billing_interval: "18 month" }),
+      SYNCED_AT
+    );
+    expect(row.billingCadence).toBe("annual");
+    expect(warnings.some((w) => w.includes("18 month"))).toBe(true);
+  });
+
+  it("does not warn on the four intervals we expect", () => {
+    for (const interval of ["1 month", "12 month", "13 month", "1 year"]) {
+      const { warnings } = transformSubscription(sub({ billing_interval: interval }), SYNCED_AT);
+      expect(warnings, interval).toEqual([]);
+    }
+  });
+
+  // Two independent problems must both be reported; neither can mask the other.
+  it("reports an unmapped variant and an odd interval together", () => {
+    const { warnings } = transformSubscription(
+      sub({
+        billing_interval: "3 month",
+        items: [{ ...sub().items[0], variant_id: "99999999999999" }],
+      }),
+      SYNCED_AT
+    );
+    expect(warnings).toHaveLength(2);
   });
 
   it("normalises order_placed from store-local to UTC", () => {
@@ -344,16 +400,16 @@ describe("transformSubscription", () => {
   });
 
   it("reports an unmapped variant as a warning rather than failing silently", () => {
-    const { row, warning } = transformSubscription(
+    const { row, warnings } = transformSubscription(
       sub({ items: [{ ...sub().items[0], variant_id: "99999999999999" }] }),
       SYNCED_AT
     );
     expect(row.tier).toBe("unknown");
-    expect(warning).not.toBeNull();
-    expect(warning).toContain("99999999999999");
-    expect(warning).toContain("10080551157");
-    expect(warning).toContain("Spark Monthly Plan");
-    expect(warning).toContain("8.0");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("99999999999999");
+    expect(warnings[0]).toContain("10080551157");
+    expect(warnings[0]).toContain("Spark Monthly Plan");
+    expect(warnings[0]).toContain("8.0");
   });
 
   it("produces a snapshot row keyed to the sync date", () => {
@@ -368,10 +424,10 @@ describe("transformSubscription", () => {
 
   // A subscription with no items still has a status worth tracking.
   it("handles a subscription with no items without throwing", () => {
-    const { row, warning } = transformSubscription(sub({ items: [] }), SYNCED_AT);
+    const { row, warnings } = transformSubscription(sub({ items: [] }), SYNCED_AT);
     expect(row.tier).toBe("unknown");
     expect(row.priceCents).toBeNull();
-    expect(warning).not.toBeNull();
+    expect(warnings).toHaveLength(1);
   });
 });
 
@@ -420,6 +476,26 @@ describe("summariseTransform", () => {
       ),
     ];
     expect(summariseTransform(rows).mrrCents).toBe(600);
+  });
+
+  // The 13-month cycle is a one-off correction; Seal resets the interval to 12
+  // months on renewal without moving the scheduled date. A twelfth is the
+  // steady-state monthly value, and it matches every other grandfathered
+  // Studio annual at $120.
+  it("counts a 13 month subscription toward MRR at a twelfth of its price", () => {
+    const rows = [
+      transformSubscription(
+        sub({
+          billing_interval: "13 month",
+          items: [{ ...sub().items[0], variant_id: "48150148284661", price: "120.0" }],
+        }),
+        SYNCED_AT
+      ),
+    ];
+    const s = summariseTransform(rows);
+    expect(s.mrrCents).toBe(1000);
+    expect(s.byCadence.annual).toBe(1);
+    expect(s.byCadence.other).toBeUndefined();
   });
 
   it("excludes cancelled subscriptions from MRR", () => {
