@@ -983,6 +983,12 @@ async function main() {
       } else {
         results.push("Inventory: skipped (no credentials)");
       }
+      if (sealClient) {
+        const r = await syncSubscriptions({ client: sealClient, db }, new Date());
+        results.push(`Subscriptions: ${r.subscriptions} synced${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);
+      } else {
+        results.push("Subscriptions: skipped (no credentials)");
+      }
       if (igClient && igUserId) {
         const r = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
         results.push(`Instagram: ${r.posts} posts${r.errors.length > 0 ? ` (${r.errors.length} errors)` : ""}`);

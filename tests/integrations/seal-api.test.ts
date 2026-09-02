@@ -124,6 +124,73 @@ describe("createSealApiClient", () => {
     ).rejects.toThrow(/envelope/i);
   });
 
+  // The list endpoint omits customer_id entirely; only the single-subscription
+  // endpoint carries it. This is the sole reason that endpoint is called.
+  describe("getSubscriptionCustomerId", () => {
+    it("reads customer_id from the single-subscription endpoint", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(jsonResponse({ success: true, payload: { id: 42, customer_id: "10089422586101" } }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
+
+      expect(id).toBe("10089422586101");
+      expect(fetchMock.mock.calls[0][0]).toContain("/subscription?id=42");
+    });
+
+    // Seal returns a bare numeric string. Shopify stores a GID. Neither side
+    // should have to remember which form it is holding.
+    it("returns the bare numeric id, not a GID", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { customer_id: "10089422586101" } }))
+      );
+
+      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
+      expect(id).not.toContain("gid://");
+    });
+
+    // A migrated subscription may genuinely have no Shopify customer behind it.
+    // That is a real answer and must be distinguishable from a failed lookup.
+    it("returns null when the record carries no customer_id", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { id: 42, customer_id: "" } }))
+      );
+
+      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
+      expect(id).toBeNull();
+    });
+
+    it("throws rather than returning null when the lookup itself fails", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "nope" }, 404)));
+
+      await expect(
+        createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")
+      ).rejects.toThrow(/404/);
+    });
+
+    it("throws when the envelope is not the shape we depend on", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true, data: {} })));
+
+      await expect(
+        createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")
+      ).rejects.toThrow(/envelope/i);
+    });
+
+    it("retries a 503 like every other call", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("busy", { status: 503 }))
+        .mockResolvedValueOnce(jsonResponse({ success: true, payload: { customer_id: "7" } }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      expect(await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")).toBe("7");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("stops after the retry budget instead of looping forever", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("ECONNRESET"));
     vi.stubGlobal("fetch", fetchMock);

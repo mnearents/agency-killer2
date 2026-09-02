@@ -525,6 +525,15 @@ export const sealSubscriptions = pgTable(
     manualOrigin: integer("manual_origin").notNull().default(0), // 0 = false, 1 = true
     email: text("email"),
 
+    // Bare numeric Shopify customer ID, available only from the
+    // single-subscription endpoint. shopify_orders holds the same value as a
+    // GID, so the join extracts the numeric portion of that.
+    customerId: text("customer_id"),
+    // When the lookup last ran. Lets "no customer behind this subscription" be
+    // told apart from "never looked up" — without it, a failed backfill and a
+    // genuinely customer-less record are indistinguishable.
+    customerIdCheckedAt: timestamp("customer_id_checked_at", { withTimezone: true }),
+
     status: text("status").notNull(), // ACTIVE, CANCELLED
 
     // Tier and cohort come from variant_id — never from price or selling plan.
@@ -574,6 +583,7 @@ export const sealSubscriptions = pgTable(
     index("seal_subscriptions_dunning_idx").on(table.inDunning),
     index("seal_subscriptions_shopify_order_idx").on(table.shopifyOrderId),
     index("seal_subscriptions_next_billing_idx").on(table.nextBillingDate),
+    index("seal_subscriptions_customer_idx").on(table.customerId),
   ]
 );
 

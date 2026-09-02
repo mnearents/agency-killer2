@@ -6,6 +6,7 @@ export function createMockSealApiClient(
 ): SealApiClient {
   return {
     getAllSubscriptions: vi.fn().mockResolvedValue([]),
+    getSubscriptionCustomerId: vi.fn().mockResolvedValue(null),
     ...overrides,
   };
 }

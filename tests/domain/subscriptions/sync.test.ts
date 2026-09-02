@@ -5,9 +5,12 @@ import { createMockSealApiClient, makeSealSubscription } from "../../mocks/seal-
 import type { SealSubscription } from "@/integrations/seal-api";
 
 /** Minimal Drizzle stub that records what would be written. */
-function createDbStub() {
+function createDbStub(existing: { id: string; customerId: string | null }[] = []) {
   const inserted: { table: string; values: unknown }[] = [];
   const db = {
+    select() {
+      return { from: () => Promise.resolve(existing) };
+    },
     insert(table: Parameters<typeof getTableName>[0]) {
       const name = getTableName(table);
       return {
@@ -151,6 +154,105 @@ describe("syncSubscriptions", () => {
       ?.values as Record<string, unknown>;
     expect(snap.id).toBe("2026-09-02:42");
     expect(snap.snapshotDate).toBe("2026-09-02");
+  });
+
+  // The list endpoint has no customer_id, so each one costs a request. Doing
+  // that for all 4,390 daily would be 4,390 requests against a 10-concurrent
+  // limit; the backfill script does it once and the sync only covers new
+  // arrivals.
+  describe("customer id lookups", () => {
+    it("looks up only subscriptions it has not stored a customer for", async () => {
+      const getSubscriptionCustomerId = vi.fn().mockResolvedValue("555");
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([
+          makeSealSubscription({ id: 1 }),
+          makeSealSubscription({ id: 2 }),
+        ]),
+        getSubscriptionCustomerId,
+      });
+      const { db, inserted } = createDbStub([{ id: "1", customerId: "111" }]);
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      expect(getSubscriptionCustomerId).toHaveBeenCalledTimes(1);
+      expect(getSubscriptionCustomerId).toHaveBeenCalledWith("2");
+
+      const rows = inserted.filter((i) => i.table === "seal_subscriptions");
+      const byId = new Map(
+        rows.map((r) => [(r.values as Record<string, unknown>).id, r.values as Record<string, unknown>])
+      );
+      expect(byId.get("1")!.customerId).toBe("111");
+      expect(byId.get("2")!.customerId).toBe("555");
+    });
+
+    it("does not call the API at all when every customer is already stored", async () => {
+      const getSubscriptionCustomerId = vi.fn();
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
+        getSubscriptionCustomerId,
+      });
+      const { db } = createDbStub([{ id: "1", customerId: "111" }]);
+
+      await syncSubscriptions({ client, db }, NOW);
+      expect(getSubscriptionCustomerId).not.toHaveBeenCalled();
+    });
+
+    // Without a cap, a sync run before the backfill would quietly fire
+    // thousands of requests and look like a hang.
+    it("stops at the lookup cap and reports how many it skipped", async () => {
+      const subs = Array.from({ length: 60 }, (_, i) => makeSealSubscription({ id: i + 1 }));
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(subs),
+        getSubscriptionCustomerId: vi.fn().mockResolvedValue("555"),
+      });
+      const { db } = createDbStub();
+      const warn = vi.fn();
+
+      const result = await syncSubscriptions({ client, db }, NOW, { warn });
+
+      expect(client.getSubscriptionCustomerId).toHaveBeenCalledTimes(50);
+      const capWarning = warn.mock.calls
+        .map((c) => c[0] as string)
+        .find((m) => m.includes("10 "));
+      expect(capWarning).toBeDefined();
+      expect(capWarning).toMatch(/backfill/i);
+      expect(result.customerLookups).toBe(50);
+    });
+
+    // One bad lookup must not cost the whole crawl.
+    it("records the subscription even when its lookup fails", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
+        getSubscriptionCustomerId: vi.fn().mockRejectedValue(new Error("Seal API 503")),
+      });
+      const { db, inserted } = createDbStub();
+
+      const result = await syncSubscriptions({ client, db }, NOW, { warn: vi.fn() });
+
+      const row = inserted.find((i) => i.table === "seal_subscriptions")
+        ?.values as Record<string, unknown>;
+      expect(row.customerId).toBeNull();
+      expect(row.customerIdCheckedAt).toBeNull();
+      expect(result.subscriptions).toBe(1);
+      expect(result.errors.some((e) => e.includes("503"))).toBe(true);
+    });
+
+    // A subscription with no customer and one never looked up must not be
+    // confusable, or the backfill can never tell what is left to do.
+    it("marks a lookup that found nothing as checked", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
+        getSubscriptionCustomerId: vi.fn().mockResolvedValue(null),
+      });
+      const { db, inserted } = createDbStub();
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      const row = inserted.find((i) => i.table === "seal_subscriptions")
+        ?.values as Record<string, unknown>;
+      expect(row.customerId).toBeNull();
+      expect(row.customerIdCheckedAt).toEqual(NOW);
+    });
   });
 
   it("stores booleans as the integer flags the schema uses", async () => {

@@ -11,6 +11,14 @@
 import type { SealApiClient } from "@/integrations/seal-api";
 import type { Db } from "@/db/client";
 import { sealSubscriptions, sealSubscriptionSnapshots } from "@/db/schema";
+
+/**
+ * Customer IDs live only on the single-subscription endpoint, one request
+ * each. The backfill script covers the existing ~4,390; this cap keeps a sync
+ * that runs before the backfill from firing thousands of requests and looking
+ * like a hang. Normal daily arrivals are a handful.
+ */
+const MAX_CUSTOMER_LOOKUPS_PER_SYNC = 50;
 import {
   transformSubscription,
   summariseTransform,
@@ -29,6 +37,8 @@ export interface SealSyncLogger {
 export interface SealSyncResult {
   subscriptions: number;
   snapshots: number;
+  /** Single-endpoint calls made this run to resolve new customer IDs. */
+  customerLookups: number;
   summary: TransformSummary;
   errors: string[];
 }
@@ -65,7 +75,7 @@ export async function syncSubscriptions(
     raw = await client.getAllSubscriptions();
   } catch (err) {
     errors.push(`Seal crawl: ${err instanceof Error ? err.message : String(err)}`);
-    return { subscriptions: 0, snapshots: 0, summary: EMPTY_SUMMARY, errors };
+    return { subscriptions: 0, snapshots: 0, customerLookups: 0, summary: EMPTY_SUMMARY, errors };
   }
 
   // A crawl that returns nothing is far more likely to be a broken token or a
@@ -74,11 +84,66 @@ export async function syncSubscriptions(
   // collapse — a fabricated churn event that looks exactly like a real one.
   if (raw.length === 0) {
     errors.push("Seal crawl returned no subscriptions — refusing to write. Treating as a failed sync.");
-    return { subscriptions: 0, snapshots: 0, summary: EMPTY_SUMMARY, errors };
+    return { subscriptions: 0, snapshots: 0, customerLookups: 0, summary: EMPTY_SUMMARY, errors };
   }
 
   const transformed = raw.map((s) => transformSubscription(s, now));
   const summary = summariseTransform(transformed);
+
+  // Reuse every customer ID already stored; only genuinely new subscriptions
+  // cost a request.
+  const knownCustomerIds = new Map<string, string | null>();
+  const checkedAt = new Map<string, Date | null>();
+  try {
+    const rows = await db
+      .select({
+        id: sealSubscriptions.id,
+        customerId: sealSubscriptions.customerId,
+        customerIdCheckedAt: sealSubscriptions.customerIdCheckedAt,
+      })
+      .from(sealSubscriptions);
+    for (const r of rows) {
+      if (r.customerId) {
+        knownCustomerIds.set(r.id, r.customerId);
+        // Carried forward so a later sync does not blank the date it was found.
+        checkedAt.set(r.id, r.customerIdCheckedAt ?? null);
+      }
+    }
+  } catch (err) {
+    // Not fatal: worst case every subscription looks new, and the cap keeps
+    // that from turning into thousands of requests.
+    errors.push(
+      `Loading stored customer ids: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  const needsLookup = transformed
+    .map(({ row }) => row.id)
+    .filter((id) => !knownCustomerIds.has(id));
+
+  if (needsLookup.length > MAX_CUSTOMER_LOOKUPS_PER_SYNC) {
+    logger.warn(
+      `${needsLookup.length} subscriptions have no stored customer id; looking up ` +
+        `${MAX_CUSTOMER_LOOKUPS_PER_SYNC} and leaving ${needsLookup.length - MAX_CUSTOMER_LOOKUPS_PER_SYNC} ` +
+        `for the next sync. Run the customer-id backfill script if this is the initial load.`
+    );
+  }
+
+  let customerLookups = 0;
+  for (const id of needsLookup.slice(0, MAX_CUSTOMER_LOOKUPS_PER_SYNC)) {
+    try {
+      const customerId = await client.getSubscriptionCustomerId(id);
+      // Record the check even when there is no customer, so "no customer" is
+      // never mistaken for "not looked up yet".
+      knownCustomerIds.set(id, customerId);
+      checkedAt.set(id, now);
+      customerLookups++;
+    } catch (err) {
+      errors.push(
+        `Customer id lookup for ${id}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 
   for (const warning of summary.warnings) logger.warn(warning);
 
@@ -89,6 +154,8 @@ export async function syncSubscriptions(
       shopifyOrderId: row.shopifyOrderId,
       manualOrigin: flag(row.manualOrigin),
       email: row.email,
+      customerId: knownCustomerIds.get(row.id) ?? null,
+      customerIdCheckedAt: checkedAt.get(row.id) ?? null,
       status: row.status,
       tier: row.tier,
       pricingCohort: row.pricingCohort,
@@ -159,5 +226,11 @@ export async function syncSubscriptions(
     }
   }
 
-  return { subscriptions: subscriptionCount, snapshots: snapshotCount, summary, errors };
+  return {
+    subscriptions: subscriptionCount,
+    snapshots: snapshotCount,
+    customerLookups,
+    summary,
+    errors,
+  };
 }

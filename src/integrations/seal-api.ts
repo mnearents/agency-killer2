@@ -80,6 +80,16 @@ export interface SealApiClient {
    * the only option. ~88 pages, ~90 seconds.
    */
   getAllSubscriptions(): Promise<SealSubscription[]>;
+
+  /**
+   * The Shopify customer ID as a bare numeric string, or null when the
+   * subscription genuinely has no customer behind it.
+   *
+   * Only the single-subscription endpoint carries `customer_id` — the list
+   * endpoint omits it entirely — so this costs one request per subscription
+   * and is never called in bulk from the daily sync.
+   */
+  getSubscriptionCustomerId(subscriptionId: string): Promise<string | null>;
 }
 
 export interface SealConfig {
@@ -170,6 +180,34 @@ export function createSealApiClient(config: SealConfig): SealApiClient {
   }
 
   return {
+    async getSubscriptionCustomerId(subscriptionId: string): Promise<string | null> {
+      const url = `${baseUrl}/subscription?id=${encodeURIComponent(subscriptionId)}`;
+      const response = await fetchWithRetry(url);
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(
+          `Seal API ${response.status} ${response.statusText} on subscription ${subscriptionId}: ${body.slice(0, 200)}`
+        );
+      }
+
+      const data = (await response.json()) as {
+        payload?: { customer_id?: string | number };
+      };
+
+      // A missing payload is a broken call; a payload with no customer_id is a
+      // real answer. Collapsing the two would silently record "no customer"
+      // for every subscription on the day the envelope changes.
+      if (!data?.payload || typeof data.payload !== "object") {
+        throw new Error(
+          `Seal API returned an unrecognised envelope for subscription ${subscriptionId}`
+        );
+      }
+
+      const raw = data.payload.customer_id;
+      return raw === undefined || raw === null || raw === "" ? null : String(raw);
+    },
+
     async getAllSubscriptions(): Promise<SealSubscription[]> {
       const all: SealSubscription[] = [];
       let page = 1;
