@@ -16,6 +16,7 @@ import type { SlackResponse } from "./slack/formatter";
 import { createMetaApiClient } from "@/integrations/meta-api";
 import { createInstagramApiClient } from "@/integrations/instagram-api";
 import { createShopifyApiClient } from "@/integrations/shopify-api";
+import { createSealApiClient } from "@/integrations/seal-api";
 import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
 import { createEmbeddingClient } from "@/integrations/openai";
@@ -25,6 +26,7 @@ import { createDb } from "@/db/client";
 import { syncIncremental } from "@/domain/meta/sync";
 import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
+import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
@@ -88,6 +90,13 @@ async function main() {
           getEnv("SHOPIFY_ACCESS_TOKEN")
         )
       : null;
+
+  const sealClient = getEnvOptional("SEAL_API_TOKEN")
+    ? createSealApiClient({
+        apiToken: getEnv("SEAL_API_TOKEN"),
+        baseUrl: getEnvOptional("SEAL_BASE_URL"),
+      })
+    : null;
 
   const dropboxClient =
     getEnvOptional("DROPBOX_APP_KEY") &&
@@ -184,6 +193,22 @@ async function main() {
       console.log(`[sync:shopify] Done: ${result.orders} orders, ${result.lineItems} line items`);
       if (result.errors.length > 0) {
         console.error("[sync:shopify] Errors:", result.errors);
+      }
+    },
+
+    "sync:seal": async () => {
+      if (!sealClient) {
+        console.log("[sync:seal] Skipped — SEAL_API_TOKEN not set");
+        return;
+      }
+      const result = await syncSubscriptions({ client: sealClient, db }, new Date());
+      const s = result.summary;
+      console.log(
+        `[sync:seal] Done: ${result.subscriptions} subscriptions, ${result.snapshots} snapshots, ` +
+          `${s.inDunning} in dunning, ${s.unknownTier} unmapped, ${s.priceAnomalies} price anomalies`
+      );
+      if (result.errors.length > 0) {
+        console.error("[sync:seal] Errors:", result.errors);
       }
     },
 
@@ -835,6 +860,29 @@ async function main() {
       }
       return {
         text: `*Shopify sync complete!* (last ${lookbackDays} days)\n• ${result.orders} orders\n• ${result.lineItems} line items`,
+        isError: false,
+      };
+    },
+    "sync:seal": async () => {
+      if (!sealClient) {
+        return { text: "Subscription sync unavailable — SEAL_API_TOKEN not set.", isError: true };
+      }
+      const result = await syncSubscriptions({ client: sealClient, db }, new Date());
+      if (result.errors.length > 0) {
+        return {
+          text: `Subscription sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}`,
+          isError: true,
+        };
+      }
+      const s = result.summary;
+      const anomalyNote =
+        s.priceAnomalies > 0
+          ? `\n• ${s.priceAnomalies} unusual prices set aside (not counted in revenue)`
+          : "";
+      const unknownNote =
+        s.unknownTier > 0 ? `\n• ${s.unknownTier} on a plan we don't recognise` : "";
+      return {
+        text: `*Subscription sync complete!*\n• ${result.subscriptions} subscriptions\n• ${s.byStatus.ACTIVE ?? 0} active, ${s.byStatus.CANCELLED ?? 0} cancelled\n• ${s.inDunning} with a failed payment${anomalyNote}${unknownNote}`,
         isError: false,
       };
     },

@@ -14,6 +14,7 @@ import {
   shopifyInventory,
   socialPosts,
   attentiveCampaigns,
+  sealSubscriptions,
 } from "./schema";
 
 /**
@@ -83,6 +84,7 @@ export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshne
     { source: "Meta ads", table: metaInsights, name: "meta_insights", column: metaInsights.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Shopify orders", table: shopifyOrders, name: "shopify_orders", column: shopifyOrders.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Shopify inventory", table: shopifyInventory, name: "shopify_inventory", column: shopifyInventory.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
+    { source: "Subscriptions (Seal)", table: sealSubscriptions, name: "seal_subscriptions", column: sealSubscriptions.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Instagram/Facebook posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS },
   ];

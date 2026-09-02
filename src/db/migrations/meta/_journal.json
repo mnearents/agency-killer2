@@ -57,6 +57,13 @@
       "when": 1788300340610,
       "tag": "0007_unique_revanche",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788388714222,
+      "tag": "0008_redundant_hydra",
+      "breakpoints": true
     }
   ]
 }

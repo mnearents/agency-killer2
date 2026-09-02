@@ -14,6 +14,7 @@ import type { TaskDefinition } from "@/worker/scheduler";
  *
  *   13:00 UTC (6 AM PT) — Meta ads sync
  *   13:15 UTC           — Shopify sync
+ *   13:20 UTC           — Seal subscriptions sync
  *   13:30 UTC           — Instagram sync
  *   13:45 UTC           — Inventory sync
  *   14:00 UTC (7 AM PT) — Ads analysis (after syncs finish)
@@ -31,6 +32,15 @@ export function getPhase1Tasks(): TaskDefinition[] {
       id: "shopify-sync",
       name: "Shopify Orders Sync",
       schedule: { type: "daily", hour: 13, minute: 15 },
+      enabled: true,
+    },
+    {
+      id: "seal-sync",
+      name: "Seal Subscriptions Sync",
+      // After shopify-sync: the crawl is ~88 pages / ~90s, and running it once
+      // the order table is current keeps a subscription-to-customer join
+      // resolvable on the same day's data.
+      schedule: { type: "daily", hour: 13, minute: 20 },
       enabled: true,
     },
     {
@@ -89,6 +99,7 @@ export function getTaskHandlerMap(): Record<string, string> {
   return {
     "meta-sync": "sync:meta",
     "shopify-sync": "sync:shopify",
+    "seal-sync": "sync:seal",
     "social-sync": "sync:social",
     "inventory-sync": "sync:inventory",
     "attentive-sync": "sync:attentive",

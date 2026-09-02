@@ -19,6 +19,23 @@ describe("getPhase1Tasks: task definitions", () => {
     expect(shopify!.enabled).toBe(true);
   });
 
+  // The subscription crawl reads nothing from shopify_orders today, but the
+  // ordering is what makes a later customer join possible without a second sync.
+  it("includes Seal subscription sync, scheduled after shopify-sync", () => {
+    const tasks = getPhase1Tasks();
+    const seal = tasks.find((t) => t.id === "seal-sync");
+    expect(seal).toBeDefined();
+    expect(seal!.schedule).toEqual({ type: "daily", hour: 13, minute: 20 });
+    expect(seal!.enabled).toBe(true);
+
+    const shopifySchedule = tasks.find((t) => t.id === "shopify-sync")!.schedule;
+    const sealSchedule = seal!.schedule;
+    if (shopifySchedule.type !== "daily" || sealSchedule.type !== "daily") {
+      throw new Error("both syncs must stay daily for the ordering to mean anything");
+    }
+    expect(sealSchedule.minute).toBeGreaterThan(shopifySchedule.minute ?? 0);
+  });
+
   it("includes KB sync from Dropbox (every 6 hours)", () => {
     const tasks = getPhase1Tasks();
     const kb = tasks.find((t) => t.id === "kb-sync");

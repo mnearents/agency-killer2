@@ -504,3 +504,110 @@ export const agentSessions = pgTable("agent_sessions", {
   cookiesJson: text("cookies_json").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── Seal Subscriptions ────────────────────────────────────────────────
+
+/**
+ * Current state, one row per subscription, overwritten every sync.
+ *
+ * Seal has no `since` filter and silently ignores unknown query params, so
+ * every sync is a full crawl of all ~88 pages and every row is rewritten.
+ * `manualOrigin` marks the ~92% of records created by the Color Happy → RAD
+ * migration, which carry a synthetic "_manual_xxxxx" order id and therefore
+ * have no Shopify order to join to.
+ */
+export const sealSubscriptions = pgTable(
+  "seal_subscriptions",
+  {
+    id: text("id").primaryKey(), // Seal's subscription ID
+    orderId: text("order_id").notNull(), // raw, may be "_manual_xxxxx"
+    shopifyOrderId: text("shopify_order_id"), // GID form, null when manual origin
+    manualOrigin: integer("manual_origin").notNull().default(0), // 0 = false, 1 = true
+    email: text("email"),
+
+    status: text("status").notNull(), // ACTIVE, CANCELLED
+
+    // Tier and cohort come from variant_id — never from price or selling plan.
+    tier: text("tier").notNull(), // spark, studio, unknown
+    pricingCohort: text("pricing_cohort").notNull(), // grandfathered, current, unknown
+    variantId: text("variant_id"),
+    productId: text("product_id"),
+    variantSku: text("variant_sku"),
+    productTitle: text("product_title"),
+
+    // Corroboration only. Empty on ~90% of records.
+    sellingPlanId: text("selling_plan_id"),
+    sellingPlanName: text("selling_plan_name"),
+    planConflict: integer("plan_conflict").notNull().default(0), // plan name disagrees with variant
+
+    priceCents: bigint("price_cents", { mode: "number" }),
+    priceAnomaly: integer("price_anomaly").notNull().default(0), // excluded from MRR/LTV
+    currency: text("currency").notNull().default("USD"),
+
+    billingInterval: text("billing_interval").notNull(), // raw: "1 month", "12 month", "13 month"
+    billingCadence: text("billing_cadence").notNull(), // monthly, annual, other
+
+    orderPlaced: timestamp("order_placed", { withTimezone: true }),
+    nextBillingDate: timestamp("next_billing_date", { withTimezone: true }),
+    cancelledOn: timestamp("cancelled_on", { withTimezone: true }),
+    cancellationReason: text("cancellation_reason"),
+
+    // Derived from billing_attempts[].status === "error" only. A completed
+    // attempt can carry a stale error_code, so the code is stored for the
+    // campaign copy but never used to decide the boolean.
+    inDunning: integer("in_dunning").notNull().default(0),
+    lastErrorCode: text("last_error_code"),
+    lastErrorMessage: text("last_error_message"),
+    lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
+
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("seal_subscriptions_status_idx").on(table.status),
+    index("seal_subscriptions_tier_idx").on(table.tier, table.pricingCohort),
+    index("seal_subscriptions_dunning_idx").on(table.inDunning),
+    index("seal_subscriptions_shopify_order_idx").on(table.shopifyOrderId),
+    index("seal_subscriptions_next_billing_idx").on(table.nextBillingDate),
+  ]
+);
+
+export type SealSubscriptionRecord = typeof sealSubscriptions.$inferSelect;
+export type NewSealSubscriptionRecord = typeof sealSubscriptions.$inferInsert;
+
+/**
+ * One row per subscription per sync day.
+ *
+ * The current-state table above overwrites itself, so an upgrade from Spark to
+ * Studio, or a move from grandfathered to current pricing, leaves no trace
+ * there. This is what makes real cohort retention answerable rather than
+ * inferred.
+ */
+export const sealSubscriptionSnapshots = pgTable(
+  "seal_subscription_snapshots",
+  {
+    id: text("id").primaryKey(), // "<snapshotDate>:<subscriptionId>"
+    snapshotDate: text("snapshot_date").notNull(), // YYYY-MM-DD, UTC
+    subscriptionId: text("subscription_id").notNull(),
+
+    status: text("status").notNull(),
+    tier: text("tier").notNull(),
+    pricingCohort: text("pricing_cohort").notNull(),
+    billingInterval: text("billing_interval").notNull(),
+    billingCadence: text("billing_cadence").notNull(),
+    priceCents: bigint("price_cents", { mode: "number" }),
+    inDunning: integer("in_dunning").notNull().default(0),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("seal_snapshots_date_idx").on(table.snapshotDate),
+    index("seal_snapshots_subscription_idx").on(table.subscriptionId),
+    uniqueIndex("seal_snapshots_date_sub_idx").on(table.snapshotDate, table.subscriptionId),
+  ]
+);
+
+export type SealSubscriptionSnapshot = typeof sealSubscriptionSnapshots.$inferSelect;
+export type NewSealSubscriptionSnapshot = typeof sealSubscriptionSnapshots.$inferInsert;

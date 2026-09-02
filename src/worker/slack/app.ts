@@ -28,6 +28,8 @@ const ACK_MESSAGES: Record<string, string> = {
   "notes:add": "Saving notes...",
   "sync:meta": "Syncing Meta ads data...",
   "sync:shopify": "Syncing Shopify orders...",
+  // ~88 pages at 50 per page — the ack matters more here than anywhere else.
+  "sync:seal": "Syncing subscriptions (this takes a minute or two)...",
   "sync:knowledge-base": "Syncing knowledge base from Dropbox...",
   "sync:all": "Syncing all data sources...",
   "meta:analysis": "Analyzing ad performance...",
