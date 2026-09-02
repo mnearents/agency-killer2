@@ -5,8 +5,28 @@ import {
   checkRoasDropped,
   checkRevenueAnomaly,
   checkSubscriptionSignups,
+  buildCheckFailureAlert,
   type Alert,
 } from "@/domain/alerts/checks";
+
+describe("buildCheckFailureAlert", () => {
+  it("returns nothing when every check ran", () => {
+    expect(buildCheckFailureAlert([])).toBeNull();
+  });
+
+  it("names the checks that failed so a silent breakage is visible", () => {
+    const alert = buildCheckFailureAlert(["inventory", "ROAS"]);
+    expect(alert).not.toBeNull();
+    expect(alert!.type).toBe("check-failed");
+    expect(alert!.message).toContain("inventory");
+    expect(alert!.message).toContain("ROAS");
+  });
+
+  it("warns that a clean report may be incomplete rather than implying all-clear", () => {
+    const alert = buildCheckFailureAlert(["inventory"]);
+    expect(alert!.message.toLowerCase()).toContain("incomplete");
+  });
+});
 
 describe("checkNoEmailSends", () => {
   it("fires when no sends and nothing on calendar", () => {

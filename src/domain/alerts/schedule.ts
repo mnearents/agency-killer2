@@ -32,10 +32,14 @@ export function isDuringWorkHours(now: Date, hours: WorkHours = DEFAULT_WORK_HOU
   return currentHour >= hours.startHourUtc || currentHour < hours.endHourUtc;
 }
 
-import type { Alert } from "./checks";
+import { CHECK_FAILED_TYPE, type Alert } from "./checks";
 
 /**
  * Prioritize and cap alerts. Most severe first, limited to MAX_ALERTS_PER_RUN.
+ *
+ * Check-failure notices are pinned ahead of the cap: the cap exists to keep
+ * routine alerts from spamming Slack, but a check that didn't run means the
+ * whole report is untrustworthy, which is exactly what must not get dropped.
  */
 export function prioritizeAlerts(
   alerts: Alert[],
@@ -43,7 +47,10 @@ export function prioritizeAlerts(
 ): Alert[] {
   const severityOrder: Record<string, number> = { urgent: 0, warning: 1, info: 2 };
 
-  return [...alerts]
-    .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3))
-    .slice(0, max);
+  const pinned = alerts.filter((a) => a.type === CHECK_FAILED_TYPE);
+  const rest = alerts
+    .filter((a) => a.type !== CHECK_FAILED_TYPE)
+    .sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
+
+  return [...pinned, ...rest].slice(0, max);
 }

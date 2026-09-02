@@ -29,9 +29,19 @@ export interface InventoryItem {
   unitsSoldLast30d: number;
 }
 
+/**
+ * Two thresholds rather than one, because the right single number depends on
+ * a reorder lead time that varies per product and isn't recorded anywhere.
+ * They map to genuinely different actions:
+ *   - below the lead time  → still time to reorder, so reorder
+ *   - below critical       → too late to reorder, so stop driving demand
+ * A wrong-ish lead time degrades the timing of these, not their usefulness.
+ */
 export interface InventoryCheckOptions {
-  /** Flag anything that runs out sooner than this. Default: 14 days. */
+  /** Start the reorder conversation below this many days of cover. Default: 45. */
   reorderLeadTimeDays?: number;
+  /** Too late to restock in time below this many days of cover. Default: 14. */
+  criticalCoverDays?: number;
   /** Below this quantity, a non-selling variant isn't worth bundling. Default: 50. */
   slowMoverMinQuantity?: number;
 }
@@ -39,6 +49,7 @@ export interface InventoryCheckOptions {
 export type InventoryClassification =
   | "ignored"
   | "stockout"
+  | "critical-cover"
   | "low-cover"
   | "slow-mover"
   | "healthy";
@@ -52,7 +63,8 @@ export function classifyItem(
   item: InventoryItem,
   options: InventoryCheckOptions = {}
 ): InventoryClassification {
-  const leadTime = options.reorderLeadTimeDays ?? 14;
+  const leadTime = options.reorderLeadTimeDays ?? 45;
+  const critical = options.criticalCoverDays ?? 14;
   const slowMoverMin = options.slowMoverMinQuantity ?? 50;
 
   // Untracked variants always read 0; non-active products aren't for sale.
@@ -64,6 +76,7 @@ export function classifyItem(
   }
 
   const cover = daysOfCoverFor(item);
+  if (cover !== null && cover < critical) return "critical-cover";
   if (cover !== null && cover < leadTime) return "low-cover";
 
   if (item.unitsSoldLast30d === 0 && item.quantity >= slowMoverMin) {
@@ -103,6 +116,7 @@ export function runInventoryChecks(
   options: InventoryCheckOptions = {}
 ): Alert[] {
   const stockouts: InventoryItem[] = [];
+  const criticalCover: InventoryItem[] = [];
   const lowCover: InventoryItem[] = [];
   const slowMovers: InventoryItem[] = [];
 
@@ -111,6 +125,9 @@ export function runInventoryChecks(
       case "stockout":
         stockouts.push(item);
         break;
+      case "critical-cover":
+        criticalCover.push(item);
+        break;
       case "low-cover":
         lowCover.push(item);
         break;
@@ -118,6 +135,19 @@ export function runInventoryChecks(
         slowMovers.push(item);
         break;
     }
+  }
+
+  // Most urgent first — fewest days of cover.
+  function byUrgency(a: InventoryItem, b: InventoryItem) {
+    return (daysOfCoverFor(a) ?? Infinity) - (daysOfCoverFor(b) ?? Infinity);
+  }
+
+  function coverLines(group: InventoryItem[]): string[] {
+    return [...group].sort(byUrgency).map((i) => {
+      const cover = daysOfCoverFor(i);
+      const coverText = cover === null ? "no recent sales" : formatDays(cover);
+      return `• ${displayName(i)} — ${i.quantity} left, about ${coverText} of cover`;
+    });
   }
 
   const alerts: Alert[] = [];
@@ -140,23 +170,26 @@ export function runInventoryChecks(
     });
   }
 
-  if (lowCover.length > 0) {
-    // Most urgent first — fewest days of cover.
-    const sorted = [...lowCover].sort(
-      (a, b) => (daysOfCoverFor(a) ?? Infinity) - (daysOfCoverFor(b) ?? Infinity)
-    );
-    const lines = sorted.map((i) => {
-      const cover = daysOfCoverFor(i);
-      const coverText = cover === null ? "no recent sales" : formatDays(cover);
-      return `• ${displayName(i)} — ${i.quantity} left, about ${coverText} of cover`;
+  if (criticalCover.length > 0) {
+    alerts.push({
+      type: "inventory-critical-cover",
+      severity: "urgent",
+      message:
+        `About to sell out:\n${withOverflow(coverLines(criticalCover), MAX_LISTED_LOW_COVER)}\n\n` +
+        `These will run out before a reorder could realistically land. Ease off the ad spend ` +
+        `and don't feature them in the next email — otherwise you're paying to create demand ` +
+        `you can't fill. If a restock is already on the way, ignore me.`,
     });
+  }
+
+  if (lowCover.length > 0) {
     alerts.push({
       type: "inventory-low-cover",
       severity: "warning",
       message:
-        `Running low at the current sales rate:\n${withOverflow(lines, MAX_LISTED_LOW_COVER)}\n\n` +
-        `Reorder now if you want to keep selling these. If you can't restock in time, ` +
-        `ease off promoting them so you don't drive demand into a stockout.`,
+        `Worth reordering soon:\n${withOverflow(coverLines(lowCover), MAX_LISTED_LOW_COVER)}\n\n` +
+        `There's still time to restock these before they run out. Get the reorder moving now ` +
+        `and you can keep promoting them without risk.`,
     });
   }
 

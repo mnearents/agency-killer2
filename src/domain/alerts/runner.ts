@@ -17,11 +17,21 @@ import {
   checkRoasDropped,
   checkRevenueAnomaly,
   checkSubscriptionSignups,
+  buildCheckFailureAlert,
   type Alert,
 } from "./checks";
 
 export async function runAlertChecks(db: Db): Promise<Alert[]> {
   const alerts: Alert[] = [];
+  const failures: string[] = [];
+
+  // A check that throws produces no alert, which is indistinguishable from a
+  // check that found nothing wrong. Record it so the report can say so.
+  function recordFailure(name: string, err: unknown) {
+    console.error(`[alerts] "${name}" check failed:`, err);
+    failures.push(name);
+  }
+
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
@@ -53,8 +63,8 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       hasUpcomingCalendarEntry: hasUpcoming,
     });
     if (emailAlert) alerts.push(emailAlert);
-  } catch {
-    // Attentive table may not exist yet
+  } catch (err) {
+    recordFailure("email/SMS sends", err);
   }
 
   // ─── Reel outperforming ───────────────────────────────────────────
@@ -95,8 +105,8 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       } : null,
     });
     if (reelAlert) alerts.push(reelAlert);
-  } catch {
-    // Social table may not exist yet
+  } catch (err) {
+    recordFailure("social posts", err);
   }
 
   // ─── ROAS drop ────────────────────────────────────────────────────
@@ -149,8 +159,8 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       lastWeekRoas: lastWeek.roas,
     });
     if (roasAlert) alerts.push(roasAlert);
-  } catch {
-    // Meta tables may not have data
+  } catch (err) {
+    recordFailure("ad ROAS", err);
   }
 
   // ─── Revenue anomaly ──────────────────────────────────────────────
@@ -192,8 +202,8 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       todayDate: dayStart,
     });
     if (revenueAlert) alerts.push(revenueAlert);
-  } catch {
-    // May not have enough data yet
+  } catch (err) {
+    recordFailure("revenue", err);
   }
 
   // ─── Subscription signups ─────────────────────────────────────────
@@ -237,16 +247,19 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
       avgWeeklySubscribers: avgWeekly,
     });
     if (subAlert) alerts.push(subAlert);
-  } catch {
-    // May not have subscription data
+  } catch (err) {
+    recordFailure("subscriptions", err);
   }
 
   // ─── Inventory ────────────────────────────────────────────────────
   try {
     alerts.push(...runInventoryChecks(await getInventoryItems(db)));
-  } catch {
-    // Inventory table may not exist or have been synced yet
+  } catch (err) {
+    recordFailure("inventory", err);
   }
+
+  const failureAlert = buildCheckFailureAlert(failures);
+  if (failureAlert) alerts.push(failureAlert);
 
   return alerts;
 }

@@ -13,6 +13,25 @@ export interface Alert {
   message: string;
 }
 
+export const CHECK_FAILED_TYPE = "check-failed";
+
+/**
+ * A check that threw tells us nothing — it must not be reported as "all clear".
+ * This turns the silence into a visible alert naming what didn't run.
+ */
+export function buildCheckFailureAlert(failures: string[]): Alert | null {
+  if (failures.length === 0) return null;
+
+  return {
+    type: CHECK_FAILED_TYPE,
+    severity: "warning",
+    message:
+      `I couldn't finish these checks: ${failures.join(", ")}. ` +
+      `That means this report is incomplete — please don't read it as an all-clear. ` +
+      `The worker logs will say why.`,
+  };
+}
+
 // ─── No email/SMS sends ──────────────────────────────────────────────
 
 export interface EmailSendsInput {

@@ -44,22 +44,35 @@ describe("classifyItem", () => {
     expect(classifyItem(item({ quantity: 0, unitsSoldLast30d: 0 }))).not.toBe("stockout");
   });
 
+  // All cases below: 30 sold in 30 days = 1 unit/day, so quantity == days of cover.
+
   it("flags low cover when stock runs out inside the reorder lead time", () => {
-    // 30 sold in 30d = 1/day, 10 on hand = 10 days cover, lead time 14
-    expect(classifyItem(item({ quantity: 10, unitsSoldLast30d: 30 }))).toBe("low-cover");
+    expect(classifyItem(item({ quantity: 30, unitsSoldLast30d: 30 }))).toBe("low-cover");
   });
 
   it("does not flag low cover when stock outlasts the reorder lead time", () => {
-    // 1/day, 60 on hand = 60 days cover
     expect(classifyItem(item({ quantity: 60, unitsSoldLast30d: 30 }))).toBe("healthy");
   });
 
+  it("escalates to critical when there is no longer time to reorder", () => {
+    expect(classifyItem(item({ quantity: 10, unitsSoldLast30d: 30 }))).toBe("critical-cover");
+  });
+
+  it("treats the lead time and critical thresholds as exclusive bounds", () => {
+    // Exactly at the lead time is not yet low; exactly at critical is not yet critical.
+    expect(classifyItem(item({ quantity: 45, unitsSoldLast30d: 30 }))).toBe("healthy");
+    expect(classifyItem(item({ quantity: 14, unitsSoldLast30d: 30 }))).toBe("low-cover");
+  });
+
   it("respects a custom reorder lead time", () => {
-    // 1/day, 20 on hand = 20 days cover — healthy at 14, low at 30
-    expect(classifyItem(item({ quantity: 20, unitsSoldLast30d: 30 }))).toBe("healthy");
-    expect(
-      classifyItem(item({ quantity: 20, unitsSoldLast30d: 30 }), { reorderLeadTimeDays: 30 })
-    ).toBe("low-cover");
+    const stock = item({ quantity: 20, unitsSoldLast30d: 30 });
+    expect(classifyItem(stock)).toBe("low-cover");
+    expect(classifyItem(stock, { reorderLeadTimeDays: 15 })).toBe("healthy");
+  });
+
+  it("respects a custom critical threshold", () => {
+    const stock = item({ quantity: 20, unitsSoldLast30d: 30 });
+    expect(classifyItem(stock, { criticalCoverDays: 25 })).toBe("critical-cover");
   });
 
   it("flags a slow mover when stock is deep and nothing is selling", () => {
@@ -98,12 +111,35 @@ describe("runInventoryChecks", () => {
 
   it("reports days of cover on low-stock items so the number is actionable", () => {
     const alerts = runInventoryChecks([
-      item({ quantity: 10, unitsSoldLast30d: 30 }),
+      item({ quantity: 30, unitsSoldLast30d: 30 }),
     ]);
     const low = alerts.find((a) => a.type === "inventory-low-cover");
     expect(low).toBeDefined();
     expect(low!.severity).toBe("warning");
-    expect(low!.message).toContain("10 days");
+    expect(low!.message).toContain("30 days");
+  });
+
+  it("raises critical stock as urgent, separate from the reorder warning", () => {
+    const alerts = runInventoryChecks([
+      item({ variantId: "1", productTitle: "Nearly Gone", quantity: 5, unitsSoldLast30d: 30 }),
+      item({ variantId: "2", productTitle: "Reorder Soon", quantity: 30, unitsSoldLast30d: 30 }),
+    ]);
+
+    const critical = alerts.find((a) => a.type === "inventory-critical-cover")!;
+    expect(critical.severity).toBe("urgent");
+    expect(critical.message).toContain("Nearly Gone");
+    expect(critical.message).not.toContain("Reorder Soon");
+
+    const low = alerts.find((a) => a.type === "inventory-low-cover")!;
+    expect(low.severity).toBe("warning");
+    expect(low.message).toContain("Reorder Soon");
+  });
+
+  it("tells you to ease off promotion when it is too late to restock", () => {
+    const critical = runInventoryChecks([
+      item({ quantity: 5, unitsSoldLast30d: 30 }),
+    ]).find((a) => a.type === "inventory-critical-cover")!;
+    expect(critical.message.toLowerCase()).toContain("ad");
   });
 
   it("caps the low-cover roll-up and says how many were omitted", () => {
@@ -111,7 +147,7 @@ describe("runInventoryChecks", () => {
       item({
         variantId: `v${i}`,
         productTitle: `Product ${i}`,
-        quantity: 5,
+        quantity: 30,
         unitsSoldLast30d: 30,
       })
     );
@@ -124,11 +160,11 @@ describe("runInventoryChecks", () => {
 
   it("ranks low-cover items by urgency — fewest days of cover first", () => {
     const low = runInventoryChecks([
-      item({ variantId: "1", productTitle: "Roomy", quantity: 12, unitsSoldLast30d: 30 }),
-      item({ variantId: "2", productTitle: "Critical", quantity: 1, unitsSoldLast30d: 30 }),
+      item({ variantId: "1", productTitle: "Roomy", quantity: 40, unitsSoldLast30d: 30 }),
+      item({ variantId: "2", productTitle: "Tighter", quantity: 20, unitsSoldLast30d: 30 }),
     ]).find((a) => a.type === "inventory-low-cover")!;
 
-    expect(low.message.indexOf("Critical")).toBeLessThan(low.message.indexOf("Roomy"));
+    expect(low.message.indexOf("Tighter")).toBeLessThan(low.message.indexOf("Roomy"));
   });
 
   it("surfaces slow movers as an info-level bundling opportunity", () => {
