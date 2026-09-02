@@ -74,6 +74,25 @@ Rules for tools in `src/mcp/`:
 - Tools are read-only. Anything that spends money or sends a message needs an
   explicit write split and is not built yet.
 
+Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "rad-and-happy": {
+      "command": "/usr/local/bin/pnpm",
+      "args": ["--silent", "--dir", "/Users/matthewnearents/agency-killer2", "mcp"],
+      "env": { "DATABASE_URL": "<Railway DATABASE_PUBLIC_URL>" }
+    }
+  }
+}
+```
+
+`--silent` is load-bearing: without it pnpm prints its `> tsx src/mcp/index.ts`
+banner to **stdout**, which is the JSON-RPC channel, and the handshake fails.
+For the same reason `src/mcp/index.ts` logs to stderr only. Use the public
+Railway URL — the internal one does not resolve off-platform.
+
 ## Project structure
 
 ```
