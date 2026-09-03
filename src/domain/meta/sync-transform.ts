@@ -51,6 +51,46 @@ function toFloat(value: string | undefined | null): number | null {
 }
 
 /**
+ * Parse a string to integer, preserving the difference between "Meta reported 0"
+ * and "Meta did not report this field at all".
+ *
+ * Meta omits reach/frequency/cpp entirely when breakdowns are applied to start
+ * dates more than 13 months old. Collapsing that absence to 0 would make an
+ * unmeasurable row look like a row with zero reach, and any frequency derived
+ * from it (impressions / reach) would divide by zero.
+ */
+function toIntOrNull(value: string | undefined | null): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = parseInt(value, 10);
+  return isNaN(n) ? null : n;
+}
+
+/**
+ * Resolve a creative's image URL, in descending order of fidelity.
+ *
+ * The flat `image_url` is null on ~28% of this account's creatives (measured
+ * against act_1095043578864346 on 2026-09-02) because video and link ads nest
+ * the real URL inside object_story_spec. `thumbnail_url` was never null in that
+ * sample, so it is the last-resort fallback rather than a preferred source —
+ * it is a lower-resolution crop.
+ */
+function resolveImageUrl(raw: MetaApiCreative): string | null {
+  const spec = raw.object_story_spec;
+  return (
+    raw.image_url ??
+    spec?.video_data?.image_url ??
+    spec?.link_data?.image_url ??
+    spec?.photo_data?.image_url ??
+    spec?.video_data?.picture ??
+    spec?.link_data?.picture ??
+    spec?.photo_data?.picture ??
+    raw.asset_feed_spec?.images?.find((i) => i.url)?.url ??
+    raw.thumbnail_url ??
+    null
+  );
+}
+
+/**
  * Extract a specific action count from the actions array.
  * Prefers 7d_click attribution (CTC framework), falls back to value.
  */
@@ -143,7 +183,7 @@ export function transformCreative(
     name: raw.name ?? null,
     title: raw.title ?? null,
     body: raw.body ?? null,
-    imageUrl: raw.image_url ?? null,
+    imageUrl: resolveImageUrl(raw),
     videoUrl: raw.thumbnail_url ?? null,
     callToActionType: raw.call_to_action_type ?? null,
     objectType: raw.object_type ?? null,
@@ -154,7 +194,8 @@ export function transformCreative(
 
 export function transformInsight(
   raw: MetaApiInsight,
-  syncedAt: Date
+  syncedAt: Date,
+  attributionWindow = "7d_click"
 ): NewMetaInsight {
   return {
     adId: raw.ad_id,
@@ -165,7 +206,10 @@ export function transformInsight(
     impressions: toInt(raw.impressions),
     clicks: toInt(raw.clicks),
     spendCents: dollarsToCents(raw.spend),
-    reach: toInt(raw.reach),
+    // null, not 0 — see toIntOrNull. Absent for >13-month breakdown queries.
+    reach: toIntOrNull(raw.reach),
+    frequency: toFloat(raw.frequency),
+    cpp: toFloat(raw.cpp),
     cpm: toFloat(raw.cpm),
     cpc: toFloat(raw.cpc),
     ctr: toFloat(raw.ctr),
@@ -174,6 +218,7 @@ export function transformInsight(
     purchaseValueCents: extractActionValueCents(raw.action_values, "purchase"),
     addToCart: extractAction(raw.actions, "add_to_cart"),
     initiateCheckout: extractAction(raw.actions, "initiate_checkout"),
+    attributionWindow,
 
     publisherPlatform: raw.publisher_platform ?? null,
     platformPosition: raw.platform_position ?? null,

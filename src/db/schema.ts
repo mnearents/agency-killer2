@@ -108,7 +108,13 @@ export const metaInsights = pgTable(
     impressions: bigint("impressions", { mode: "number" }).notNull().default(0),
     clicks: bigint("clicks", { mode: "number" }).notNull().default(0),
     spendCents: integer("spend_cents").notNull().default(0),
-    reach: bigint("reach", { mode: "number" }).notNull().default(0),
+    // Nullable on purpose: Meta omits reach/frequency/cpp for queries that apply
+    // breakdowns to start dates >13 months old (change effective 2025-06-10).
+    // NULL means "Meta did not report this", which is NOT a measured zero — storing
+    // 0 would silently corrupt frequency (impressions/reach) and cost-per-reach.
+    reach: bigint("reach", { mode: "number" }),
+    frequency: real("frequency"), // impressions per person reached
+    cpp: real("cpp"), // cost per 1000 people reached
     cpm: real("cpm"), // cost per 1000 impressions
     cpc: real("cpc"), // cost per click
     ctr: real("ctr"), // click-through rate
@@ -118,6 +124,10 @@ export const metaInsights = pgTable(
     purchaseValueCents: integer("purchase_value_cents").notNull().default(0),
     addToCart: integer("add_to_cart").notNull().default(0),
     initiateCheckout: integer("initiate_checkout").notNull().default(0),
+    // Which attribution window produced the conversion columns above. Recorded per
+    // row so a dashboard can label it: these numbers read ~19% below Ads Manager's
+    // default (1d_view + 7d_click) and the difference must be explainable.
+    attributionWindow: text("attribution_window").notNull().default("7d_click"),
 
     // Breakdown dimensions
     publisherPlatform: text("publisher_platform"), // facebook, instagram, audience_network
@@ -158,6 +168,56 @@ export type NewMetaCreative = typeof metaCreatives.$inferInsert;
 
 export type MetaInsight = typeof metaInsights.$inferSelect;
 export type NewMetaInsight = typeof metaInsights.$inferInsert;
+
+// ─── Sync run records ──────────────────────────────────────────────────
+
+/**
+ * One row per sync attempt, written whether the attempt succeeded, failed, or
+ * never got off the ground.
+ *
+ * This exists because a sync that errored, a sync that ran and found nothing,
+ * and a sync that never ran at all were previously indistinguishable — all three
+ * logged "Done: 0 insights". `meta_insights` sat empty for months because
+ * META_AD_ACCOUNT_ID was unset and the task silently returned every day.
+ *
+ * `outcome` is the load-bearing column. Row counts alone cannot tell you whether
+ * zero means "no spend that day" or "auth is dead".
+ */
+export const syncRuns = pgTable(
+  "sync_runs",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    // Task identifier, e.g. "sync:meta" or "backfill:meta".
+    task: text("task").notNull(),
+    // ok            — ran, wrote data
+    // no-data       — ran cleanly, Meta returned nothing (genuinely no delivery)
+    // auth-failed   — token rejected/expired (Meta error 190)
+    // rate-limited  — throttled (Meta errors 17, 80000, 4, 613)
+    // api-error     — any other API or transport failure
+    // not-configured— required credentials/account id absent, never called out
+    outcome: text("outcome").notNull(),
+    // Window the run covered, for backfill chunks. Null for structure-only syncs.
+    windowStart: timestamp("window_start", { withTimezone: true }),
+    windowEnd: timestamp("window_end", { withTimezone: true }),
+    rowsWritten: integer("rows_written").notNull().default(0),
+    // Human-readable failure detail; null when outcome is ok/no-data.
+    errorMessage: text("error_message"),
+    // Meta's numeric error code when there was one, for machine classification.
+    errorCode: integer("error_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("sync_runs_task_started_idx").on(table.task, table.startedAt),
+    index("sync_runs_task_window_idx").on(table.task, table.windowStart),
+  ]
+);
+
+export type SyncRun = typeof syncRuns.$inferSelect;
+export type NewSyncRun = typeof syncRuns.$inferInsert;
 
 // ─── Shopify ───────────────────────────────────────────────────────────
 

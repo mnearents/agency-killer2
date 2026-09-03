@@ -256,3 +256,114 @@ describe("transformCreative", () => {
     expect(result.syncedAt).toEqual(SYNCED_AT);
   });
 });
+
+// ─── Backfill hardening ────────────────────────────────────────────────
+// Fixtures below are trimmed from real responses captured against
+// act_1095043578864346 on 2026-09-02.
+
+describe("transformInsight — reach availability", () => {
+  // Meta drops reach/frequency/cpp when breakdowns are applied to start dates
+  // >13 months old. Verified live: Jan-2025 and Jun-2025 omit them, Oct-2025
+  // includes them. Coercing the absence to 0 corrupts frequency and CPP.
+  it("records reach as null when Meta omits it, not zero", () => {
+    const raw: MetaApiInsight = {
+      ad_id: "120214579791700347",
+      adset_id: "adset_1",
+      campaign_id: "camp_1",
+      date_start: "2025-01-14",
+      impressions: "1",
+      spend: "0",
+      // no reach / frequency / cpp — the >13-month breakdown case
+    };
+    const result = transformInsight(raw, SYNCED_AT);
+    expect(result.reach).toBeNull();
+    expect(result.frequency).toBeNull();
+    expect(result.cpp).toBeNull();
+  });
+
+  it("distinguishes a measured zero reach from an unavailable one", () => {
+    const raw: MetaApiInsight = {
+      ad_id: "ad_1", adset_id: "adset_1", campaign_id: "camp_1",
+      date_start: "2025-10-01", impressions: "0", spend: "0", reach: "0",
+    };
+    expect(transformInsight(raw, SYNCED_AT).reach).toBe(0);
+  });
+
+  it("captures reach, frequency and cpp when Meta reports them", () => {
+    const raw: MetaApiInsight = {
+      ad_id: "120232728604240347", adset_id: "adset_1", campaign_id: "camp_1",
+      date_start: "2025-10-01", impressions: "135", spend: "3.09",
+      reach: "19", frequency: "7.105263", cpp: "162.6",
+    };
+    const result = transformInsight(raw, SYNCED_AT);
+    expect(result.reach).toBe(19);
+    expect(result.frequency).toBeCloseTo(7.105263);
+    expect(result.cpp).toBeCloseTo(162.6);
+  });
+
+  it("stamps the attribution window onto every row", () => {
+    const raw: MetaApiInsight = {
+      ad_id: "ad_1", adset_id: "adset_1", campaign_id: "camp_1",
+      date_start: "2025-10-01", spend: "1",
+    };
+    expect(transformInsight(raw, SYNCED_AT, "7d_click").attributionWindow).toBe("7d_click");
+  });
+});
+
+describe("transformCreative — image URL resolution", () => {
+  // Measured live: flat image_url is null on 28% of creatives (video ads carry
+  // the real URL nested inside object_story_spec). thumbnail_url was never null.
+  it("falls back to nested video_data image when flat image_url is absent", () => {
+    const result = transformCreative(
+      {
+        id: "721931134236692",
+        title: "Get 15% Your First Order",
+        body: "Trick or treat… but make it creative.",
+        thumbnail_url: "https://scontent.example/thumb.jpg",
+        object_story_spec: {
+          video_data: {
+            image_url: "https://www.facebook.com/ads/image/?d=AQK2U8wjbGmC",
+          },
+        },
+      },
+      SYNCED_AT
+    );
+    expect(result.imageUrl).toBe("https://www.facebook.com/ads/image/?d=AQK2U8wjbGmC");
+  });
+
+  it("falls back to nested link_data image for link ads", () => {
+    const result = transformCreative(
+      {
+        id: "c2",
+        object_story_spec: { link_data: { picture: "https://example.com/link.jpg" } },
+      },
+      SYNCED_AT
+    );
+    expect(result.imageUrl).toBe("https://example.com/link.jpg");
+  });
+
+  it("falls back to thumbnail_url when no other image is available", () => {
+    const result = transformCreative(
+      { id: "c3", thumbnail_url: "https://example.com/thumb.jpg" },
+      SYNCED_AT
+    );
+    expect(result.imageUrl).toBe("https://example.com/thumb.jpg");
+  });
+
+  it("prefers the flat image_url when Meta provides one", () => {
+    const result = transformCreative(
+      {
+        id: "c4",
+        image_url: "https://example.com/flat.jpg",
+        thumbnail_url: "https://example.com/thumb.jpg",
+        object_story_spec: { video_data: { image_url: "https://example.com/nested.jpg" } },
+      },
+      SYNCED_AT
+    );
+    expect(result.imageUrl).toBe("https://example.com/flat.jpg");
+  });
+
+  it("reports null when the creative genuinely carries no image", () => {
+    expect(transformCreative({ id: "c5" }, SYNCED_AT).imageUrl).toBeNull();
+  });
+});

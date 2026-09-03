@@ -75,7 +75,7 @@ const dataFreshness: McpTool = {
   name: "data_freshness",
   title: "Data freshness",
   description:
-    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time.",
+    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time.",
   readOnly: true,
   schema: {},
   async run(ctx) {

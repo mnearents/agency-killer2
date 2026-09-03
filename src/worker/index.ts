@@ -23,7 +23,7 @@ import { createEmbeddingClient } from "@/integrations/openai";
 import { createDb } from "@/db/client";
 
 // Sync services
-import { syncIncremental } from "@/domain/meta/sync";
+import { syncIncremental, recordUnconfiguredSync } from "@/domain/meta/sync";
 import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
 import { syncSubscriptions } from "@/domain/subscriptions/sync";
@@ -172,12 +172,16 @@ async function main() {
   const handlerFns: Record<string, () => Promise<void>> = {
     "sync:meta": async () => {
       if (!metaClient || !metaAccountId) {
-        console.log("[sync:meta] Skipped — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set");
+        // Record it. This exact branch ran silently every day for months while
+        // META_AD_ACCOUNT_ID was unset, leaving no trace in the database at all.
+        const missing = !metaClient ? "META_ACCESS_TOKEN" : "META_AD_ACCOUNT_ID";
+        await recordUnconfiguredSync(db, missing);
+        console.log(`[sync:meta] Skipped — ${missing} not set (recorded as not-configured)`);
         return;
       }
       const result = await syncIncremental({ client: metaClient, db, accountId: metaAccountId });
       console.log(
-        `[sync:meta] Done: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`
+        `[sync:meta] ${result.outcome}: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`
       );
       if (result.errors.length > 0) {
         console.error("[sync:meta] Errors:", result.errors);
@@ -833,6 +837,12 @@ async function main() {
         return {
           text: `Meta sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.campaigns} campaigns, ${result.adSets} adsets, ${result.ads} ads, ${result.insights} insights`,
           isError: true,
+        };
+      }
+      if (result.outcome === "no-data") {
+        return {
+          text: `*Meta sync ran fine — the account simply had no activity in the last ${lookbackDays} days.*\nThis is not an error. Nothing was returned to store.`,
+          isError: false,
         };
       }
       return {

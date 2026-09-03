@@ -229,7 +229,7 @@ describe("dispatchTool", () => {
 describe("data_freshness", () => {
   it("reports each source so staleness can be checked before analysis", async () => {
     vi.mocked(getDataFreshness).mockResolvedValue([
-      { source: "Meta ads", table: "meta_insights", basis: "synced", rows: 10, lastAt: null, ageHours: null, stale: true },
+      { source: "Meta ads", table: "meta_insights", basis: "synced", rows: 10, lastAt: null, ageHours: null, stale: true, lastRun: null },
     ]);
 
     const result = (await dispatchTool(ctx, "data_freshness", {})) as {
@@ -239,6 +239,24 @@ describe("data_freshness", () => {
 
     expect(result.sources).toHaveLength(1);
     expect(result.anyStale).toBe(true);
+  });
+
+  it("passes the last run outcome through so a model can see why a source is empty", async () => {
+    // Without this, a model reading zero rows has no way to tell a broken sync
+    // from a quiet account, and will confidently report the wrong one.
+    vi.mocked(getDataFreshness).mockResolvedValue([
+      {
+        source: "Meta ads", table: "meta_insights", basis: "synced", rows: 0,
+        lastAt: null, ageHours: null, stale: true,
+        lastRun: { outcome: "not-configured", at: null, errorMessage: "Not configured: META_AD_ACCOUNT_ID is not set" },
+      },
+    ]);
+
+    const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+      sources: Array<{ lastRun: { outcome: string } | null }>;
+    };
+
+    expect(result.sources[0].lastRun?.outcome).toBe("not-configured");
   });
 });
 

@@ -8,6 +8,63 @@
 const GRAPH_API_VERSION = "v21.0";
 const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
+/**
+ * An error from the Graph API, carrying Meta's numeric code so callers can tell
+ * a dead token (190) from a throttle (17, 80000) without string-matching the
+ * message. Classification lives in `@/domain/meta/outcomes`.
+ */
+export class MetaApiError extends Error {
+  readonly code: number | null;
+  readonly subcode: number | null;
+  readonly httpStatus: number | null;
+
+  constructor(
+    message: string,
+    code: number | null = null,
+    subcode: number | null = null,
+    httpStatus: number | null = null
+  ) {
+    super(message);
+    this.name = "MetaApiError";
+    this.code = code;
+    this.subcode = subcode;
+    this.httpStatus = httpStatus;
+  }
+
+  /**
+   * Build from a raw Graph API error response body.
+   *
+   * Falls back to a code-less error rather than throwing: an unparseable body
+   * (an HTML 502 from a proxy, say) is still a real failure that must surface,
+   * and losing it to a JSON parse exception would recreate the silent-failure
+   * problem this whole branch exists to fix.
+   */
+  static fromResponseBody(body: string, httpStatus: number): MetaApiError {
+    try {
+      const parsed = JSON.parse(body) as {
+        error?: { message?: string; code?: number; error_subcode?: number };
+      };
+      const e = parsed.error;
+      if (e) {
+        return new MetaApiError(
+          e.message ?? `Meta API error (HTTP ${httpStatus})`,
+          e.code ?? null,
+          e.error_subcode ?? null,
+          httpStatus
+        );
+      }
+    } catch {
+      // fall through to the unparsed form below
+    }
+    return new MetaApiError(
+      `Meta API error (HTTP ${httpStatus}): ${body.slice(0, 300)}`,
+      null,
+      null,
+      httpStatus
+    );
+  }
+}
+
 export interface MetaApiCampaign {
   id: string;
   name: string;
@@ -44,6 +101,17 @@ export interface MetaApiAd {
   creative?: { id: string };
 }
 
+/**
+ * Nested creative payloads. Video and link ads carry their real image URL here
+ * rather than in the flat `image_url` field, which is null on ~28% of this
+ * account's creatives (measured 2026-09-02).
+ */
+export interface MetaApiObjectStorySpec {
+  video_data?: { image_url?: string; picture?: string };
+  link_data?: { image_url?: string; picture?: string };
+  photo_data?: { image_url?: string; picture?: string };
+}
+
 export interface MetaApiCreative {
   id: string;
   name?: string;
@@ -54,6 +122,8 @@ export interface MetaApiCreative {
   thumbnail_url?: string;
   call_to_action_type?: string;
   object_type?: string;
+  object_story_spec?: MetaApiObjectStorySpec;
+  asset_feed_spec?: { images?: { url?: string }[] };
 }
 
 export interface MetaApiAction {
@@ -76,7 +146,10 @@ export interface MetaApiInsight {
   impressions?: string;
   clicks?: string;
   spend?: string;
+  // Absent (not zero) when breakdowns are applied to start dates >13 months old.
   reach?: string;
+  frequency?: string;
+  cpp?: string;
   cpm?: string;
   cpc?: string;
   ctr?: string;
@@ -114,11 +187,15 @@ const AD_FIELDS = "id,adset_id,campaign_id,name,status,creative{id}";
 const CREATIVE_FIELDS = [
   "id", "name", "title", "body", "image_url",
   "video_id", "thumbnail_url", "call_to_action_type", "object_type",
+  // Video/link ads hide the real image inside these; the flat image_url is null
+  // for them. Without these the creative library loses ~28% of its images.
+  "object_story_spec", "asset_feed_spec",
 ].join(",");
 
 const INSIGHT_FIELDS = [
   "ad_id", "adset_id", "campaign_id", "date_start",
-  "impressions", "clicks", "spend", "reach", "cpm", "cpc", "ctr",
+  "impressions", "clicks", "spend", "reach", "frequency", "cpp",
+  "cpm", "cpc", "ctr",
   "actions", "action_values",
 ].join(",");
 
@@ -133,7 +210,7 @@ async function fetchAllPages<T>(url: string): Promise<T[]> {
     const response: Response = await fetch(nextUrl);
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Meta API error (${response.status}): ${errorText}`);
+      throw MetaApiError.fromResponseBody(errorText, response.status);
     }
 
     const json: { data?: T[]; paging?: { next?: string } } = await response.json();
