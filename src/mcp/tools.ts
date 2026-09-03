@@ -22,8 +22,15 @@ import { parseArgs, resolveRange, RANGE_SCHEMA, type ArgSchema, type ParsedArgs 
 import { getDataFreshness } from "@/db/freshness";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
-import { getOrderSummary, getDailyOrders, getTopProducts, getSubscriptionOrders } from "@/domain/shopify/queries";
-import { computeLtvSummary } from "@/domain/shopify/subscription-ltv";
+import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
+import { getSubscriptionFacts, getSnapshotFacts } from "@/domain/subscriptions/queries";
+import {
+  summariseActive,
+  computeLtv,
+  computeChanges,
+  type LtvBlock,
+  type Granularity,
+} from "@/domain/subscriptions/analytics";
 import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
 import { getInventoryItems } from "@/domain/inventory/queries";
@@ -194,39 +201,143 @@ const storeTopProducts: McpTool = {
   },
 };
 
+/** Rounds tenure to something readable without implying false precision. */
+const months = (n: number | null) => (n === null ? null : Math.round(n * 10) / 10);
+
+function describeLtvBlock(block: LtvBlock) {
+  return {
+    subscribers: block.subscribers,
+    tenureIsFloor: block.tenureIsFloor,
+    avgTenureMonths: months(block.avgTenureMonths),
+    medianTenureMonths: months(block.medianTenureMonths),
+    avgLtvDollars: block.avgLtvCents === null ? null : dollars(block.avgLtvCents),
+    totalLtvDollars: dollars(block.totalLtvCents),
+    byGroup: block.byGroup.map((g) => ({
+      tier: g.tier,
+      pricingCohort: g.pricingCohort,
+      billingCadence: g.billingCadence,
+      subscribers: g.subscribers,
+      avgTenureMonths: months(g.avgTenureMonths),
+      medianTenureMonths: months(g.medianTenureMonths),
+      avgLtvDollars: g.avgLtvCents === null ? null : dollars(g.avgLtvCents),
+      totalLtvDollars: dollars(g.totalLtvCents),
+    })),
+  };
+}
+
+const subscriptionSummary: McpTool = {
+  name: "subscription_summary",
+  title: "Subscription summary",
+  description:
+    "Current state of the Really Awesome Doodles subscription base from Seal: active counts by tier, pricing cohort and billing interval, plus MRR, ARR and how many subscriptions are in dunning. MRR amortises annual plans (annual price / 12) rather than booking the whole charge in the month it renews, and is reported split into monthly-billed and annual-amortised as well as combined. Subscriptions with anomalous prices are counted in the breakdowns but excluded from all money, and reported under `excluded` — check that before quoting MRR.",
+  readOnly: true,
+  schema: {},
+  async run(ctx) {
+    const facts = await getSubscriptionFacts(ctx.db);
+    const s = summariseActive(facts);
+
+    return {
+      activeTotal: s.activeTotal,
+      byTier: s.byTier,
+      byPricingCohort: s.byPricingCohort,
+      byBillingInterval: s.byBillingInterval,
+      byGroup: s.byGroup.map((g) => ({
+        tier: g.tier,
+        pricingCohort: g.pricingCohort,
+        billingCadence: g.billingCadence,
+        subscribers: g.subscribers,
+        mrrDollars: dollars(g.mrrCents),
+      })),
+      mrr: {
+        monthlyBilledDollars: dollars(s.mrr.monthlyBilledCents),
+        annualAmortisedDollars: dollars(s.mrr.annualAmortisedCents),
+        totalDollars: dollars(s.mrr.totalCents),
+      },
+      arrDollars: dollars(s.arrCents),
+      dunning: s.dunning,
+      excluded: {
+        priceAnomalies: s.excluded.priceAnomalies,
+        anomalousTotalDollars: dollars(s.excluded.anomalousTotalCents),
+        missingPrice: s.excluded.missingPrice,
+      },
+      notes: [
+        "A billing interval of '13 month' is a one-time pre-sale correction and counts as annual.",
+        "Price anomalies are excluded from MRR and ARR. They are data faults, not revenue.",
+      ],
+    };
+  },
+};
+
 const subscriptionLtv: McpTool = {
   name: "subscription_ltv",
   title: "Subscription lifetime value",
   description:
-    "Lifetime value, tenure and churn for the Really Awesome Doodles subscription, broken down by pricing tier. Use this to judge whether ad spend is profitable on an LTV basis rather than first-order ROAS.",
+    "Tenure and lifetime value, split so that unfinished subscriptions never contaminate the finished ones. `churned` is the honest number: those runs are complete. `active` is tenure-to-date and is INCOMPLETE by construction — it understates what those subscribers will ultimately be worth, so never quote it as an LTV. Each cohort is split again into `observed` (true signup date known) and `migrated` (the record came from the Color Happy bulk import, so order_placed is the migration date and tenure is a FLOOR, not a measurement — real tenure is longer). Every block breaks down by tier, pricing cohort and billing cadence. LTV is estimated as elapsed billing periods times current price; invoice history is not synced, so it does not reflect mid-run price changes.",
   readOnly: true,
-  schema: { churnThresholdDays: { type: "integer", min: 1, max: 400 } },
-  async run(ctx, args) {
-    const orders = await getSubscriptionOrders(ctx.db);
-    const summary = computeLtvSummary(
-      orders,
-      ctx.now(),
-      args.churnThresholdDays as number | undefined
-    );
+  schema: {},
+  async run(ctx) {
+    const facts = await getSubscriptionFacts(ctx.db);
+    const r = computeLtv(facts, ctx.now());
 
     return {
-      totalSubscribers: summary.totalSubscribers,
-      activeSubscribers: summary.activeSubscribers,
-      churnedSubscribers: summary.churnedSubscribers,
-      avgTenureMonths: summary.avgTenureMonths,
-      medianTenureMonths: summary.medianTenureMonths,
-      avgLtvDollars: dollars(summary.avgLtvCents),
-      avgMonthlyRevenueDollars: dollars(summary.avgMonthlyRevenueCents),
-      tiers: summary.tiers.map((t) => ({
-        tier: t.tier,
-        monthlyPrice: t.monthlyPrice,
-        subscribers: t.subscribers,
-        active: t.active,
-        churned: t.churned,
-        avgTenureMonths: t.avgTenureMonths,
-        avgLtvDollars: dollars(t.avgLtvCents),
-        avgMonthlyRevenueDollars: dollars(t.avgMonthlyRevenueCents),
-      })),
+      churned: {
+        complete: true,
+        meaning: "Finished runs. This is the honest LTV and tenure number.",
+        observed: describeLtvBlock(r.churned.observed),
+        migrated: describeLtvBlock(r.churned.migrated),
+      },
+      active: {
+        complete: false,
+        meaning:
+          "Tenure to date on runs that have not finished. Understates final LTV; do not compare directly against the churned cohort.",
+        observed: describeLtvBlock(r.active.observed),
+        migrated: describeLtvBlock(r.active.migrated),
+      },
+      excluded: r.excluded,
+      notes: [
+        "Churned and active are never averaged together; doing so is what made the previous version understate tenure.",
+        "`migrated` blocks have tenureIsFloor=true: order_placed is the 2026-05/06 migration timestamp, not the original Color Happy signup date.",
+        "LTV is an estimate from current price x elapsed billing periods, not collected revenue.",
+      ],
+    };
+  },
+};
+
+const subscriptionChanges: McpTool = {
+  name: "subscription_changes",
+  title: "Subscription movement",
+  description:
+    "Movement over a date range: new, cancelled, upgraded, downgraded and net change, with the source column named for every number. New subscriptions come from order_placed and EXCLUDE bulk-migrated records, whose order_placed is an import timestamp rather than a signup (counting those would report the migration as a record sales day). Cancellations come from cancelled_on. Tier transitions come from daily snapshots, which only began 2026-09-02 — for any earlier window this returns available=false with a reason rather than a fabricated zero. Watch `grandfatheredSparkToStudio`: that upgrade path is the most important movement number in the business. Pass granularity for a time series.",
+  readOnly: true,
+  schema: {
+    ...RANGE_SCHEMA,
+    granularity: { type: "enum", values: ["day", "week", "month"] as const },
+  },
+  async run(ctx, args) {
+    const range = resolveRange(args, ctx.now(), 30);
+    const startDay = range.startDate.toISOString().slice(0, 10);
+    const endDay = range.endDate.toISOString().slice(0, 10);
+
+    const [facts, snapshots] = await Promise.all([
+      getSubscriptionFacts(ctx.db),
+      getSnapshotFacts(ctx.db, startDay, endDay),
+    ]);
+
+    const r = computeChanges({
+      facts,
+      snapshots,
+      start: range.startDate,
+      end: range.endDate,
+      granularity: args.granularity as Granularity | undefined,
+    });
+
+    return {
+      range: describeRange(range),
+      newSubscriptions: r.newSubscriptions,
+      cancellations: r.cancellations,
+      netChange: r.netChange,
+      tierTransitions: r.tierTransitions,
+      series: r.series,
     };
   },
 };
@@ -437,7 +548,9 @@ export const READ_TOOLS: McpTool[] = [
   adsCreativePerformance,
   storePerformance,
   storeTopProducts,
+  subscriptionSummary,
   subscriptionLtv,
+  subscriptionChanges,
   emailSmsPerformance,
   socialPerformance,
   inventoryStatus,

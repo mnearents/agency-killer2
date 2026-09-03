@@ -21,7 +21,10 @@ vi.mock("@/domain/shopify/queries", () => ({
   }),
   getDailyOrders: vi.fn().mockResolvedValue([]),
   getTopProducts: vi.fn().mockResolvedValue([]),
-  getSubscriptionOrders: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/domain/subscriptions/queries", () => ({
+  getSubscriptionFacts: vi.fn().mockResolvedValue([]),
+  getSnapshotFacts: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/domain/attentive/queries", () => ({
   getAttentiveWeekSummary: vi.fn().mockResolvedValue({
@@ -60,6 +63,7 @@ import * as socialQueries from "@/domain/social/queries";
 import * as inventoryQueries from "@/domain/inventory/queries";
 import * as calendarQueries from "@/domain/calendar/queries";
 import * as voiceQueries from "@/domain/voice/queries";
+import * as subscriptionQueries from "@/domain/subscriptions/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { getDataFreshness } from "@/db/freshness";
 
@@ -90,6 +94,92 @@ describe("the tool catalogue", () => {
     for (const tool of READ_TOOLS) {
       expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
     }
+  });
+
+  it("registers the three subscription tools", () => {
+    const names = READ_TOOLS.map((t) => t.name);
+    expect(names).toContain("subscription_summary");
+    expect(names).toContain("subscription_ltv");
+    expect(names).toContain("subscription_changes");
+  });
+
+  // The old tool inferred tier from order price and blended censored tenure.
+  // Leaving any route to it registered would keep those numbers reachable.
+  it("no longer accepts the churn threshold argument the price-inference version took", async () => {
+    await expect(
+      dispatchTool(ctx, "subscription_ltv", { churnThresholdDays: 45 })
+    ).rejects.toThrow(McpArgumentError);
+  });
+});
+
+describe("subscription tools", () => {
+  const fact = (over: Record<string, unknown> = {}) => ({
+    id: "1",
+    status: "ACTIVE",
+    tier: "spark",
+    pricingCohort: "grandfathered",
+    billingInterval: "1 month",
+    billingCadence: "monthly",
+    priceCents: 500,
+    priceAnomaly: false,
+    inDunning: false,
+    manualOrigin: false,
+    orderPlaced: new Date("2026-06-01T00:00:00Z"),
+    cancelledOn: null,
+    ...over,
+  });
+
+  it("reports subscription_summary money in dollars, never cents", async () => {
+    vi.mocked(subscriptionQueries.getSubscriptionFacts).mockResolvedValue([
+      fact({ priceCents: 500 }),
+      fact({ id: "2", billingCadence: "annual", billingInterval: "12 month", priceCents: 12000 }),
+    ] as never);
+
+    const r = (await dispatchTool(ctx, "subscription_summary", {})) as Record<string, never>;
+    const mrr = r.mrr as unknown as Record<string, number>;
+    expect(mrr.monthlyBilledDollars).toBe(5);
+    expect(mrr.annualAmortisedDollars).toBe(10);
+    expect(mrr.totalDollars).toBe(15);
+    expect(r.arrDollars as unknown as number).toBe(180);
+    expect(JSON.stringify(r)).not.toMatch(/Cents/);
+  });
+
+  it("keeps the churned and active LTV cohorts separate in the payload", async () => {
+    vi.mocked(subscriptionQueries.getSubscriptionFacts).mockResolvedValue([
+      fact({ status: "CANCELLED", cancelledOn: new Date("2026-08-01T00:00:00Z") }),
+      fact({ id: "2" }),
+    ] as never);
+
+    const r = (await dispatchTool(ctx, "subscription_ltv", {})) as Record<string, never>;
+    const churned = r.churned as unknown as Record<string, never>;
+    const active = r.active as unknown as Record<string, never>;
+    expect(churned.complete).toBe(true);
+    expect(active.complete).toBe(false);
+    expect((churned.observed as unknown as { subscribers: number }).subscribers).toBe(1);
+    expect((active.observed as unknown as { subscribers: number }).subscribers).toBe(1);
+  });
+
+  // Snapshots began 2026-09-02. A window before that must not answer "0".
+  it("refuses to report tier transitions for a window with no snapshot history", async () => {
+    vi.mocked(subscriptionQueries.getSubscriptionFacts).mockResolvedValue([] as never);
+    vi.mocked(subscriptionQueries.getSnapshotFacts).mockResolvedValue([] as never);
+
+    const r = (await dispatchTool(ctx, "subscription_changes", {
+      startDate: "2026-06-01",
+      endDate: "2026-08-31",
+    })) as Record<string, never>;
+
+    const t = r.tierTransitions as unknown as Record<string, unknown>;
+    expect(t.available).toBe(false);
+    expect(t.reason as string).toMatch(/snapshot/i);
+    expect(t).not.toHaveProperty("upgraded");
+    expect(t).not.toHaveProperty("grandfatheredSparkToStudio");
+  });
+
+  it("rejects a granularity it does not offer instead of ignoring it", async () => {
+    await expect(
+      dispatchTool(ctx, "subscription_changes", { granularity: "hour" })
+    ).rejects.toThrow(McpArgumentError);
   });
 });
 

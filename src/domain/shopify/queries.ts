@@ -6,32 +6,7 @@
 import { eq, gte, lte, desc, sql, and } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { shopifyOrders, shopifyLineItems } from "@/db/schema";
-import type { SubscriptionOrder } from "./subscription-ltv";
 import type { ProductInfo } from "@/domain/email/creative";
-
-/**
- * Get all recurring orders for LTV computation.
- */
-export async function getSubscriptionOrders(db: Db): Promise<SubscriptionOrder[]> {
-  const rows = await db
-    .select({
-      customerId: shopifyOrders.customerId,
-      orderCreatedAt: shopifyOrders.orderCreatedAt,
-      totalPriceCents: shopifyOrders.totalPriceCents,
-      isRecurring: shopifyOrders.isRecurring,
-    })
-    .from(shopifyOrders)
-    .where(eq(shopifyOrders.isRecurring, 1));
-
-  return rows
-    .filter((r) => r.customerId && r.orderCreatedAt)
-    .map((r) => ({
-      customerId: r.customerId!,
-      orderCreatedAt: r.orderCreatedAt!,
-      totalPriceCents: Number(r.totalPriceCents),
-      isRecurring: true,
-    }));
-}
 
 /**
  * Get top-selling products from recent orders for email creative.

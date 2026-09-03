@@ -18,7 +18,7 @@ import type {
   NewShopifyOrder,
   NewShopifyLineItem,
 } from "@/db/schema";
-import { isSubscriptionOrder } from "@/domain/shopify/subscription-ltv";
+import { isSubscriptionOrder } from "@/domain/shopify/subscription-tags";
 
 function dollarsToCents(value: string | undefined | null): number {
   if (!value) return 0;
