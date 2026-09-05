@@ -94,6 +94,9 @@ export async function syncSubscriptions(
   // cost a request.
   const knownCustomerIds = new Map<string, string | null>();
   const checkedAt = new Map<string, Date | null>();
+  // Only populated for subscriptions looked up this run. Existing rows keep the
+  // log the backfill captured — the upsert below must not overwrite it with null.
+  const freshDetail = new Map<string, { log: unknown; tags: unknown }>();
   try {
     const rows = await db
       .select({
@@ -132,11 +135,14 @@ export async function syncSubscriptions(
   let customerLookups = 0;
   for (const id of needsLookup.slice(0, MAX_CUSTOMER_LOOKUPS_PER_SYNC)) {
     try {
-      const customerId = await client.getSubscriptionCustomerId(id);
+      const detail = await client.getSubscriptionDetail(id);
       // Record the check even when there is no customer, so "no customer" is
       // never mistaken for "not looked up yet".
-      knownCustomerIds.set(id, customerId);
+      knownCustomerIds.set(id, detail.customerId);
       checkedAt.set(id, now);
+      // The same response already carries the log and tags, so capturing them
+      // here is free and keeps new subscriptions from needing a second crawl.
+      freshDetail.set(id, { log: detail.log, tags: detail.tags });
       customerLookups++;
     } catch (err) {
       errors.push(
@@ -148,7 +154,16 @@ export async function syncSubscriptions(
   for (const warning of summary.warnings) logger.warn(warning);
 
   for (const { row, snapshot } of transformed) {
+    // Only subscriptions looked up this run have a log to write. Including the
+    // column unconditionally would set it to null for every existing row on
+    // every nightly sync, erasing the backfilled history a day after capture.
+    const detail = freshDetail.get(row.id);
+    const detailValues = detail
+      ? { log: detail.log, tags: detail.tags, detailCheckedAt: now }
+      : {};
+
     const values = {
+      ...detailValues,
       id: row.id,
       orderId: row.orderId,
       shopifyOrderId: row.shopifyOrderId,

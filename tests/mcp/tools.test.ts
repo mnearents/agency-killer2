@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { McpArgumentError } from "@/mcp/args";
 import {
-  READ_TOOLS,
+  ALL_TOOLS,
   dispatchTool,
   toJsonSchema,
   type McpToolContext,
@@ -56,6 +56,11 @@ vi.mock("@/domain/alerts/runner", () => ({
 vi.mock("@/db/freshness", () => ({
   getDataFreshness: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/domain/pilot/queries", () => ({
+  getPilotEntries: vi.fn().mockResolvedValue([]),
+  noteExists: vi.fn().mockResolvedValue(true),
+  appendPilotEntry: vi.fn().mockResolvedValue(undefined),
+}));
 
 import * as metaQueries from "@/domain/meta/queries";
 import * as shopifyQueries from "@/domain/shopify/queries";
@@ -66,6 +71,8 @@ import * as voiceQueries from "@/domain/voice/queries";
 import * as subscriptionQueries from "@/domain/subscriptions/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { getDataFreshness } from "@/db/freshness";
+import * as pilotQueries from "@/domain/pilot/queries";
+import type { PilotEntry } from "@/domain/pilot/notes";
 
 const NOW = new Date("2026-09-02T12:00:00Z");
 const ctx: McpToolContext = { db: {} as never, now: () => NOW };
@@ -76,28 +83,33 @@ beforeEach(() => {
 
 describe("the tool catalogue", () => {
   it("exposes tools under unique names", () => {
-    const names = READ_TOOLS.map((t) => t.name);
+    const names = ALL_TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
   });
 
   it("describes every tool, since the description is all the model gets", () => {
-    for (const tool of READ_TOOLS) {
+    for (const tool of ALL_TOOLS) {
       expect(tool.description.length, tool.name).toBeGreaterThan(20);
     }
   });
 
-  it("marks the whole read surface as read-only", () => {
-    expect(READ_TOOLS.every((t) => t.readOnly)).toBe(true);
+  // The write surface is exactly one tool. This is the assertion that has to
+  // go red the moment anyone adds a second one — not to forbid it, but to make
+  // it a deliberate decision rather than something that slips in behind a
+  // readOnly flag nobody looked at.
+  it("exposes exactly one write-enabled tool, and it is pilot_notes_add", () => {
+    const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name);
+    expect(writers).toEqual(["pilot_notes_add"]);
   });
 
   it("names tools in the snake_case MCP convention", () => {
-    for (const tool of READ_TOOLS) {
+    for (const tool of ALL_TOOLS) {
       expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);
     }
   });
 
   it("registers the three subscription tools", () => {
-    const names = READ_TOOLS.map((t) => t.name);
+    const names = ALL_TOOLS.map((t) => t.name);
     expect(names).toContain("subscription_summary");
     expect(names).toContain("subscription_ltv");
     expect(names).toContain("subscription_changes");
@@ -517,5 +529,174 @@ describe("calendar_entries", () => {
     const [, start, end] = vi.mocked(calendarQueries.getEntriesByWeek).mock.calls[0];
     expect(start.toISOString()).toBe("2026-09-02T12:00:00.000Z");
     expect(end.toISOString()).toBe("2026-10-02T12:00:00.000Z");
+  });
+});
+
+describe("pilot notes tools", () => {
+  const entry = (o: Partial<PilotEntry>): PilotEntry => ({
+    id: "1",
+    noteId: "1",
+    kind: "open",
+    title: "A note",
+    body: "body",
+    category: null,
+    author: "claude",
+    createdAt: new Date("2026-09-01T10:00:00Z"),
+    ...o,
+  });
+
+  describe("pilot_notes_get", () => {
+    it("returns open notes when no status is given", async () => {
+      vi.mocked(pilotQueries.getPilotEntries).mockResolvedValue([
+        entry({ id: "1", noteId: "1", title: "Open one" }),
+        entry({ id: "2", noteId: "2", title: "Closed one" }),
+        entry({ id: "3", noteId: "2", kind: "resolution", title: null, body: "fixed" }),
+      ]);
+
+      const result = (await dispatchTool(ctx, "pilot_notes_get", {})) as {
+        filters: { status: string };
+        notes: { title: string }[];
+      };
+
+      expect(result.filters.status).toBe("open");
+      expect(result.notes).toHaveLength(1);
+      expect(result.notes[0].title).toBe("Open one");
+    });
+
+    // A sample mistaken for the whole set is how "there are only 2 open notes"
+    // gets concluded from a capped list.
+    it("reports both what matched and what it returned", async () => {
+      vi.mocked(pilotQueries.getPilotEntries).mockResolvedValue(
+        Array.from({ length: 5 }, (_, i) => entry({ id: `${i}`, noteId: `${i}` }))
+      );
+
+      const result = (await dispatchTool(ctx, "pilot_notes_get", { limit: 2 })) as {
+        matched: number;
+        returned: number;
+        notes: unknown[];
+      };
+
+      expect(result.matched).toBe(5);
+      expect(result.returned).toBe(2);
+      expect(result.notes).toHaveLength(2);
+    });
+
+    it("carries the full entry history so the reasoning is visible", async () => {
+      vi.mocked(pilotQueries.getPilotEntries).mockResolvedValue([
+        entry({ id: "1", noteId: "1" }),
+        entry({ id: "2", noteId: "1", kind: "comment", title: null, body: "more context" }),
+      ]);
+
+      const result = (await dispatchTool(ctx, "pilot_notes_get", {})) as {
+        notes: { entries: { body: string }[] }[];
+      };
+
+      expect(result.notes[0].entries.map((e) => e.body)).toEqual(["body", "more context"]);
+    });
+
+    it("rejects a status outside the known set", async () => {
+      await expect(dispatchTool(ctx, "pilot_notes_get", { status: "urgent" })).rejects.toBeInstanceOf(
+        McpArgumentError
+      );
+    });
+  });
+
+  describe("pilot_notes_add", () => {
+    it("appends an opening entry and returns the id later entries attach to", async () => {
+      const result = (await dispatchTool(ctx, "pilot_notes_add", {
+        title: "MRR looks wrong",
+        body: "Checked against Seal.",
+        category: "subscriptions",
+      })) as { written: boolean; noteId: string; entryId: string };
+
+      expect(result.written).toBe(true);
+      expect(result.noteId).toBe(result.entryId);
+      expect(pilotQueries.appendPilotEntry).toHaveBeenCalledTimes(1);
+
+      const [, written] = vi.mocked(pilotQueries.appendPilotEntry).mock.calls[0];
+      expect(written.title).toBe("MRR looks wrong");
+      expect(written.kind).toBe("open");
+      expect(written.createdAt).toEqual(NOW);
+    });
+
+    it("refuses an empty body rather than storing a blank note", async () => {
+      await expect(dispatchTool(ctx, "pilot_notes_add", { title: "t", body: "   " })).rejects.toBeInstanceOf(
+        McpArgumentError
+      );
+      expect(pilotQueries.appendPilotEntry).not.toHaveBeenCalled();
+    });
+
+    it("refuses to open a note with no title", async () => {
+      await expect(dispatchTool(ctx, "pilot_notes_add", { body: "detail" })).rejects.toThrow(/title/i);
+      expect(pilotQueries.appendPilotEntry).not.toHaveBeenCalled();
+    });
+
+    // A typo'd noteId would otherwise create an entry no one can reach, which
+    // the fold then reports as data damage.
+    it("refuses to append to a note that does not exist", async () => {
+      vi.mocked(pilotQueries.noteExists).mockResolvedValue(false);
+
+      await expect(
+        dispatchTool(ctx, "pilot_notes_add", { kind: "comment", body: "x", noteId: "nope" })
+      ).rejects.toThrow(/No pilot note with id/);
+      expect(pilotQueries.appendPilotEntry).not.toHaveBeenCalled();
+    });
+
+    it("closes a note with a resolution entry rather than editing it", async () => {
+      vi.mocked(pilotQueries.noteExists).mockResolvedValue(true);
+
+      await dispatchTool(ctx, "pilot_notes_add", {
+        kind: "resolution",
+        body: "Fixed in Seal.",
+        noteId: "abc",
+      });
+
+      const [, written] = vi.mocked(pilotQueries.appendPilotEntry).mock.calls[0];
+      expect(written.kind).toBe("resolution");
+      expect(written.noteId).toBe("abc");
+    });
+
+    it("rejects an unknown argument instead of silently dropping it", async () => {
+      await expect(
+        dispatchTool(ctx, "pilot_notes_add", { title: "t", body: "b", status: "closed" })
+      ).rejects.toBeInstanceOf(McpArgumentError);
+      expect(pilotQueries.appendPilotEntry).not.toHaveBeenCalled();
+    });
+
+    // There is no update and no delete anywhere in the module; this asserts the
+    // tool cannot reach one by naming a kind that implies mutation.
+    it("has no kind that edits or deletes", async () => {
+      for (const kind of ["edit", "delete", "update"]) {
+        await expect(
+          dispatchTool(ctx, "pilot_notes_add", { kind, body: "b", noteId: "abc" })
+        ).rejects.toBeInstanceOf(McpArgumentError);
+      }
+    });
+  });
+
+  describe("pilot_notes_export", () => {
+    it("renders the log as markdown", async () => {
+      vi.mocked(pilotQueries.getPilotEntries).mockResolvedValue([
+        entry({ id: "1", noteId: "1", title: "Something to watch" }),
+      ]);
+
+      const result = (await dispatchTool(ctx, "pilot_notes_export", {})) as {
+        markdown: string;
+        noteCount: number;
+      };
+
+      expect(result.markdown).toContain("# Pilot notes");
+      expect(result.markdown).toContain("Something to watch");
+      expect(result.noteCount).toBe(1);
+    });
+
+    // An empty document under a heading reads as "nothing is wrong". It has to
+    // say that the log is empty instead.
+    it("says the log is empty rather than returning a bare heading", async () => {
+      vi.mocked(pilotQueries.getPilotEntries).mockResolvedValue([]);
+
+      const result = (await dispatchTool(ctx, "pilot_notes_export", {})) as { markdown: string };
+      expect(result.markdown).toMatch(/no notes/i);
+    });
   });
 });

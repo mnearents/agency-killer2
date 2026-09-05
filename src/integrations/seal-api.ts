@@ -73,6 +73,27 @@ export interface SealSubscription {
   billing_attempts: SealBillingAttempt[];
 }
 
+/** One entry in Seal's audit trail. Newest first, timestamps in shop-local time. */
+export interface SealLogEntry {
+  content: string;
+  created: string;
+}
+
+/**
+ * The fields that exist ONLY on the single-subscription endpoint.
+ *
+ * The list endpoint omits all three, so anything here costs one request per
+ * subscription. That is why they are fetched together — splitting them would
+ * mean crawling 4,390 records once per field.
+ */
+export interface SealSubscriptionDetail {
+  /** Bare numeric Shopify customer ID, or null when there genuinely is none. */
+  customerId: string | null;
+  /** Seal's audit trail. Empty array is a real answer; null means absent. */
+  log: SealLogEntry[] | null;
+  tags: string[] | null;
+}
+
 export interface SealApiClient {
   /**
    * Every subscription, every status. Seal offers no `since` or `status`
@@ -82,14 +103,12 @@ export interface SealApiClient {
   getAllSubscriptions(): Promise<SealSubscription[]>;
 
   /**
-   * The Shopify customer ID as a bare numeric string, or null when the
-   * subscription genuinely has no customer behind it.
+   * Customer ID, audit log and tags for one subscription.
    *
-   * Only the single-subscription endpoint carries `customer_id` — the list
-   * endpoint omits it entirely — so this costs one request per subscription
-   * and is never called in bulk from the daily sync.
+   * One request per subscription, so never called in bulk from the daily sync —
+   * only for subscriptions it has not seen before, and by the backfill scripts.
    */
-  getSubscriptionCustomerId(subscriptionId: string): Promise<string | null>;
+  getSubscriptionDetail(subscriptionId: string): Promise<SealSubscriptionDetail>;
 }
 
 export interface SealConfig {
@@ -180,7 +199,7 @@ export function createSealApiClient(config: SealConfig): SealApiClient {
   }
 
   return {
-    async getSubscriptionCustomerId(subscriptionId: string): Promise<string | null> {
+    async getSubscriptionDetail(subscriptionId: string): Promise<SealSubscriptionDetail> {
       const url = `${baseUrl}/subscription?id=${encodeURIComponent(subscriptionId)}`;
       const response = await fetchWithRetry(url);
 
@@ -192,20 +211,44 @@ export function createSealApiClient(config: SealConfig): SealApiClient {
       }
 
       const data = (await response.json()) as {
-        payload?: { customer_id?: string | number };
+        payload?: { customer_id?: string | number; log?: unknown; tags?: unknown };
       };
 
       // A missing payload is a broken call; a payload with no customer_id is a
       // real answer. Collapsing the two would silently record "no customer"
-      // for every subscription on the day the envelope changes.
-      if (!data?.payload || typeof data.payload !== "object") {
+      // for every subscription on the day the envelope changes. Seal answers
+      // an unauthorised request with `payload: []`, which is an object to
+      // typeof, so the array check is load-bearing.
+      if (!data?.payload || typeof data.payload !== "object" || Array.isArray(data.payload)) {
         throw new Error(
           `Seal API returned an unrecognised envelope for subscription ${subscriptionId}`
         );
       }
 
       const raw = data.payload.customer_id;
-      return raw === undefined || raw === null || raw === "" ? null : String(raw);
+      const customerId = raw === undefined || raw === null || raw === "" ? null : String(raw);
+
+      // An empty array is a real answer — a subscription nobody has edited.
+      // A non-array means the field was absent or reshaped, which is unknown,
+      // not empty; recording it as [] would read as "never touched" and hide
+      // every tier change on that record.
+      const log = Array.isArray(data.payload.log)
+        ? (data.payload.log as unknown[])
+            .filter(
+              (e): e is SealLogEntry =>
+                typeof e === "object" &&
+                e !== null &&
+                typeof (e as SealLogEntry).content === "string" &&
+                typeof (e as SealLogEntry).created === "string"
+            )
+            .map((e) => ({ content: e.content, created: e.created }))
+        : null;
+
+      const tags = Array.isArray(data.payload.tags)
+        ? (data.payload.tags as unknown[]).filter((t): t is string => typeof t === "string")
+        : null;
+
+      return { customerId, log, tags };
     },
 
     async getAllSubscriptions(): Promise<SealSubscription[]> {

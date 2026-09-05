@@ -124,18 +124,22 @@ describe("createSealApiClient", () => {
     ).rejects.toThrow(/envelope/i);
   });
 
-  // The list endpoint omits customer_id entirely; only the single-subscription
-  // endpoint carries it. This is the sole reason that endpoint is called.
-  describe("getSubscriptionCustomerId", () => {
+  // The list endpoint omits customer_id, log and tags entirely; only the
+  // single-subscription endpoint carries them. That is the sole reason this
+  // endpoint is called, and why all three are fetched in one request.
+  describe("getSubscriptionDetail", () => {
+    const detail = (id: string) =>
+      createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionDetail(id);
+
     it("reads customer_id from the single-subscription endpoint", async () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValue(jsonResponse({ success: true, payload: { id: 42, customer_id: "10089422586101" } }));
       vi.stubGlobal("fetch", fetchMock);
 
-      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
+      const result = await detail("42");
 
-      expect(id).toBe("10089422586101");
+      expect(result.customerId).toBe("10089422586101");
       expect(fetchMock.mock.calls[0][0]).toContain("/subscription?id=42");
     });
 
@@ -147,8 +151,7 @@ describe("createSealApiClient", () => {
         vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { customer_id: "10089422586101" } }))
       );
 
-      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
-      expect(id).not.toContain("gid://");
+      expect((await detail("42")).customerId).not.toContain("gid://");
     });
 
     // A migrated subscription may genuinely have no Shopify customer behind it.
@@ -159,24 +162,31 @@ describe("createSealApiClient", () => {
         vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { id: 42, customer_id: "" } }))
       );
 
-      const id = await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42");
-      expect(id).toBeNull();
+      expect((await detail("42")).customerId).toBeNull();
     });
 
     it("throws rather than returning null when the lookup itself fails", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "nope" }, 404)));
 
-      await expect(
-        createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")
-      ).rejects.toThrow(/404/);
+      await expect(detail("42")).rejects.toThrow(/404/);
     });
 
     it("throws when the envelope is not the shape we depend on", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ success: true, data: {} })));
 
-      await expect(
-        createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")
-      ).rejects.toThrow(/envelope/i);
+      await expect(detail("42")).rejects.toThrow(/envelope/i);
+    });
+
+    // Seal answers an unauthorised request with `payload: []`. That is an
+    // object to `typeof`, so without an array check it slips through as a
+    // subscription with no customer, no log and no tags — 4,390 silent blanks.
+    it("throws on the empty-array payload Seal returns when forbidden", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ success: false, error: "Access forbidden.", payload: [] }))
+      );
+
+      await expect(detail("42")).rejects.toThrow(/envelope/i);
     });
 
     it("retries a 503 like every other call", async () => {
@@ -186,8 +196,85 @@ describe("createSealApiClient", () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, payload: { customer_id: "7" } }));
       vi.stubGlobal("fetch", fetchMock);
 
-      expect(await createSealApiClient({ apiToken: "t", sleep: noSleep }).getSubscriptionCustomerId("42")).toBe("7");
+      expect((await detail("42")).customerId).toBe("7");
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("reads the audit log, preserving content and timestamp", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          jsonResponse({
+            success: true,
+            payload: {
+              customer_id: "7",
+              log: [
+                { content: 'Merchant added item "Really Awesome Doodles - Studio" to the subscription through the API.', created: "2026-08-03 17:13:50" },
+                { content: 'Merchant removed item "Really Awesome Doodles Spark" from the subscription through the API.', created: "2026-08-03 17:13:52" },
+              ],
+            },
+          })
+        )
+      );
+
+      const { log } = await detail("42");
+      expect(log).toHaveLength(2);
+      expect(log?.[0].content).toContain("Really Awesome Doodles - Studio");
+      expect(log?.[0].created).toBe("2026-08-03 17:13:50");
+    });
+
+    it("reads tags as a string array", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          jsonResponse({ success: true, payload: { customer_id: "7", tags: ["subscription", "color-happy"] } })
+        )
+      );
+
+      expect((await detail("42")).tags).toEqual(["subscription", "color-happy"]);
+    });
+
+    // An empty log is a real answer — nobody ever edited this subscription.
+    it("distinguishes an empty log from an absent one", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { customer_id: "7", log: [], tags: [] } }))
+      );
+
+      const result = await detail("42");
+      expect(result.log).toEqual([]);
+      expect(result.tags).toEqual([]);
+    });
+
+    // The distinction matters: [] means "never edited", so storing it for a
+    // field that was actually missing would hide every tier change on the
+    // record and quietly understate the upgrade count.
+    it("returns null, not an empty array, when log and tags are absent", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(jsonResponse({ success: true, payload: { customer_id: "7" } }))
+      );
+
+      const result = await detail("42");
+      expect(result.log).toBeNull();
+      expect(result.tags).toBeNull();
+    });
+
+    it("drops malformed log entries rather than trusting their shape", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          jsonResponse({
+            success: true,
+            payload: {
+              customer_id: "7",
+              log: [{ content: "real", created: "2026-08-03 17:13:50" }, { content: 42 }, null, "nope"],
+            },
+          })
+        )
+      );
+
+      expect((await detail("42")).log).toEqual([{ content: "real", created: "2026-08-03 17:13:50" }]);
     });
   });
 

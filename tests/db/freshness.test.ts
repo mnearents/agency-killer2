@@ -34,6 +34,41 @@ describe("classifyFreshness", () => {
     expect(result.stale).toBe(true);
   });
 
+  // Pilot notes are written when someone has something to record. An empty or
+  // old log is not rot, and reporting it as stale would light up `anyStale`
+  // permanently — which teaches whoever reads it to ignore the one field that
+  // is supposed to say a real feed has died.
+  describe("authored sources", () => {
+    const authored = (overrides: Partial<RawFreshness> = {}) =>
+      raw({
+        source: "Pilot notes",
+        table: "pilot_notes",
+        basis: "authored",
+        staleAfterHours: 0,
+        ...overrides,
+      });
+
+    it("never marks an authored source stale, however old", () => {
+      const [result] = classifyFreshness(
+        [authored({ lastAt: new Date("2025-01-01T00:00:00Z") })],
+        NOW
+      );
+      expect(result.stale).toBe(false);
+    });
+
+    it("treats an empty note log as healthy, not missing data", () => {
+      const [result] = classifyFreshness([authored({ rows: 0, lastAt: null })], NOW);
+      expect(result.stale).toBe(false);
+      expect(result.rows).toBe(0);
+      expect(result.lastAt).toBeNull();
+    });
+
+    it("still reports age so a reader can see when it was last written", () => {
+      const [result] = classifyFreshness([authored()], NOW);
+      expect(result.ageHours).toBe(6);
+    });
+  });
+
   it("respects a longer window for manually imported sources", () => {
     const [result] = classifyFreshness(
       [raw({ staleAfterHours: 336, lastAt: new Date("2026-08-25T12:00:00Z") })],

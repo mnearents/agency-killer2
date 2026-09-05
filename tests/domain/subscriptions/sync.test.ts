@@ -162,20 +162,20 @@ describe("syncSubscriptions", () => {
   // arrivals.
   describe("customer id lookups", () => {
     it("looks up only subscriptions it has not stored a customer for", async () => {
-      const getSubscriptionCustomerId = vi.fn().mockResolvedValue("555");
+      const getSubscriptionDetail = vi.fn().mockResolvedValue({ customerId: "555", log: null, tags: null });
       const client = createMockSealApiClient({
         getAllSubscriptions: vi.fn().mockResolvedValue([
           makeSealSubscription({ id: 1 }),
           makeSealSubscription({ id: 2 }),
         ]),
-        getSubscriptionCustomerId,
+        getSubscriptionDetail,
       });
       const { db, inserted } = createDbStub([{ id: "1", customerId: "111" }]);
 
       await syncSubscriptions({ client, db }, NOW);
 
-      expect(getSubscriptionCustomerId).toHaveBeenCalledTimes(1);
-      expect(getSubscriptionCustomerId).toHaveBeenCalledWith("2");
+      expect(getSubscriptionDetail).toHaveBeenCalledTimes(1);
+      expect(getSubscriptionDetail).toHaveBeenCalledWith("2");
 
       const rows = inserted.filter((i) => i.table === "seal_subscriptions");
       const byId = new Map(
@@ -186,15 +186,15 @@ describe("syncSubscriptions", () => {
     });
 
     it("does not call the API at all when every customer is already stored", async () => {
-      const getSubscriptionCustomerId = vi.fn();
+      const getSubscriptionDetail = vi.fn();
       const client = createMockSealApiClient({
         getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
-        getSubscriptionCustomerId,
+        getSubscriptionDetail,
       });
       const { db } = createDbStub([{ id: "1", customerId: "111" }]);
 
       await syncSubscriptions({ client, db }, NOW);
-      expect(getSubscriptionCustomerId).not.toHaveBeenCalled();
+      expect(getSubscriptionDetail).not.toHaveBeenCalled();
     });
 
     // Without a cap, a sync run before the backfill would quietly fire
@@ -203,14 +203,14 @@ describe("syncSubscriptions", () => {
       const subs = Array.from({ length: 60 }, (_, i) => makeSealSubscription({ id: i + 1 }));
       const client = createMockSealApiClient({
         getAllSubscriptions: vi.fn().mockResolvedValue(subs),
-        getSubscriptionCustomerId: vi.fn().mockResolvedValue("555"),
+        getSubscriptionDetail: vi.fn().mockResolvedValue({ customerId: "555", log: null, tags: null }),
       });
       const { db } = createDbStub();
       const warn = vi.fn();
 
       const result = await syncSubscriptions({ client, db }, NOW, { warn });
 
-      expect(client.getSubscriptionCustomerId).toHaveBeenCalledTimes(50);
+      expect(client.getSubscriptionDetail).toHaveBeenCalledTimes(50);
       const capWarning = warn.mock.calls
         .map((c) => c[0] as string)
         .find((m) => m.includes("10 "));
@@ -223,7 +223,7 @@ describe("syncSubscriptions", () => {
     it("records the subscription even when its lookup fails", async () => {
       const client = createMockSealApiClient({
         getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
-        getSubscriptionCustomerId: vi.fn().mockRejectedValue(new Error("Seal API 503")),
+        getSubscriptionDetail: vi.fn().mockRejectedValue(new Error("Seal API 503")),
       });
       const { db, inserted } = createDbStub();
 
@@ -242,7 +242,7 @@ describe("syncSubscriptions", () => {
     it("marks a lookup that found nothing as checked", async () => {
       const client = createMockSealApiClient({
         getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
-        getSubscriptionCustomerId: vi.fn().mockResolvedValue(null),
+        getSubscriptionDetail: vi.fn().mockResolvedValue({ customerId: null, log: null, tags: null }),
       });
       const { db, inserted } = createDbStub();
 
@@ -252,6 +252,47 @@ describe("syncSubscriptions", () => {
         ?.values as Record<string, unknown>;
       expect(row.customerId).toBeNull();
       expect(row.customerIdCheckedAt).toEqual(NOW);
+    });
+
+    // The same response already carries these, so a new subscription should
+    // never need a second crawl to get its log.
+    it("stores the log and tags for a subscription it looks up", async () => {
+      const log = [{ content: "Merchant added item", created: "2026-08-03 17:13:50" }];
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
+        getSubscriptionDetail: vi
+          .fn()
+          .mockResolvedValue({ customerId: "555", log, tags: ["subscription"] }),
+      });
+      const { db, inserted } = createDbStub();
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      const row = inserted.find((i) => i.table === "seal_subscriptions")
+        ?.values as Record<string, unknown>;
+      expect(row.log).toEqual(log);
+      expect(row.tags).toEqual(["subscription"]);
+      expect(row.detailCheckedAt).toEqual(NOW);
+    });
+
+    // THE regression that would quietly destroy the backfill: an already-known
+    // subscription is never looked up, so the sync has no log in hand. Writing
+    // the column anyway sets it to null, and a single nightly run erases the
+    // entire captured upgrade history a day after it was gathered.
+    it("does not touch log or tags for a subscription it did not look up", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription({ id: 1 })]),
+      });
+      const { db, inserted } = createDbStub([{ id: "1", customerId: "111" }]);
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      const row = inserted.find((i) => i.table === "seal_subscriptions")
+        ?.values as Record<string, unknown>;
+      expect(client.getSubscriptionDetail).not.toHaveBeenCalled();
+      expect("log" in row).toBe(false);
+      expect("tags" in row).toBe(false);
+      expect("detailCheckedAt" in row).toBe(false);
     });
   });
 

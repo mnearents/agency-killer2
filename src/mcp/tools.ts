@@ -16,8 +16,16 @@
  *  - Every tool echoes the date window it used, so a number is attributable.
  */
 
+import { randomUUID } from "node:crypto";
 import type { Db } from "@/db/client";
-import { parseArgs, resolveRange, RANGE_SCHEMA, type ArgSchema, type ParsedArgs } from "./args";
+import {
+  parseArgs,
+  resolveRange,
+  McpArgumentError,
+  RANGE_SCHEMA,
+  type ArgSchema,
+  type ParsedArgs,
+} from "./args";
 
 import { getDataFreshness } from "@/db/freshness";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
@@ -40,6 +48,14 @@ import { getEntriesByWeek } from "@/domain/calendar/queries";
 import { getAllSamples, getAllRules, getAllBannedWords } from "@/domain/voice/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { CHECK_FAILED_TYPE } from "@/domain/alerts/checks";
+import { getPilotEntries, noteExists, appendPilotEntry } from "@/domain/pilot/queries";
+import {
+  foldNotes,
+  validateEntry,
+  renderMarkdown,
+  NOTE_KINDS,
+  type NoteKind,
+} from "@/domain/pilot/notes";
 
 export interface McpToolContext {
   db: Db;
@@ -542,7 +558,166 @@ const currentAlerts: McpTool = {
   },
 };
 
-export const READ_TOOLS: McpTool[] = [
+// ─── Pilot notes ──────────────────────────────────────────────────────
+
+const pilotNotesGet: McpTool = {
+  name: "pilot_notes_get",
+  title: "Read pilot notes",
+  description:
+    "The running log of observations about this system and the business. Returns open notes by default — pass status to see closed or orphaned ones, or 'all'. Each note carries its full entry history, oldest first, so the reasoning behind it is visible rather than just its current state. A note with status 'orphaned' means an entry referenced a note that was never opened; treat that as data damage, not as a note.",
+  readOnly: true,
+  schema: {
+    status: { type: "enum", values: ["open", "closed", "orphaned", "all"] as const, default: "open" },
+    category: { type: "string" },
+    limit: { type: "integer", min: 1, max: 500, default: 100 },
+  },
+  async run(ctx, args) {
+    const { status, category, limit } = args as {
+      status: "open" | "closed" | "orphaned" | "all";
+      category?: string;
+      limit: number;
+    };
+
+    const all = foldNotes(await getPilotEntries(ctx.db));
+    const matched = all.filter(
+      (n) => (status === "all" || n.status === status) && (!category || n.category === category)
+    );
+
+    return {
+      filters: { status, category: category ?? null },
+      // Both numbers, always: a capped list read as the whole set is how a
+      // "there are only 3 open notes" conclusion gets drawn from 100 of 400.
+      matched: matched.length,
+      returned: Math.min(matched.length, limit),
+      notes: matched.slice(0, limit).map((n) => ({
+        noteId: n.noteId,
+        title: n.title,
+        category: n.category,
+        status: n.status,
+        openedAt: n.openedAt.toISOString(),
+        lastActivityAt: n.lastActivityAt.toISOString(),
+        resolution: n.resolution,
+        entries: n.entries.map((e) => ({
+          kind: e.kind,
+          body: e.body,
+          author: e.author,
+          createdAt: e.createdAt.toISOString(),
+        })),
+      })),
+    };
+  },
+};
+
+const pilotNotesAdd: McpTool = {
+  name: "pilot_notes_add",
+  title: "Add a pilot note",
+  description:
+    "Append an entry to the pilot notes log. This is the ONLY tool on this server that writes anything. The log is append-only: nothing can be edited or deleted, so a mistake is corrected by appending a correction. Use kind 'open' with a title to raise something new, 'comment' with a noteId to add context, and 'resolution' with a noteId to close one. Returns the noteId, which is what later entries attach to.",
+  readOnly: false,
+  schema: {
+    kind: { type: "enum", values: [...NOTE_KINDS], default: "open" },
+    title: { type: "string" },
+    body: { type: "string", required: true },
+    category: { type: "string" },
+    author: { type: "string", default: "claude" },
+    noteId: { type: "string" },
+  },
+  async run(ctx, args) {
+    const { kind, title, body, category, author, noteId } = args as {
+      kind: NoteKind;
+      title?: string;
+      body: string;
+      category?: string;
+      author: string;
+      noteId?: string;
+    };
+
+    const draft = {
+      kind,
+      title: title ?? null,
+      body,
+      category: category ?? null,
+      author,
+      noteId: noteId ?? null,
+    };
+
+    const validation = validateEntry(draft);
+    if (!validation.ok) {
+      throw new McpArgumentError(validation.error);
+    }
+
+    // Appending to a note that does not exist would fold to an orphan, which
+    // is reserved for genuine data damage. A typo in a noteId should fail
+    // here, loudly, rather than quietly create an unreachable entry.
+    if (noteId && !(await noteExists(ctx.db, noteId))) {
+      throw new McpArgumentError(
+        `No pilot note with id "${noteId}". Call pilot_notes_get to list existing notes, ` +
+          `or omit noteId to open a new one.`
+      );
+    }
+
+    const now = ctx.now();
+    // Time-ordered and unique. The fold sorts on createdAt and breaks ties on
+    // id, so a monotonic prefix keeps two entries written in the same
+    // millisecond in the order they were actually written.
+    const id = `${now.toISOString()}-${randomUUID().slice(0, 8)}`;
+
+    await appendPilotEntry(ctx.db, {
+      id,
+      noteId: noteId ?? id,
+      kind,
+      title: title ?? null,
+      body,
+      category: category ?? null,
+      author,
+      createdAt: now,
+    });
+
+    return {
+      written: true,
+      entryId: id,
+      noteId: noteId ?? id,
+      kind,
+      createdAt: now.toISOString(),
+    };
+  },
+};
+
+const pilotNotesExport: McpTool = {
+  name: "pilot_notes_export",
+  title: "Export pilot notes as markdown",
+  description:
+    "The whole pilot notes log as a markdown document, grouped into open, closed and orphaned sections. This is the one tool that returns prose rather than data, because its output is meant for a person to read or paste somewhere. Returns an explicit 'no notes' line when the log is empty, rather than an empty document that could read as an all-clear.",
+  readOnly: true,
+  schema: {
+    status: { type: "enum", values: ["open", "closed", "orphaned", "all"] as const, default: "all" },
+    category: { type: "string" },
+  },
+  async run(ctx, args) {
+    const { status, category } = args as {
+      status: "open" | "closed" | "orphaned" | "all";
+      category?: string;
+    };
+
+    const all = foldNotes(await getPilotEntries(ctx.db));
+    const matched = all.filter(
+      (n) => (status === "all" || n.status === status) && (!category || n.category === category)
+    );
+
+    return {
+      filters: { status, category: category ?? null },
+      noteCount: matched.length,
+      markdown: renderMarkdown(matched, ctx.now()),
+    };
+  },
+};
+
+/**
+ * Every tool on the server. All but `pilot_notes_add` are read-only; that one
+ * appends to the pilot notes log and can do nothing else. Anything that spends
+ * money or sends a message still does not exist here.
+ */
+export const ALL_TOOLS: McpTool[] = [
   dataFreshness,
   adsPerformance,
   adsCreativePerformance,
@@ -557,6 +732,9 @@ export const READ_TOOLS: McpTool[] = [
   calendarEntriesTool,
   brandVoice,
   currentAlerts,
+  pilotNotesGet,
+  pilotNotesAdd,
+  pilotNotesExport,
 ];
 
 // ─── Dispatch ─────────────────────────────────────────────────────────
@@ -599,7 +777,7 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
 }
 
 export function findTool(name: string): McpTool | undefined {
-  return READ_TOOLS.find((t) => t.name === name);
+  return ALL_TOOLS.find((t) => t.name === name);
 }
 
 export async function dispatchTool(
@@ -610,7 +788,7 @@ export async function dispatchTool(
   const tool = findTool(name);
   if (!tool) {
     throw new Error(
-      `Unknown tool "${name}". Available tools: ${READ_TOOLS.map((t) => t.name).join(", ")}`
+      `Unknown tool "${name}". Available tools: ${ALL_TOOLS.map((t) => t.name).join(", ")}`
     );
   }
   // Validation runs before the query so a bad argument costs nothing and,

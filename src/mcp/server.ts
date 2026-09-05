@@ -10,7 +10,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { READ_TOOLS, dispatchTool, toJsonSchema, type McpToolContext } from "./tools";
+import { ALL_TOOLS, dispatchTool, toJsonSchema, type McpToolContext } from "./tools";
 
 // A type alias rather than an interface: the SDK's result union is indexed by
 // an implicit signature that interfaces do not satisfy.
@@ -51,7 +51,7 @@ export function createMcpServer(ctx: McpToolContext): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: READ_TOOLS.map((tool) => ({
+    tools: ALL_TOOLS.map((tool) => ({
       name: tool.name,
       title: tool.title,
       description: tool.description,

@@ -624,6 +624,21 @@ export const sealSubscriptions = pgTable(
     cancelledOn: timestamp("cancelled_on", { withTimezone: true }),
     cancellationReason: text("cancellation_reason"),
 
+    // Seal's own audit trail: [{ content, created }], newest first. Only the
+    // single-subscription endpoint carries it. This is the ONLY record of tier
+    // changes that predate our daily snapshots — an upgrade edits the existing
+    // subscription in place, so order_placed, status and the current-state row
+    // look identical before and after. Without this, the June-onward
+    // Spark→Studio movement is unrecoverable.
+    log: jsonb("log"),
+    /** Shopify tags as a string array. */
+    tags: jsonb("tags"),
+    // When log/tags were last fetched. Deliberately separate from
+    // customer_id_checked_at: every row already has that set from the earlier
+    // customer-ID backfill, so reusing it would make "log captured" and "log
+    // never fetched" indistinguishable and the crawl unresumable.
+    detailCheckedAt: timestamp("detail_checked_at", { withTimezone: true }),
+
     // Derived from billing_attempts[].status === "error" only. A completed
     // attempt can carry a stale error_code, so the code is stored for the
     // campaign copy but never used to decide the boolean.
@@ -685,3 +700,51 @@ export const sealSubscriptionSnapshots = pgTable(
 
 export type SealSubscriptionSnapshot = typeof sealSubscriptionSnapshots.$inferSelect;
 export type NewSealSubscriptionSnapshot = typeof sealSubscriptionSnapshots.$inferInsert;
+
+// ─── Pilot notes ───────────────────────────────────────────────────────
+
+/**
+ * An append-only log of observations about the system and the business.
+ *
+ * This is the one table anything on the MCP server can write to, which is why
+ * it is a log of ENTRIES rather than a table of notes with a mutable status.
+ * Nothing is ever updated or deleted: opening a note, adding context and
+ * resolving it are three separate rows sharing a `note_id`, and a note's
+ * current status is derived by folding its entries in time order.
+ *
+ * The alternative — a `status` column flipped in place — would let a bad write
+ * erase the reasoning that produced a note, and leave no trace that it had.
+ * Here the worst a bad write can do is append something wrong, which is
+ * visible and correctable by appending again.
+ */
+export const pilotNotes = pgTable(
+  "pilot_notes",
+  {
+    id: text("id").primaryKey(),
+    /** Groups the entries belonging to one note. The opening entry's id. */
+    noteId: text("note_id").notNull(),
+
+    // open      — creates the note. Carries the title.
+    // comment   — adds context without changing status.
+    // resolution — closes the note. Carries why.
+    kind: text("kind").notNull(),
+
+    /** Set on the opening entry; null on later ones, which inherit it. */
+    title: text("title"),
+    body: text("body").notNull(),
+    /** Free-form grouping: "meta", "subscriptions", "data-quality", etc. */
+    category: text("category"),
+    /** Who wrote it — "claude" for agent-authored, or a person's name. */
+    author: text("author").notNull(),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("pilot_notes_note_idx").on(table.noteId),
+    index("pilot_notes_created_idx").on(table.createdAt),
+    index("pilot_notes_category_idx").on(table.category),
+  ]
+);
+
+export type PilotNoteEntry = typeof pilotNotes.$inferSelect;
+export type NewPilotNoteEntry = typeof pilotNotes.$inferInsert;

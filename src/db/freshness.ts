@@ -16,6 +16,7 @@ import {
   attentiveCampaigns,
   sealSubscriptions,
   syncRuns,
+  pilotNotes,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -24,8 +25,11 @@ import { SYNC_TASK } from "@/domain/meta/sync";
  * `synced` means the row records when we last pulled from the API.
  * `latest-data` means there is no sync timestamp and the newest data point is
  * the best proxy — true for manually imported sources.
+ * `authored` means nothing syncs it: it is written when someone has something
+ * to record. Age carries no health signal, and an empty log means nobody had
+ * anything to note rather than that a feed died, so these are never stale.
  */
-export type FreshnessBasis = "synced" | "latest-data";
+export type FreshnessBasis = "synced" | "latest-data" | "authored";
 
 /**
  * What the most recent sync attempt for this source did.
@@ -67,6 +71,25 @@ const HOUR_MS = 60 * 60 * 1000;
 export function classifyFreshness(rows: RawFreshness[], now: Date): SourceFreshness[] {
   return rows.map((r) => {
     const lastRun = r.lastRun ?? null;
+
+    // An authored source has no feed to break. Zero rows means nobody wrote
+    // anything, which is a real and healthy answer; running it through the
+    // rules below would report a permanent false alarm and teach whoever reads
+    // `anyStale` to ignore it — including on the days a real source has died.
+    if (r.basis === "authored") {
+      return {
+        source: r.source,
+        table: r.table,
+        basis: r.basis,
+        rows: r.rows,
+        lastAt: r.lastAt ? r.lastAt.toISOString() : null,
+        ageHours: r.lastAt
+          ? Math.round(((now.getTime() - r.lastAt.getTime()) / HOUR_MS) * 10) / 10
+          : null,
+        stale: false,
+        lastRun,
+      };
+    }
 
     // No timestamp or no rows means we have nothing, which is the loudest
     // possible signal — never let it read as a healthy empty result.
@@ -134,6 +157,7 @@ export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshne
     { source: "Subscriptions (Seal)", table: sealSubscriptions, name: "seal_subscriptions", column: sealSubscriptions.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Instagram/Facebook posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS },
+    { source: "Pilot notes", table: pilotNotes, name: "pilot_notes", column: pilotNotes.createdAt, basis: "authored" as const, staleAfterHours: 0 },
   ];
 
   const raw: RawFreshness[] = [];
