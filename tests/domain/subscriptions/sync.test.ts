@@ -4,9 +4,26 @@ import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { createMockSealApiClient, makeSealSubscription } from "../../mocks/seal-api";
 import type { SealSubscription } from "@/integrations/seal-api";
 
-/** Minimal Drizzle stub that records what would be written. */
-function createDbStub(existing: { id: string; customerId: string | null }[] = []) {
-  const inserted: { table: string; values: unknown }[] = [];
+type Row = Record<string, unknown>;
+
+/**
+ * Minimal Drizzle stub that records what would be written.
+ *
+ * The sync batches its upserts, so `values` is an array. `statements` keeps
+ * one entry per round trip — that is what the batching is measured against —
+ * while `inserted` flattens back to one entry per row so assertions about what
+ * a row contains stay about the row.
+ *
+ * `failOn` makes a write reject when the predicate matches a row, which is how
+ * per-row isolation is tested: a batch containing a bad row must fail, and the
+ * good rows around it must still land.
+ */
+function createDbStub(
+  existing: { id: string; customerId: string | null }[] = [],
+  failOn: (row: Row) => boolean = () => false
+) {
+  const statements: { table: string; rows: Row[] }[] = [];
+  const inserted: { table: string; values: Row }[] = [];
   const db = {
     select() {
       return { from: () => Promise.resolve(existing) };
@@ -14,22 +31,21 @@ function createDbStub(existing: { id: string; customerId: string | null }[] = []
     insert(table: Parameters<typeof getTableName>[0]) {
       const name = getTableName(table);
       return {
-        values(values: unknown) {
-          return {
-            onConflictDoUpdate() {
-              inserted.push({ table: name, values });
-              return Promise.resolve();
-            },
-            onConflictDoNothing() {
-              inserted.push({ table: name, values });
-              return Promise.resolve();
-            },
+        values(values: Row | Row[]) {
+          const rows = Array.isArray(values) ? values : [values];
+          const write = () => {
+            statements.push({ table: name, rows });
+            const bad = rows.find(failOn);
+            if (bad) return Promise.reject(new Error(`constraint violation on ${String(bad.id)}`));
+            for (const r of rows) inserted.push({ table: name, values: r });
+            return Promise.resolve();
           };
+          return { onConflictDoUpdate: write, onConflictDoNothing: write };
         },
       };
     },
   };
-  return { db: db as never, inserted };
+  return { db: db as never, inserted, statements };
 }
 
 const NOW = new Date("2026-09-02T13:20:00Z");
@@ -293,6 +309,132 @@ describe("syncSubscriptions", () => {
       expect("log" in row).toBe(false);
       expect("tags" in row).toBe(false);
       expect("detailCheckedAt" in row).toBe(false);
+    });
+  });
+
+  // 4,395 subscriptions upserted one statement at a time, twice each, is 8,790
+  // sequential round trips and about 749s of a daily cron spent waiting on
+  // latency. The writes are independent, so they go in batches.
+  describe("batching", () => {
+    const manySubs = (n: number) =>
+      Array.from({ length: n }, (_, i) => makeSealSubscription({ id: i + 1 }));
+
+    it("writes a thousand subscriptions in a handful of round trips", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(manySubs(1000)),
+      });
+      const existing = Array.from({ length: 1000 }, (_, i) => ({
+        id: String(i + 1),
+        customerId: "c",
+      }));
+      const { db, statements } = createDbStub(existing);
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      expect(result.subscriptions).toBe(1000);
+      expect(result.snapshots).toBe(1000);
+      expect(result.errors).toEqual([]);
+      // Two tables, 500 to a chunk. The point is that it is a small constant
+      // number of trips rather than one per row.
+      expect(statements.length).toBeLessThan(10);
+    });
+
+    it("writes every row when the crawl spans several chunks", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(manySubs(1200)),
+      });
+      const existing = Array.from({ length: 1200 }, (_, i) => ({
+        id: String(i + 1),
+        customerId: "c",
+      }));
+      const { db, inserted } = createDbStub(existing);
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      const ids = inserted
+        .filter((i) => i.table === "seal_subscriptions")
+        .map((i) => i.values.id);
+      expect(new Set(ids).size).toBe(1200);
+    });
+
+    // THE regression batching invites. Drizzle builds one column list for the
+    // whole statement, so a chunk mixing a looked-up row (which has a log) with
+    // stored rows (which do not) would emit `log` for all of them and write
+    // NULL into every stored row — erasing the backfilled upgrade history in a
+    // single nightly run. Rows are grouped by which columns they carry.
+    it("does not blank a stored log when batched beside a freshly looked-up row", async () => {
+      const log = [{ content: "Merchant added item", created: "2026-08-03 17:13:50" }];
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi
+          .fn()
+          .mockResolvedValue([makeSealSubscription({ id: 1 }), makeSealSubscription({ id: 2 })]),
+        getSubscriptionDetail: vi.fn().mockResolvedValue({ customerId: "555", log, tags: ["x"] }),
+      });
+      // 1 is known, so it is never looked up and has no log in hand. 2 is new.
+      const { db, statements } = createDbStub([{ id: "1", customerId: "111" }]);
+
+      await syncSubscriptions({ client, db }, NOW);
+
+      const subStatements = statements.filter((s) => s.table === "seal_subscriptions");
+      for (const s of subStatements) {
+        const carriesLog = s.rows.map((r) => "log" in r);
+        expect(new Set(carriesLog).size).toBe(1);
+      }
+      const stored = subStatements.flatMap((s) => s.rows).find((r) => r.id === "1")!;
+      expect("log" in stored).toBe(false);
+      const fresh = subStatements.flatMap((s) => s.rows).find((r) => r.id === "2")!;
+      expect(fresh.log).toEqual(log);
+    });
+
+    // A batch is all-or-nothing, so one bad row would otherwise cost every
+    // good row beside it. The chunk is retried a row at a time to find it.
+    it("keeps the good rows in a chunk when one row fails", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(manySubs(5)),
+      });
+      const existing = Array.from({ length: 5 }, (_, i) => ({ id: String(i + 1), customerId: "c" }));
+      const { db, inserted } = createDbStub(existing, (r) => r.id === "3");
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      const ids = inserted
+        .filter((i) => i.table === "seal_subscriptions")
+        .map((i) => i.values.id);
+      expect(ids.sort()).toEqual(["1", "2", "4", "5"]);
+      expect(result.subscriptions).toBe(4);
+    });
+
+    it("names the subscription that failed", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(manySubs(3)),
+      });
+      const existing = Array.from({ length: 3 }, (_, i) => ({ id: String(i + 1), customerId: "c" }));
+      const { db } = createDbStub(existing, (r) => r.id === "2");
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("Subscription 2");
+      expect(result.errors[0]).toContain("constraint violation");
+    });
+
+    // The snapshot is the day's record of a subscription's state. Writing one
+    // for a row whose current state failed to save would put the two tables
+    // into a disagreement nothing else would explain.
+    it("writes no snapshot for a subscription whose row failed", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue(manySubs(3)),
+      });
+      const existing = Array.from({ length: 3 }, (_, i) => ({ id: String(i + 1), customerId: "c" }));
+      const { db, inserted } = createDbStub(existing, (r) => r.id === "2");
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      const snapIds = inserted
+        .filter((i) => i.table === "seal_subscription_snapshots")
+        .map((i) => i.values.subscriptionId);
+      expect(snapIds.sort()).toEqual(["1", "3"]);
+      expect(result.snapshots).toBe(2);
     });
   });
 

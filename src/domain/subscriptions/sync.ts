@@ -8,6 +8,8 @@
  * pull all ~88 pages every time.
  */
 
+import { getTableColumns, sql } from "drizzle-orm";
+import type { PgTable } from "drizzle-orm/pg-core";
 import type { SealApiClient } from "@/integrations/seal-api";
 import type { Db } from "@/db/client";
 import { sealSubscriptions, sealSubscriptionSnapshots } from "@/db/schema";
@@ -44,6 +46,84 @@ export interface SealSyncResult {
 }
 
 const flag = (b: boolean) => (b ? 1 : 0);
+
+/**
+ * Rows per upsert statement. The whole crawl in one statement would be a single
+ * point of failure and a very large query; one row per statement was 8,790
+ * round trips a night. 500 keeps both the parameter count and the cost of
+ * re-running a failed chunk row-by-row small.
+ */
+const UPSERT_CHUNK_SIZE = 500;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+type Row = Record<string, unknown>;
+
+/**
+ * `set` clause assigning each column the value the INSERT proposed for it.
+ *
+ * A batched upsert has one `set` for every row in it, so the per-row object the
+ * single-row version used cannot be reused — `excluded` is how Postgres refers
+ * to the row that would have been inserted.
+ */
+function excludedSet(table: PgTable, keys: string[], extra: Row = {}): Row {
+  const columns = getTableColumns(table) as unknown as Record<string, { name: string }>;
+  const set: Row = {};
+  for (const key of keys) set[key] = sql.raw(`excluded."${columns[key].name}"`);
+  return { ...set, ...extra };
+}
+
+/**
+ * Upsert rows in batches, falling back to one statement per row for any batch
+ * that fails so a single bad row costs only itself.
+ *
+ * Every row in `rows` must carry the same keys: Drizzle builds one column list
+ * for the whole statement from the union of the rows, and emits `default` —
+ * which for these nullable columns means NULL — wherever a row lacks a key. A
+ * batch mixing a row that has `log` with rows that do not would therefore write
+ * NULL over every stored log. Callers group before calling.
+ */
+async function upsertBatched(
+  db: Db,
+  table: PgTable,
+  conflictTarget: unknown,
+  rows: Row[],
+  extraSet: Row,
+  onError: (row: Row, err: unknown) => void
+): Promise<Row[]> {
+  const written: Row[] = [];
+  if (rows.length === 0) return written;
+  const keys = Object.keys(rows[0]);
+  const set = excludedSet(table, keys, extraSet);
+
+  for (const batch of chunk(rows, UPSERT_CHUNK_SIZE)) {
+    const run = (values: Row[]) =>
+      db
+        .insert(table)
+        .values(values as never)
+        .onConflictDoUpdate({ target: conflictTarget as never, set: set as never });
+    try {
+      await run(batch);
+      written.push(...batch);
+    } catch {
+      // The batch says only that something in it failed, not what. Retrying a
+      // row at a time is what turns that into a named subscription.
+      for (const row of batch) {
+        try {
+          await run([row]);
+          written.push(row);
+        } catch (err) {
+          onError(row, err);
+        }
+      }
+    }
+  }
+  return written;
+}
 
 const EMPTY_SUMMARY: TransformSummary = {
   total: 0,
@@ -153,6 +233,12 @@ export async function syncSubscriptions(
 
   for (const warning of summary.warnings) logger.warn(warning);
 
+  // Grouped by whether the row carries log/tags, because a batch has one column
+  // list for all its rows: mixing them would write NULL over every stored log.
+  const withDetail: Row[] = [];
+  const withoutDetail: Row[] = [];
+  const snapshotById = new Map<string, Row>();
+
   for (const { row, snapshot } of transformed) {
     // Only subscriptions looked up this run have a log to write. Including the
     // column unconditionally would set it to null for every existing row on
@@ -199,47 +285,54 @@ export async function syncSubscriptions(
       syncedAt: row.syncedAt,
     };
 
-    try {
-      await db
-        .insert(sealSubscriptions)
-        .values(values)
-        .onConflictDoUpdate({
-          target: sealSubscriptions.id,
-          set: { ...values, updatedAt: now },
-        });
-      subscriptionCount++;
+    (detail ? withDetail : withoutDetail).push(values);
 
-      const snapshotValues = {
-        id: `${snapshot.snapshotDate}:${snapshot.subscriptionId}`,
-        snapshotDate: snapshot.snapshotDate,
-        subscriptionId: snapshot.subscriptionId,
-        status: snapshot.status,
-        tier: snapshot.tier,
-        pricingCohort: snapshot.pricingCohort,
-        billingInterval: snapshot.billingInterval,
-        billingCadence: snapshot.billingCadence,
-        cadenceNote: snapshot.cadenceNote,
-        priceCents: snapshot.priceCents,
-        inDunning: flag(snapshot.inDunning),
-        createdAt: snapshot.createdAt,
-      };
-
-      // Re-running a sync on the same day corrects that day's snapshot rather
-      // than duplicating it.
-      await db
-        .insert(sealSubscriptionSnapshots)
-        .values(snapshotValues)
-        .onConflictDoUpdate({
-          target: sealSubscriptionSnapshots.id,
-          set: snapshotValues,
-        });
-      snapshotCount++;
-    } catch (err) {
-      errors.push(
-        `Subscription ${row.id}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    snapshotById.set(row.id, {
+      id: `${snapshot.snapshotDate}:${snapshot.subscriptionId}`,
+      snapshotDate: snapshot.snapshotDate,
+      subscriptionId: snapshot.subscriptionId,
+      status: snapshot.status,
+      tier: snapshot.tier,
+      pricingCohort: snapshot.pricingCohort,
+      billingInterval: snapshot.billingInterval,
+      billingCadence: snapshot.billingCadence,
+      cadenceNote: snapshot.cadenceNote,
+      priceCents: snapshot.priceCents,
+      inDunning: flag(snapshot.inDunning),
+      createdAt: snapshot.createdAt,
+    });
   }
+
+  const noteError = (row: Row, err: unknown) => {
+    errors.push(`Subscription ${row.id}: ${err instanceof Error ? err.message : String(err)}`);
+  };
+
+  const writtenSubscriptions: Row[] = [];
+  for (const group of [withoutDetail, withDetail]) {
+    writtenSubscriptions.push(
+      ...(await upsertBatched(db, sealSubscriptions, sealSubscriptions.id, group, { updatedAt: now }, noteError))
+    );
+  }
+  subscriptionCount = writtenSubscriptions.length;
+
+  // Only for subscriptions whose current state actually saved. A snapshot for a
+  // row that failed would leave the two tables disagreeing about the same day.
+  const snapshotRows = writtenSubscriptions.map((r) => snapshotById.get(String(r.id))!);
+  // Re-running a sync on the same day corrects that day's snapshot rather than
+  // duplicating it.
+  snapshotCount = (
+    await upsertBatched(
+      db,
+      sealSubscriptionSnapshots,
+      sealSubscriptionSnapshots.id,
+      snapshotRows,
+      {},
+      (row, err) =>
+        errors.push(
+          `Subscription ${row.subscriptionId}: snapshot: ${err instanceof Error ? err.message : String(err)}`
+        )
+    )
+  ).length;
 
   return {
     subscriptions: subscriptionCount,
