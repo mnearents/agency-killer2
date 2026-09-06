@@ -8,11 +8,12 @@
  * pull all ~88 pages every time.
  */
 
-import { getTableColumns, sql } from "drizzle-orm";
+import { getTableColumns, isNotNull, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import type { SealApiClient } from "@/integrations/seal-api";
 import type { Db } from "@/db/client";
-import { sealSubscriptions, sealSubscriptionSnapshots } from "@/db/schema";
+import { sealSubscriptions, sealSubscriptionSnapshots, sealTierChangeEvents } from "@/db/schema";
+import { buildTierChangeEvents } from "./tier-changes";
 
 /**
  * Customer IDs live only on the single-subscription endpoint, one request
@@ -41,6 +42,8 @@ export interface SealSyncResult {
   snapshots: number;
   /** Single-endpoint calls made this run to resolve new customer IDs. */
   customerLookups: number;
+  /** Tier-change rows rebuilt from the stored logs after the write. */
+  tierChangeEvents: number;
   summary: TransformSummary;
   errors: string[];
 }
@@ -155,7 +158,7 @@ export async function syncSubscriptions(
     raw = await client.getAllSubscriptions();
   } catch (err) {
     errors.push(`Seal crawl: ${err instanceof Error ? err.message : String(err)}`);
-    return { subscriptions: 0, snapshots: 0, customerLookups: 0, summary: EMPTY_SUMMARY, errors };
+    return { subscriptions: 0, snapshots: 0, customerLookups: 0, tierChangeEvents: 0, summary: EMPTY_SUMMARY, errors };
   }
 
   // A crawl that returns nothing is far more likely to be a broken token or a
@@ -164,7 +167,7 @@ export async function syncSubscriptions(
   // collapse — a fabricated churn event that looks exactly like a real one.
   if (raw.length === 0) {
     errors.push("Seal crawl returned no subscriptions — refusing to write. Treating as a failed sync.");
-    return { subscriptions: 0, snapshots: 0, customerLookups: 0, summary: EMPTY_SUMMARY, errors };
+    return { subscriptions: 0, snapshots: 0, customerLookups: 0, tierChangeEvents: 0, summary: EMPTY_SUMMARY, errors };
   }
 
   const transformed = raw.map((s) => transformSubscription(s, now));
@@ -334,11 +337,62 @@ export async function syncSubscriptions(
     )
   ).length;
 
+  const tierChangeEvents = await rebuildTierChangeEvents(db, now, errors);
+
   return {
     subscriptions: subscriptionCount,
     snapshots: snapshotCount,
     customerLookups,
+    tierChangeEvents,
     summary,
     errors,
   };
+}
+
+/**
+ * Refold every stored log into `seal_tier_change_events`.
+ *
+ * Runs after the write so it sees the logs this sync just captured, and reads
+ * the table rather than working from memory because most logs belong to
+ * subscriptions this run never fetched detail for.
+ *
+ * The whole set is rebuilt each night rather than only the changed rows. Event
+ * IDs are `subscriptionId:timestamp`, so a rebuild upserts over itself; a
+ * partial rebuild would leave the table agreeing with no particular day. The
+ * cost is one scan and ~80 upserted rows.
+ *
+ * A failure here is reported but does not fail the sync: this table feeds the
+ * analytics views, while the current-state and snapshot rows written above feed
+ * every number Tara sees.
+ */
+async function rebuildTierChangeEvents(db: Db, now: Date, errors: string[]): Promise<number> {
+  try {
+    const rows = await db
+      .select({
+        id: sealSubscriptions.id,
+        pricingCohort: sealSubscriptions.pricingCohort,
+        log: sealSubscriptions.log,
+      })
+      .from(sealSubscriptions)
+      .where(isNotNull(sealSubscriptions.log));
+
+    const events = buildTierChangeEvents(rows, now);
+    const written = await upsertBatched(
+      db,
+      sealTierChangeEvents,
+      sealTierChangeEvents.id,
+      events as unknown as Row[],
+      {},
+      (row, err) =>
+        errors.push(
+          `Tier change ${row.id}: ${err instanceof Error ? err.message : String(err)}`
+        )
+    );
+    return written.length;
+  } catch (err) {
+    errors.push(
+      `Rebuilding tier change events: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return 0;
+  }
 }

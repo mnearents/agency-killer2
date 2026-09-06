@@ -188,6 +188,51 @@ function readLog(log: unknown): SealLogEntry[] {
  * on every one and discriminates nothing. Mispricing is decided against the
  * price grid in the analytics layer instead.
  */
+/** A row of `seal_tier_change_events`, ready to upsert. */
+export interface TierChangeEventRow {
+  id: string;
+  subscriptionId: string;
+  changedAt: Date;
+  fromTier: Tier;
+  toTier: Tier;
+  direction: "upgrade" | "downgrade" | "none";
+  priceChangeLogged: number;
+  pricingCohort: string;
+  builtAt: Date;
+}
+
+/**
+ * Flatten stored logs into the event rows the analytics schema exposes.
+ *
+ * The fold lives here, in tested TypeScript, and is materialised rather than
+ * re-expressed as SQL in the view. A second implementation could disagree with
+ * the `subscription_changes` tool — two different upgrade counts for the same
+ * month, with nothing to say which is right.
+ *
+ * `id` is the subscription plus the instant it moved, so a rebuild upserts over
+ * the previous run instead of duplicating it, and a subscription that moved
+ * twice keeps both moves.
+ */
+export function buildTierChangeEvents(rows: TierChangeRow[], now: Date): TierChangeEventRow[] {
+  const events: TierChangeEventRow[] = [];
+  for (const row of rows) {
+    for (const t of parseTierHistory(row.id, readLog(row.log)).transitions) {
+      events.push({
+        id: `${row.id}:${t.at}`,
+        subscriptionId: row.id,
+        changedAt: new Date(t.at),
+        fromTier: t.from,
+        toTier: t.to,
+        direction: direction(t.from, t.to),
+        priceChangeLogged: t.priceChangeLogged ? 1 : 0,
+        pricingCohort: row.pricingCohort,
+        builtAt: now,
+      });
+    }
+  }
+  return events;
+}
+
 export function toTierChangeFacts(rows: TierChangeRow[]) {
   const facts = [];
   for (const row of rows) {

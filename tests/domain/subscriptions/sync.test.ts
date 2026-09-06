@@ -20,13 +20,19 @@ type Row = Record<string, unknown>;
  */
 function createDbStub(
   existing: { id: string; customerId: string | null }[] = [],
-  failOn: (row: Row) => boolean = () => false
+  failOn: (row: Row) => boolean = () => false,
+  storedLogs: { id: string; pricingCohort: string; log: unknown }[] = []
 ) {
   const statements: { table: string; rows: Row[] }[] = [];
   const inserted: { table: string; values: Row }[] = [];
   const db = {
-    select() {
-      return { from: () => Promise.resolve(existing) };
+    // Two different reads run against the same table: the customer-id lookup
+    // and the tier-change rebuild. They are told apart by the columns asked
+    // for, so a test can hand each one its own rows.
+    select(fields: Record<string, unknown> = {}) {
+      const rows = "log" in fields ? storedLogs : existing;
+      const result = Promise.resolve(rows);
+      return { from: () => Object.assign(Promise.resolve(rows), { where: () => result }) };
     },
     insert(table: Parameters<typeof getTableName>[0]) {
       const name = getTableName(table);
@@ -453,5 +459,73 @@ describe("syncSubscriptions", () => {
     expect(row.manualOrigin).toBe(1);
     expect(row.inDunning).toBe(0);
     expect(row.shopifyOrderId).toBeNull();
+  });
+
+  // The tier-change table is a materialised view of the logs: it exists so the
+  // analytics schema can expose upgrades without a second, SQL-shaped
+  // reimplementation of the fold that could disagree with the MCP tool.
+  describe("tier change events", () => {
+    const ADD_STUDIO = 'Merchant added item "Really Awesome Doodles - Studio" to the subscription through the API.';
+    const RM_SPARK = 'Merchant removed item "Really Awesome Doodles Spark" from the subscription through the API.';
+    const UPGRADE_LOG = [
+      { created: "2026-06-13 22:50:20", content: ADD_STUDIO },
+      { created: "2026-06-13 22:50:20", content: RM_SPARK },
+    ];
+
+    it("writes one event row per logged tier change", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription()]),
+      });
+      const { db, inserted } = createDbStub([], () => false, [
+        { id: "s1", pricingCohort: "grandfathered", log: UPGRADE_LOG },
+      ]);
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      const events = inserted.filter((i) => i.table === "seal_tier_change_events");
+      expect(events).toHaveLength(1);
+      expect(events[0].values).toMatchObject({
+        subscriptionId: "s1",
+        fromTier: "spark",
+        toTier: "studio",
+        direction: "upgrade",
+        builtAt: NOW,
+      });
+      expect(result.tierChangeEvents).toBe(1);
+    });
+
+    it("writes no events when no stored log holds a tier change", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription()]),
+      });
+      const { db, inserted } = createDbStub([], () => false, []);
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      expect(inserted.filter((i) => i.table === "seal_tier_change_events")).toEqual([]);
+      expect(result.tierChangeEvents).toBe(0);
+    });
+
+    // The rebuild is downstream of the numbers Tara sees. A failure here must
+    // be reported, but it must not throw away a sync that already wrote 4,395
+    // current-state rows and the night's snapshot.
+    it("reports a rebuild failure without losing the subscription write", async () => {
+      const client = createMockSealApiClient({
+        getAllSubscriptions: vi.fn().mockResolvedValue([makeSealSubscription()]),
+      });
+      const { db, inserted } = createDbStub(
+        [],
+        (row) => "fromTier" in row,
+        [{ id: "s1", pricingCohort: "grandfathered", log: UPGRADE_LOG }]
+      );
+
+      const result = await syncSubscriptions({ client, db }, NOW);
+
+      expect(result.subscriptions).toBe(1);
+      expect(result.snapshots).toBe(1);
+      expect(result.tierChangeEvents).toBe(0);
+      expect(result.errors.join(" ")).toMatch(/constraint violation/);
+      expect(inserted.filter((i) => i.table === "seal_subscriptions")).toHaveLength(1);
+    });
   });
 });

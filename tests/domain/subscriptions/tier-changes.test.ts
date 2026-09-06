@@ -3,7 +3,9 @@ import {
   parseTierHistory,
   classifyLogEntry,
   toTierChangeFacts,
+  buildTierChangeEvents,
   type SealLogEntry,
+  type TierChangeRow,
 } from "@/domain/subscriptions/tier-changes";
 
 const e = (created: string, content: string): SealLogEntry => ({ created, content });
@@ -292,5 +294,121 @@ describe("toTierChangeFacts", () => {
 
   it("returns no facts for a row whose log holds no tier change", () => {
     expect(toTierChangeFacts([row({ log: [{ created: "2026-06-13 22:50:20", content: "Customer cancelled the subscription." }] })])).toEqual([]);
+  });
+});
+
+describe("buildTierChangeEvents", () => {
+  const NOW = new Date("2026-09-06T00:00:00.000Z");
+
+  const upgraded = (over: Partial<TierChangeRow> = {}): TierChangeRow => ({
+    id: "s1",
+    pricingCohort: "grandfathered",
+    log: [
+      e("2026-06-13 22:50:20", ADD_STUDIO),
+      e("2026-06-13 22:50:20", RM_SPARK),
+    ],
+    ...over,
+  });
+
+  it("writes one row per transition", () => {
+    const events = buildTierChangeEvents([upgraded()], NOW);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({
+      id: "s1:2026-06-13T22:50:20.000Z",
+      subscriptionId: "s1",
+      changedAt: new Date("2026-06-13T22:50:20.000Z"),
+      fromTier: "spark",
+      toTier: "studio",
+      direction: "upgrade",
+      priceChangeLogged: 0,
+      pricingCohort: "grandfathered",
+      builtAt: NOW,
+    });
+  });
+
+  // The id is what makes a rebuild an upsert rather than a duplicate. If it
+  // ever stopped depending on the timestamp, a subscription that moved twice
+  // would collapse to one event and a downgrade would vanish.
+  it("gives two changes on one subscription distinct ids", () => {
+    const events = buildTierChangeEvents(
+      [
+        upgraded({
+          log: [
+            e("2026-06-13 22:50:20", ADD_STUDIO),
+            e("2026-06-13 22:50:20", RM_SPARK),
+            e("2026-07-02 09:00:00", ADD_SPARK),
+            e("2026-07-02 09:00:01", RM_STUDIO),
+          ],
+        }),
+      ],
+      NOW
+    );
+    expect(events.map((ev) => ev.id)).toEqual([
+      "s1:2026-06-13T22:50:20.000Z",
+      "s1:2026-07-02T09:00:01.000Z",
+    ]);
+    expect(events.map((ev) => ev.direction)).toEqual(["upgrade", "downgrade"]);
+  });
+
+  // Same input, same output — otherwise a nightly rebuild rewrites rows that
+  // did not change and builtAt stops meaning anything.
+  it("is deterministic for the same rows and clock", () => {
+    expect(buildTierChangeEvents([upgraded()], NOW)).toEqual(
+      buildTierChangeEvents([upgraded()], NOW)
+    );
+  });
+
+  it("records a downgrade's direction", () => {
+    const events = buildTierChangeEvents(
+      [upgraded({ log: [e("2026-07-02 09:00:00", ADD_SPARK), e("2026-07-02 09:00:01", RM_STUDIO)] })],
+      NOW
+    );
+    expect(events[0].direction).toBe("downgrade");
+    expect(events[0].fromTier).toBe("studio");
+    expect(events[0].toTier).toBe("spark");
+  });
+
+  // A move to or from the pre-rename product is a real event but not evidence
+  // of a direction. Scoring it as an upgrade would inflate the headline number.
+  it("marks a move involving an unrecognised tier as no direction", () => {
+    const events = buildTierChangeEvents(
+      [
+        upgraded({
+          log: [
+            e("2026-06-13 22:50:20", 'Merchant added item "Really Awesome Doodles" to the subscription through the API.'),
+            e("2026-06-13 22:50:21", RM_SPARK),
+          ],
+        }),
+      ],
+      NOW
+    );
+    expect(events[0].direction).toBe("none");
+    expect(events[0].toTier).toBe("unknown");
+  });
+
+  it("carries the flag when Seal did log a price edit beside the change", () => {
+    const events = buildTierChangeEvents(
+      [
+        upgraded({
+          log: [
+            e("2026-06-13 22:50:20", ADD_STUDIO),
+            e("2026-06-13 22:50:20", RM_SPARK),
+            e("2026-06-13 22:50:25", 'Merchant changed the price of item "Really Awesome Doodles - Studio" from 5.00 to 12.00.'),
+          ],
+        }),
+      ],
+      NOW
+    );
+    expect(events[0].priceChangeLogged).toBe(1);
+  });
+
+  it("yields nothing for a row whose log was never fetched", () => {
+    expect(buildTierChangeEvents([upgraded({ log: null })], NOW)).toEqual([]);
+  });
+
+  it("yields nothing for a log holding no tier change", () => {
+    expect(
+      buildTierChangeEvents([upgraded({ log: [e("2026-06-13 22:50:20", "Customer cancelled the subscription.")] })], NOW)
+    ).toEqual([]);
   });
 });

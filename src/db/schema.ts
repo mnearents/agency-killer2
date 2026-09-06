@@ -748,3 +748,66 @@ export const pilotNotes = pgTable(
 
 export type PilotNoteEntry = typeof pilotNotes.$inferSelect;
 export type NewPilotNoteEntry = typeof pilotNotes.$inferInsert;
+
+/**
+ * Tier changes read out of Seal's log, materialised.
+ *
+ * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts
+ * and is covered by its own tests. Re-deriving it in SQL for the analytics views
+ * would create a second implementation that can silently disagree with the
+ * subscription_changes tool — two different upgrade counts for the same month,
+ * with nothing to say which is right. So the parser stays the single source and
+ * writes its result here.
+ *
+ * Rebuilt wholesale from the stored logs on every sync rather than appended to:
+ * a re-parse of a corrected log has to be able to remove events, not just add.
+ */
+export const sealTierChangeEvents = pgTable(
+  "seal_tier_change_events",
+  {
+    /** subscriptionId + timestamp — deterministic, so a rebuild is idempotent. */
+    id: text("id").primaryKey(),
+    subscriptionId: text("subscription_id").notNull(),
+    changedAt: timestamp("changed_at", { withTimezone: true }).notNull(),
+    fromTier: text("from_tier").notNull(),
+    toTier: text("to_tier").notNull(),
+    /** upgrade, downgrade, or none when either side is an unrecognised tier. */
+    direction: text("direction").notNull(),
+    /**
+     * Whether Seal logged a price edit beside this change. False on every event
+     * on record — Seal writes no price entry when the price follows the variant
+     * — so it is stored to make that verifiable rather than as a live signal.
+     */
+    priceChangeLogged: integer("price_change_logged").notNull().default(0),
+    /** The subscription's cohort today. The log does not record cohort. */
+    pricingCohort: text("pricing_cohort").notNull(),
+    builtAt: timestamp("built_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("seal_tier_change_events_sub_idx").on(table.subscriptionId),
+    index("seal_tier_change_events_at_idx").on(table.changedAt),
+  ]
+);
+
+/**
+ * Every statement the `query` MCP tool ran. Written by the tool itself, not by
+ * the read-only role, which has no INSERT anywhere.
+ */
+export const queryLog = pgTable(
+  "query_log",
+  {
+    id: text("id").primaryKey(),
+    ranAt: timestamp("ran_at", { withTimezone: true }).notNull(),
+    sqlText: text("sql_text").notNull(),
+    /** Rows handed back, which is capped and so may be fewer than matched. */
+    rowCount: integer("row_count").notNull(),
+    truncated: integer("truncated").notNull().default(0),
+    durationMs: integer("duration_ms").notNull(),
+    /** Null when the statement succeeded. */
+    errorMessage: text("error_message"),
+  },
+  (table) => [index("query_log_ran_at_idx").on(table.ranAt)]
+);
+
+export type SealTierChangeEvent = typeof sealTierChangeEvents.$inferSelect;
+export type QueryLogRow = typeof queryLog.$inferSelect;
