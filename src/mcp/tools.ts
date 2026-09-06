@@ -31,7 +31,11 @@ import { getDataFreshness } from "@/db/freshness";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
-import { getSubscriptionFacts, getSnapshotFacts } from "@/domain/subscriptions/queries";
+import {
+  getSubscriptionFacts,
+  getSnapshotFacts,
+  getTierChangeFacts,
+} from "@/domain/subscriptions/queries";
 import {
   summariseActive,
   computeLtv,
@@ -323,7 +327,7 @@ const subscriptionChanges: McpTool = {
   name: "subscription_changes",
   title: "Subscription movement",
   description:
-    "Movement over a date range: new, cancelled, upgraded, downgraded and net change, with the source column named for every number. New subscriptions come from order_placed and EXCLUDE bulk-migrated records, whose order_placed is an import timestamp rather than a signup (counting those would report the migration as a record sales day). Cancellations come from cancelled_on. Tier transitions come from daily snapshots, which only began 2026-09-02 — for any earlier window this returns available=false with a reason rather than a fabricated zero. Watch `grandfatheredSparkToStudio`: that upgrade path is the most important movement number in the business. Pass granularity for a time series.",
+    "Movement over a date range: new, cancelled, upgraded, downgraded and net change, with the source column named for every number. New subscriptions come from order_placed and EXCLUDE bulk-migrated records, whose order_placed is an import timestamp rather than a signup (counting those would report the migration as a record sales day). Cancellations come from cancelled_on. Tier transitions are read from Seal's per-subscription log, which begins 2026-05-22 and covers the June launch; the daily snapshots (which only began 2026-09-02) are used as corroboration in `snapshotCheck` and nothing else. A window ending before 2026-05-22 returns available=false with a reason rather than a fabricated zero; a window merely REACHING BACK past it is answered with coversRequestedRange=false and a caveat, meaning the counts are a floor. A subscription is counted once by where it ended up, not once per event — `transitions` is the raw event count and `churnedSubscriptions` how many were moved more than once. Watch `grandfatheredSparkToStudio`: that upgrade path is the most important movement number in the business. `mispricedAfterChange` lists ACTIVE subscriptions that moved tier in the window and are STILL not on the grid price for the tier they now sit on — the 14076883 billing bug. These are undercharges as often as overcharges, so the `priceAnomaly` flag (which only fires above 2x expected) does not catch them. Pass granularity for a time series.",
   readOnly: true,
   schema: {
     ...RANGE_SCHEMA,
@@ -334,14 +338,16 @@ const subscriptionChanges: McpTool = {
     const startDay = range.startDate.toISOString().slice(0, 10);
     const endDay = range.endDate.toISOString().slice(0, 10);
 
-    const [facts, snapshots] = await Promise.all([
+    const [facts, snapshots, tierChanges] = await Promise.all([
       getSubscriptionFacts(ctx.db),
       getSnapshotFacts(ctx.db, startDay, endDay),
+      getTierChangeFacts(ctx.db),
     ]);
 
     const r = computeChanges({
       facts,
       snapshots,
+      tierChanges,
       start: range.startDate,
       end: range.endDate,
       granularity: args.granularity as Granularity | undefined,

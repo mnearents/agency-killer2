@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseTierHistory,
   classifyLogEntry,
+  toTierChangeFacts,
   type SealLogEntry,
 } from "@/domain/subscriptions/tier-changes";
 
@@ -229,5 +230,67 @@ describe("parseTierHistory", () => {
       e("2026-06-08 18:13:26", 'Merchant removed "Really Awesome Doodles" from the subscription.'),
     ]);
     expect(h.netDirection).toBe("none");
+  });
+});
+
+describe("toTierChangeFacts", () => {
+  const row = (o: Partial<{ id: string; pricingCohort: string; log: unknown }> = {}) => ({
+    id: "s1",
+    pricingCohort: "grandfathered",
+    log: [
+      { created: "2026-06-13 22:50:20", content: ADD_STUDIO },
+      { created: "2026-06-13 22:50:22", content: RM_SPARK },
+    ] as unknown,
+    ...o,
+  });
+
+  it("flattens one row's transitions into facts", () => {
+    expect(toTierChangeFacts([row()])).toEqual([
+      {
+        subscriptionId: "s1",
+        at: "2026-06-13T22:50:20.000Z",
+        from: "spark",
+        to: "studio",
+        pricingCohort: "grandfathered",
+      },
+    ]);
+  });
+
+  it("carries each row's own cohort onto its facts", () => {
+    const facts = toTierChangeFacts([row(), row({ id: "s2", pricingCohort: "current" })]);
+    expect(facts.map((f) => f.pricingCohort)).toEqual(["grandfathered", "current"]);
+  });
+
+  // Only the rows the detail crawl reached have a log. A row it never fetched
+  // must contribute nothing rather than throw — the crawl is resumable, so a
+  // partially-backfilled table is a normal state, not a broken one.
+  it("skips a row whose log was never fetched", () => {
+    expect(toTierChangeFacts([row({ log: null })])).toEqual([]);
+  });
+
+  // jsonb is untyped at the boundary. A shape we cannot read must not be
+  // silently folded into a transition we then report as fact.
+  it("skips log shapes it cannot read", () => {
+    expect(toTierChangeFacts([row({ log: "not an array" })])).toEqual([]);
+    expect(toTierChangeFacts([row({ log: [{ created: 1, content: 2 }] })])).toEqual([]);
+    expect(toTierChangeFacts([row({ log: [null] })])).toEqual([]);
+  });
+
+  it("keeps the readable entries when one entry in a log is malformed", () => {
+    const facts = toTierChangeFacts([
+      row({
+        log: [
+          { created: "2026-06-13 22:50:20", content: ADD_STUDIO },
+          null,
+          { created: "2026-06-13 22:50:22", content: RM_SPARK },
+        ],
+      }),
+    ]);
+    expect(facts).toHaveLength(1);
+    expect(facts[0].to).toBe("studio");
+  });
+
+  it("returns no facts for a row whose log holds no tier change", () => {
+    expect(toTierChangeFacts([row({ log: [{ created: "2026-06-13 22:50:20", content: "Customer cancelled the subscription." }] })])).toEqual([]);
   });
 });

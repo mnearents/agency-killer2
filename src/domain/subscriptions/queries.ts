@@ -6,10 +6,11 @@
  * runs without a database and is covered by fast tests.
  */
 
-import { and, gte, lte } from "drizzle-orm";
+import { and, gte, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { sealSubscriptions, sealSubscriptionSnapshots } from "@/db/schema";
-import type { SubscriptionFact, SnapshotFact } from "./analytics";
+import type { SubscriptionFact, SnapshotFact, TierChangeFact } from "./analytics";
+import { toTierChangeFacts } from "./tier-changes";
 
 export async function getSubscriptionFacts(db: Db): Promise<SubscriptionFact[]> {
   const rows = await db
@@ -66,4 +67,24 @@ export async function getSnapshotFacts(
         lte(sealSubscriptionSnapshots.snapshotDate, endDate)
       )
     );
+}
+
+/**
+ * Every tier change Seal's log records, across all subscriptions.
+ *
+ * Not date-filtered in SQL: a subscription's log has to be folded whole to know
+ * what tier it was on when a window opened, so the window is applied after
+ * parsing. 4,395 rows, so the whole-table read is cheap.
+ */
+export async function getTierChangeFacts(db: Db): Promise<TierChangeFact[]> {
+  const rows = await db
+    .select({
+      id: sealSubscriptions.id,
+      pricingCohort: sealSubscriptions.pricingCohort,
+      log: sealSubscriptions.log,
+    })
+    .from(sealSubscriptions)
+    .where(isNotNull(sealSubscriptions.log));
+
+  return toTierChangeFacts(rows);
 }

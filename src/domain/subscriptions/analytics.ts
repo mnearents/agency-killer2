@@ -23,6 +23,8 @@
  * subscribers whose real start date is known.
  */
 
+import { expectedPriceCents } from "./sync-transform";
+
 export interface SubscriptionFact {
   id: string;
   status: string;
@@ -330,6 +332,8 @@ export type Granularity = "day" | "week" | "month";
 export interface ChangesInput {
   facts: SubscriptionFact[];
   snapshots: SnapshotFact[];
+  /** Tier moves read from Seal's log — the primary source for transitions. */
+  tierChanges: TierChangeFact[];
   start: Date;
   end: Date;
   granularity?: Granularity;
@@ -340,6 +344,32 @@ export interface TransitionPath {
   to: string;
   subscribers: number;
 }
+
+/** One tier move, as read out of Seal's log by parseTierHistory. */
+export interface TierChangeFact {
+  subscriptionId: string;
+  /** ISO timestamp. Seal stamps its log in UTC. */
+  at: string;
+  from: string;
+  to: string;
+  /** The subscription's cohort today — the log does not record cohort. */
+  pricingCohort: string;
+}
+
+/** A subscription billing something other than its plan's grid price. */
+export interface MispricedSubscription {
+  subscriptionId: string;
+  tier: string;
+  pricingCohort: string;
+  billingInterval: string;
+  priceDollars: number;
+  expectedDollars: number;
+}
+
+/** Snapshot agreement, for corroboration only. */
+export type SnapshotCheck =
+  | { compared: false }
+  | { compared: true; from: string; to: string; upgraded: number; downgraded: number };
 
 export type TierTransitions =
   | {
@@ -352,16 +382,26 @@ export type TierTransitions =
       source: string;
       comparedFrom: string;
       comparedTo: string;
-      /** False when the snapshots compared do not reach the ends of the requested range. */
+      /** False when the window reaches back before Seal's log begins. */
       coversRequestedRange: boolean;
       /** Set whenever coversRequestedRange is false, naming the gap. */
       caveat: string | null;
       comparedSubscriptions: number;
+      /** Raw number of tier moves, which can exceed the subscriptions that moved. */
+      transitions: number;
+      /** Subscriptions that moved more than once in the window. */
+      churnedSubscriptions: number;
       upgraded: number;
       downgraded: number;
       /** The movement Matt tracks weekly: grandfathered Spark → grandfathered Studio. */
       grandfatheredSparkToStudio: number;
+      /**
+       * Subscriptions that moved tier in the window and are still not on the
+       * grid price for the tier they now sit on. Live billing bugs.
+       */
+      mispricedAfterChange: MispricedSubscription[];
       byPath: TransitionPath[];
+      snapshotCheck: SnapshotCheck;
     };
 
 export interface SeriesPoint {
@@ -439,29 +479,66 @@ function buildSeries(
   return [...points.values()].sort((a, b) => a.periodStart.localeCompare(b.periodStart));
 }
 
-function computeTransitions(
-  snapshots: SnapshotFact[],
-  start: Date,
-  end: Date
-): TierTransitions {
-  const startDay = start.toISOString().slice(0, 10);
-  const endDay = end.toISOString().slice(0, 10);
+/**
+ * Seal's per-subscription log does not reach back before this. Every entry
+ * across 4,395 subscriptions falls on or after it, and no subscription's
+ * order_placed predates 2026-05, so this is where the shop's history starts
+ * rather than a retention cliff — confirmed by 542 cancellations whose
+ * cancelled_on field all have a matching log entry, in every month.
+ */
+export const LOG_COVERAGE_START = "2026-05-22";
+
+/** Net movement of one subscription across the window, and how noisy it was. */
+function netPerSubscription(changes: TierChangeFact[]) {
+  const bySub = new Map<string, TierChangeFact[]>();
+  for (const c of changes) {
+    const list = bySub.get(c.subscriptionId);
+    if (list) list.push(c);
+    else bySub.set(c.subscriptionId, [c]);
+  }
+
+  let upgraded = 0;
+  let downgraded = 0;
+  let churned = 0;
+  const paths = new Map<string, TransitionPath>();
+
+  for (const list of bySub.values()) {
+    const ordered = [...list].sort((a, b) => a.at.localeCompare(b.at));
+    if (ordered.length > 1) churned++;
+
+    const from = ordered[0].from;
+    const to = ordered[ordered.length - 1].to;
+    const fromRank = TIER_RANK[from];
+    const toRank = TIER_RANK[to];
+    // A tier we could not name is not evidence of movement in either
+    // direction; counting it would invent an upgrade we never saw.
+    if (fromRank === undefined || toRank === undefined || fromRank === toRank) continue;
+
+    if (toRank > fromRank) upgraded++;
+    else downgraded++;
+
+    // Cohort is the subscription's cohort today. A cohort change would be
+    // invisible here, which is why the source string says so.
+    const cohort = ordered[ordered.length - 1].pricingCohort;
+    const key = `${from}/${cohort} -> ${to}/${cohort}`;
+    const existing = paths.get(key);
+    if (existing) existing.subscribers++;
+    else paths.set(key, { from: `${from}/${cohort}`, to: `${to}/${cohort}`, subscribers: 1 });
+  }
+
+  return { upgraded, downgraded, churned, paths, subscriptions: bySub.size };
+}
+
+/**
+ * Compare the first and last snapshot day in the window. This is corroboration
+ * only: a snapshot is a daily photograph, so a change made after the day's
+ * snapshot was written is invisible to it. Disagreement with the log is
+ * expected and is not an error.
+ */
+function snapshotCheck(snapshots: SnapshotFact[], startDay: string, endDay: string): SnapshotCheck {
   const inWindow = snapshots.filter((s) => s.snapshotDate >= startDay && s.snapshotDate <= endDay);
   const dates = [...new Set(inWindow.map((s) => s.snapshotDate))].sort();
-
-  // Fewer than two snapshot days means there is nothing to compare. Returning
-  // "0 upgrades" here would be indistinguishable from "we looked and nobody
-  // upgraded", which is the failure this whole rewrite exists to avoid.
-  if (dates.length < 2) {
-    return {
-      available: false,
-      reason:
-        `Tier transitions need at least two snapshot days inside the range; found ${dates.length}. ` +
-        `Daily snapshots began 2026-09-02, so any window before then cannot be measured. ` +
-        `Upgrades that happened earlier are not recoverable from this data.`,
-      snapshotDatesInRange: dates,
-    };
-  }
+  if (dates.length < 2) return { compared: false };
 
   const first = dates[0];
   const last = dates[dates.length - 1];
@@ -470,72 +547,110 @@ function computeTransitions(
 
   let upgraded = 0;
   let downgraded = 0;
-  let grandfatheredSparkToStudio = 0;
-  let comparedSubscriptions = 0;
-  const paths = new Map<string, TransitionPath>();
-
   for (const [id, from] of before) {
     const to = after.get(id);
-    // Present at both ends only; a subscription that appeared or vanished is a
-    // new/cancelled event, not a tier move.
-    if (!to) continue;
-    comparedSubscriptions++;
-    if (from.tier === to.tier) continue;
-
+    if (!to || to.tier === from.tier) continue;
     const fromRank = TIER_RANK[from.tier];
     const toRank = TIER_RANK[to.tier];
     if (fromRank === undefined || toRank === undefined) continue;
+    if (toRank > fromRank) upgraded++;
+    else downgraded++;
+  }
+  return { compared: true, from: first, to: last, upgraded, downgraded };
+}
 
-    if (toRank > fromRank) {
-      upgraded++;
-      if (
-        from.tier === "spark" &&
-        to.tier === "studio" &&
-        from.pricingCohort === "grandfathered" &&
-        to.pricingCohort === "grandfathered"
-      ) {
-        grandfatheredSparkToStudio++;
-      }
-    } else {
-      downgraded++;
-    }
+/**
+ * Of the subscriptions that moved, which are still billing the wrong amount.
+ *
+ * Seal writes no price entry to the log when the price follows the variant, so
+ * `priceChangeLogged` is false on every tier change ever recorded and cannot
+ * discriminate. The subscription's price today against the grid for the tier it
+ * now sits on can.
+ */
+function mispricedAmong(moved: Set<string>, facts: SubscriptionFact[]): MispricedSubscription[] {
+  const out: MispricedSubscription[] = [];
+  for (const f of facts) {
+    if (!moved.has(f.id)) continue;
+    // A cancelled subscriber is not being billed, so a stale price on one is
+    // not a live bug and would only bury the ones that are.
+    if (f.status !== "ACTIVE") continue;
+    if (f.priceCents === null) continue;
+    const expected = expectedPriceCents(f.tier, f.pricingCohort, f.billingInterval);
+    // No grid entry means no expected price to compare against. Reporting that
+    // as mispriced would be a finding we have no evidence for.
+    if (expected === null || f.priceCents === expected) continue;
+    out.push({
+      subscriptionId: f.id,
+      tier: f.tier,
+      pricingCohort: f.pricingCohort,
+      billingInterval: f.billingInterval,
+      priceDollars: f.priceCents / 100,
+      expectedDollars: expected / 100,
+    });
+  }
+  return out;
+}
 
-    const key = `${from.tier}/${from.pricingCohort} -> ${to.tier}/${to.pricingCohort}`;
-    const existing = paths.get(key);
-    if (existing) existing.subscribers++;
-    else
-      paths.set(key, {
-        from: `${from.tier}/${from.pricingCohort}`,
-        to: `${to.tier}/${to.pricingCohort}`,
-        subscribers: 1,
-      });
+export function computeTransitions(
+  changes: TierChangeFact[],
+  snapshots: SnapshotFact[],
+  facts: SubscriptionFact[],
+  start: Date,
+  end: Date
+): TierTransitions {
+  const startDay = start.toISOString().slice(0, 10);
+  const endDay = end.toISOString().slice(0, 10);
+
+  // A window that closes before Seal started logging is unanswerable. Zero
+  // here would be indistinguishable from "we looked and nobody upgraded",
+  // which is the failure this whole path exists to avoid.
+  if (endDay < LOG_COVERAGE_START) {
+    return {
+      available: false,
+      reason:
+        `Tier changes are read from Seal's subscription log, which begins ${LOG_COVERAGE_START}. ` +
+        `The requested window ends ${endDay}, entirely before that, so no movement can be seen. ` +
+        `This is not a count of zero.`,
+      snapshotDatesInRange: [...new Set(snapshots.filter((s) => s.snapshotDate >= startDay && s.snapshotDate <= endDay).map((s) => s.snapshotDate))].sort(),
+    };
   }
 
-  // Snapshots may only cover a sliver of the window asked for. Saying so is
-  // the difference between "nobody upgraded in Q3" and "we can see one day".
-  const coversRequestedRange = first <= startDay && last >= endDay;
-  const caveat = coversRequestedRange
-    ? null
-    : `Requested ${startDay} to ${endDay}, but snapshots only allow a comparison from ${first} to ${last}. ` +
-      `Movement outside that window is not counted here.`;
+  const inWindow = changes.filter((c) => {
+    const day = c.at.slice(0, 10);
+    return day >= startDay && day <= endDay;
+  });
+
+  const net = netPerSubscription(inWindow);
+  const coversRequestedRange = startDay >= LOG_COVERAGE_START;
 
   return {
     available: true,
-    source: "seal_subscription_snapshots, comparing the first and last snapshot day in range",
-    comparedFrom: first,
-    comparedTo: last,
+    source:
+      "seal_subscriptions.log, folded into tier changes per subscription. " +
+      "Pricing cohort is the subscription's cohort today, not at the time of the change.",
+    comparedFrom: coversRequestedRange ? startDay : LOG_COVERAGE_START,
+    comparedTo: endDay,
     coversRequestedRange,
-    caveat,
-    comparedSubscriptions,
-    upgraded,
-    downgraded,
-    grandfatheredSparkToStudio,
-    byPath: [...paths.values()].sort((a, b) => b.subscribers - a.subscribers),
+    caveat: coversRequestedRange
+      ? null
+      : `Requested from ${startDay}, but Seal's log begins ${LOG_COVERAGE_START}. ` +
+        `Any tier change before that is not visible, so these counts are a floor.`,
+    comparedSubscriptions: net.subscriptions,
+    transitions: inWindow.length,
+    churnedSubscriptions: net.churned,
+    upgraded: net.upgraded,
+    downgraded: net.downgraded,
+    grandfatheredSparkToStudio: [...net.paths.values()]
+      .filter((p) => p.from === "spark/grandfathered" && p.to === "studio/grandfathered")
+      .reduce((n, p) => n + p.subscribers, 0),
+    mispricedAfterChange: mispricedAmong(new Set(inWindow.map((c) => c.subscriptionId)), facts),
+    byPath: [...net.paths.values()].sort((a, b) => b.subscribers - a.subscribers),
+    snapshotCheck: snapshotCheck(snapshots, startDay, endDay),
   };
 }
 
 export function computeChanges(input: ChangesInput): ChangesResult {
-  const { facts, snapshots, start, end, granularity } = input;
+  const { facts, snapshots, tierChanges, start, end, granularity } = input;
 
   const newInRange = facts.filter((f) => inRange(f.orderPlaced, start, end));
   // The migration wrote its own import timestamp into order_placed for ~4,000
@@ -561,7 +676,7 @@ export function computeChanges(input: ChangesInput): ChangesResult {
       source: "seal_subscriptions.cancelled_on",
     },
     netChange: news.length - cancels.length,
-    tierTransitions: computeTransitions(snapshots, start, end),
+    tierTransitions: computeTransitions(tierChanges, snapshots, facts, start, end),
     series: granularity ? buildSeries(news, cancels, start, end, granularity) : null,
   };
 }

@@ -126,6 +126,20 @@ export function deriveDunning(
  * against. Proration and partial discounts land comfortably inside 2x; the
  * genuinely corrupt records ($7,963, $19,382) do not.
  */
+/**
+ * The grid price for a plan, or null when the plan has no grid entry. Kept
+ * separate from isPriceAnomaly because that only fires above 2x expected: an
+ * UNDERCHARGE — a Studio subscriber still billed Spark's $5 — is invisible to
+ * it, and an undercharge is the shape the tier-change billing bug takes.
+ */
+export function expectedPriceCents(
+  tier: string,
+  cohort: string,
+  billingInterval: string
+): number | null {
+  return EXPECTED_PRICE_CENTS[`${tier}|${cohort}|${billingInterval}`] ?? null;
+}
+
 export function isPriceAnomaly(
   tier: SubscriptionTier,
   cohort: PricingCohort,

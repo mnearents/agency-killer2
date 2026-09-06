@@ -152,3 +152,54 @@ function direction(from: Tier, to: Tier): "upgrade" | "downgrade" | "none" {
   if (from === "unknown" || to === "unknown" || from === to) return "none";
   return from === "spark" && to === "studio" ? "upgrade" : "downgrade";
 }
+
+/** A subscription row as stored, with `log` still in its untyped jsonb form. */
+export interface TierChangeRow {
+  id: string;
+  pricingCohort: string;
+  log: unknown;
+}
+
+/**
+ * jsonb is untyped at the database boundary, and the detail crawl is resumable,
+ * so a row with no log at all is a normal state rather than an error. An entry
+ * we cannot read is dropped rather than guessed at: a fabricated transition
+ * would be reported as fact, whereas a dropped one only makes the count a floor.
+ */
+function readLog(log: unknown): SealLogEntry[] {
+  if (!Array.isArray(log)) return [];
+  return log.filter(
+    (e): e is SealLogEntry =>
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as SealLogEntry).created === "string" &&
+      typeof (e as SealLogEntry).content === "string"
+  );
+}
+
+/**
+ * Flatten stored subscription rows into the per-change facts the analytics layer
+ * folds. Cohort is the subscription's cohort today — the log records the item
+ * that moved, never the cohort at the time it moved.
+ *
+ * priceChangeLogged is deliberately NOT carried across. Seal writes no price
+ * entry when the price follows the variant: across all 4,395 logs, 0 of the 81
+ * tier changes have a price entry within a minute of them, so the flag is false
+ * on every one and discriminates nothing. Mispricing is decided against the
+ * price grid in the analytics layer instead.
+ */
+export function toTierChangeFacts(rows: TierChangeRow[]) {
+  const facts = [];
+  for (const row of rows) {
+    for (const t of parseTierHistory(row.id, readLog(row.log)).transitions) {
+      facts.push({
+        subscriptionId: row.id,
+        at: t.at,
+        from: t.from,
+        to: t.to,
+        pricingCohort: row.pricingCohort,
+      });
+    }
+  }
+  return facts;
+}

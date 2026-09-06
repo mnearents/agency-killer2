@@ -270,6 +270,7 @@ describe("computeChanges", () => {
         fact({ id: "1", orderPlaced: new Date("2026-08-10T00:00:00Z") }),
         fact({ id: "2", orderPlaced: new Date("2026-07-10T00:00:00Z") }),
       ],
+      tierChanges: [],
       snapshots: [],
       start,
       end,
@@ -285,6 +286,7 @@ describe("computeChanges", () => {
         fact({ id: "1", orderPlaced: new Date("2026-08-10T00:00:00Z"), manualOrigin: false }),
         fact({ id: "2", orderPlaced: new Date("2026-08-10T00:00:00Z"), manualOrigin: true }),
       ],
+      tierChanges: [],
       snapshots: [],
       start,
       end,
@@ -299,6 +301,7 @@ describe("computeChanges", () => {
         fact({ id: "1", status: "CANCELLED", cancelledOn: new Date("2026-08-15T00:00:00Z") }),
         fact({ id: "2", status: "CANCELLED", cancelledOn: new Date("2026-09-15T00:00:00Z") }),
       ],
+      tierChanges: [],
       snapshots: [],
       start,
       end,
@@ -313,6 +316,7 @@ describe("computeChanges", () => {
         fact({ id: "2", orderPlaced: new Date("2026-08-11T00:00:00Z") }),
         fact({ id: "3", status: "CANCELLED", cancelledOn: new Date("2026-08-15T00:00:00Z") }),
       ],
+      tierChanges: [],
       snapshots: [],
       start,
       end,
@@ -321,37 +325,26 @@ describe("computeChanges", () => {
   });
 
   it("names the source column behind each number", () => {
-    const r = computeChanges({ facts: [], snapshots: [], start, end });
+    const r = computeChanges({ facts: [], snapshots: [], tierChanges: [], start, end });
     expect(r.newSubscriptions.source).toMatch(/order_placed/);
     expect(r.cancellations.source).toMatch(/cancelled_on/);
   });
 
-  // The heart of it: with no snapshot history there is no way to know a tier
-  // changed. Reporting zero upgrades would be a fabricated business number.
-  it("reports tier transitions as unavailable when snapshots do not cover the range", () => {
+  // Transitions now come from Seal's log, not the snapshots, so a window the
+  // snapshots barely touch is still answerable. The detailed rules live in
+  // tests/domain/subscriptions/transitions.test.ts; this pins the wiring.
+  it("answers transitions from the log even when snapshots cannot cover the range", () => {
     const r = computeChanges({
       facts: [],
       snapshots: [snap({ snapshotDate: "2026-09-03" })],
-      start,
-      end,
-    });
-    expect(r.tierTransitions.available).toBe(false);
-    if (!r.tierTransitions.available) {
-      expect(r.tierTransitions.reason).toMatch(/snapshot/i);
-    }
-  });
-
-  it("does not report zero upgrades when it simply cannot tell", () => {
-    const r = computeChanges({ facts: [], snapshots: [], start, end });
-    expect(r.tierTransitions).not.toHaveProperty("upgraded");
-  });
-
-  it("detects a spark to studio upgrade between two snapshots in range", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1", tier: "spark" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "studio" }),
+      tierChanges: [
+        {
+          subscriptionId: "1",
+          at: "2026-08-15T12:00:00.000Z",
+          from: "spark",
+          to: "studio",
+          pricingCohort: "grandfathered",
+        },
       ],
       start,
       end,
@@ -359,111 +352,23 @@ describe("computeChanges", () => {
     expect(r.tierTransitions.available).toBe(true);
     if (r.tierTransitions.available) {
       expect(r.tierTransitions.upgraded).toBe(1);
-      expect(r.tierTransitions.downgraded).toBe(0);
-    }
-  });
-
-  it("detects a studio to spark downgrade", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1", tier: "studio" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "spark" }),
-      ],
-      start,
-      end,
-    });
-    expect(r.tierTransitions.available).toBe(true);
-    if (r.tierTransitions.available) expect(r.tierTransitions.downgraded).toBe(1);
-  });
-
-  // The number Matt wants weekly.
-  it("reports the grandfathered spark to grandfathered studio path on its own", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1", tier: "spark", pricingCohort: "grandfathered" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "studio", pricingCohort: "grandfathered" }),
-        // A current-cohort upgrade must not land in the grandfathered figure.
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "2", tier: "spark", pricingCohort: "current" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "2", tier: "studio", pricingCohort: "current" }),
-      ],
-      start,
-      end,
-    });
-    expect(r.tierTransitions.available).toBe(true);
-    if (r.tierTransitions.available) {
       expect(r.tierTransitions.grandfatheredSparkToStudio).toBe(1);
-      expect(r.tierTransitions.upgraded).toBe(2);
+      expect(r.tierTransitions.source).toMatch(/log/i);
     }
   });
 
-  it("ignores a subscription seen in only one snapshot", () => {
+  // A window entirely before Seal began logging must still refuse, or a
+  // fabricated zero replaces an honest "cannot tell".
+  it("still refuses a window that predates the log entirely", () => {
     const r = computeChanges({
       facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1", tier: "spark" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "2", tier: "studio" }),
-      ],
-      start,
-      end,
+      snapshots: [],
+      tierChanges: [],
+      start: new Date("2026-01-01T00:00:00.000Z"),
+      end: new Date("2026-03-31T00:00:00.000Z"),
     });
-    expect(r.tierTransitions.available).toBe(true);
-    if (r.tierTransitions.available) {
-      expect(r.tierTransitions.upgraded).toBe(0);
-      expect(r.tierTransitions.comparedSubscriptions).toBe(0);
-    }
-  });
-
-  // Asking for three months and silently comparing two days is the same
-  // failure as a capped list mistaken for the whole set.
-  it("flags when the snapshots compared do not span the range that was asked for", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-29", subscriptionId: "1", tier: "spark" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "studio" }),
-      ],
-      start,
-      end,
-    });
-    expect(r.tierTransitions.available).toBe(true);
-    if (r.tierTransitions.available) {
-      expect(r.tierTransitions.coversRequestedRange).toBe(false);
-      expect(r.tierTransitions.caveat).toMatch(/2026-08-01/);
-    }
-  });
-
-  it("reports full coverage when the snapshots do span the range", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1", tier: "spark" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "studio" }),
-      ],
-      start,
-      end,
-    });
-    if (r.tierTransitions.available) {
-      expect(r.tierTransitions.coversRequestedRange).toBe(true);
-      expect(r.tierTransitions.caveat).toBeNull();
-    }
-  });
-
-  it("echoes the snapshot coverage it compared so a thin window is visible", () => {
-    const r = computeChanges({
-      facts: [],
-      snapshots: [
-        snap({ snapshotDate: "2026-08-01", subscriptionId: "1" }),
-        snap({ snapshotDate: "2026-08-31", subscriptionId: "1", tier: "studio" }),
-      ],
-      start,
-      end,
-    });
-    if (r.tierTransitions.available) {
-      expect(r.tierTransitions.comparedFrom).toBe("2026-08-01");
-      expect(r.tierTransitions.comparedTo).toBe("2026-08-31");
-    }
+    expect(r.tierTransitions.available).toBe(false);
+    expect(r.tierTransitions).not.toHaveProperty("upgraded");
   });
 
   it("builds a weekly series when asked", () => {
@@ -473,6 +378,7 @@ describe("computeChanges", () => {
         fact({ id: "2", orderPlaced: new Date("2026-08-12T00:00:00Z") }),
         fact({ id: "3", status: "CANCELLED", cancelledOn: new Date("2026-08-12T00:00:00Z") }),
       ],
+      tierChanges: [],
       snapshots: [],
       start,
       end,
@@ -487,7 +393,7 @@ describe("computeChanges", () => {
   });
 
   it("returns no series unless a granularity is asked for", () => {
-    const r = computeChanges({ facts: [], snapshots: [], start, end });
+    const r = computeChanges({ facts: [], snapshots: [], tierChanges: [], start, end });
     expect(r.series).toBeNull();
   });
 });

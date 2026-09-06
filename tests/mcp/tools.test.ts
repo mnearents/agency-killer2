@@ -25,6 +25,7 @@ vi.mock("@/domain/shopify/queries", () => ({
 vi.mock("@/domain/subscriptions/queries", () => ({
   getSubscriptionFacts: vi.fn().mockResolvedValue([]),
   getSnapshotFacts: vi.fn().mockResolvedValue([]),
+  getTierChangeFacts: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("@/domain/attentive/queries", () => ({
   getAttentiveWeekSummary: vi.fn().mockResolvedValue({
@@ -171,10 +172,22 @@ describe("subscription tools", () => {
     expect((active.observed as unknown as { subscribers: number }).subscribers).toBe(1);
   });
 
-  // Snapshots began 2026-09-02. A window before that must not answer "0".
-  it("refuses to report tier transitions for a window with no snapshot history", async () => {
+  // Daily snapshots began 2026-09-02, but Seal's log reaches back to 2026-05-22,
+  // so the June launch window is answerable through the tool and not just in
+  // the domain layer. This is the wiring that makes that true.
+  it("answers tier transitions for a window that predates the snapshots", async () => {
     vi.mocked(subscriptionQueries.getSubscriptionFacts).mockResolvedValue([] as never);
     vi.mocked(subscriptionQueries.getSnapshotFacts).mockResolvedValue([] as never);
+    vi.mocked(subscriptionQueries.getTierChangeFacts).mockResolvedValue([
+      {
+        subscriptionId: "s1",
+        at: "2026-06-13T22:50:20.000Z",
+        from: "spark",
+        to: "studio",
+        pricingCohort: "grandfathered",
+        priceChangeLogged: false,
+      },
+    ] as never);
 
     const r = (await dispatchTool(ctx, "subscription_changes", {
       startDate: "2026-06-01",
@@ -182,8 +195,27 @@ describe("subscription tools", () => {
     })) as Record<string, never>;
 
     const t = r.tierTransitions as unknown as Record<string, unknown>;
+    expect(t.available).toBe(true);
+    expect(t.upgraded).toBe(1);
+    expect(t.grandfatheredSparkToStudio).toBe(1);
+    expect(t.source as string).toMatch(/log/i);
+  });
+
+  // Before the log begins there is nothing to read, and "0 upgrades" would be
+  // indistinguishable from "we cannot see that far back".
+  it("refuses to report tier transitions for a window entirely before the log begins", async () => {
+    vi.mocked(subscriptionQueries.getSubscriptionFacts).mockResolvedValue([] as never);
+    vi.mocked(subscriptionQueries.getSnapshotFacts).mockResolvedValue([] as never);
+    vi.mocked(subscriptionQueries.getTierChangeFacts).mockResolvedValue([] as never);
+
+    const r = (await dispatchTool(ctx, "subscription_changes", {
+      startDate: "2026-01-01",
+      endDate: "2026-03-31",
+    })) as Record<string, never>;
+
+    const t = r.tierTransitions as unknown as Record<string, unknown>;
     expect(t.available).toBe(false);
-    expect(t.reason as string).toMatch(/snapshot/i);
+    expect(t.reason as string).toMatch(/2026-05-22/);
     expect(t).not.toHaveProperty("upgraded");
     expect(t).not.toHaveProperty("grandfatheredSparkToStudio");
   });
