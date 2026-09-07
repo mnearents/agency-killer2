@@ -284,8 +284,22 @@ export const shopifyLineItems = pgTable(
     productType: text("product_type"),
     sku: text("sku"),
     title: text("title").notNull(),
+    variantTitle: text("variant_title"),
+    vendor: text("vendor"),
     quantity: integer("quantity").notNull(),
     priceCents: bigint("price_cents", { mode: "number" }).notNull(), // unit price
+    /**
+     * Discount allocated to this line. Per-product revenue computed from
+     * price_cents alone is GROSS, and overstates what a product earned in any
+     * period with a promotion running. Net is price_cents * quantity minus this.
+     *
+     * Nullable rather than defaulted to 0: rows synced before the backfill have
+     * no discount data, and a 0 there is indistinguishable from a real
+     * undiscounted line. Null says "unknown", which is the truth.
+     */
+    totalDiscountCents: bigint("total_discount_cents", { mode: "number" }),
+    /** 0/1, null when unknown. Separates physical goods from digital printables. */
+    requiresShipping: integer("requires_shipping"),
     rawJson: jsonb("raw_json"),
   },
   (table) => [index("shopify_line_items_product_idx").on(table.productId)]

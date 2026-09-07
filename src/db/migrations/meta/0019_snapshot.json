@@ -1,6 +1,6 @@
 {
-  "id": "b95f64f5-6012-4f25-975d-66acf3d0c8bf",
-  "prevId": "9a235f47-73ed-489a-8247-f8650afb24f2",
+  "id": "406d84f0-07c7-42ad-a1af-c3b0d2498782",
+  "prevId": "b95f64f5-6012-4f25-975d-66acf3d0c8bf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2297,6 +2297,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "variant_title": {
+          "name": "variant_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "vendor": {
+          "name": "vendor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "quantity": {
           "name": "quantity",
           "type": "integer",
@@ -2308,6 +2320,18 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": true
+        },
+        "total_discount_cents": {
+          "name": "total_discount_cents",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requires_shipping": {
+          "name": "requires_shipping",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         },
         "raw_json": {
           "name": "raw_json",

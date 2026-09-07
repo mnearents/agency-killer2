@@ -25,6 +25,19 @@ function dollarsToCents(value: string | undefined | null): number {
   return Math.round(parseFloat(value) * 100);
 }
 
+/**
+ * Same conversion, but a missing value stays null instead of collapsing to 0.
+ *
+ * Used for the line-level discount, where 0 and "we never fetched it" are
+ * different facts: rows synced before the field was requested would otherwise
+ * claim every historical line was sold at full price, and net revenue computed
+ * over them would silently equal gross.
+ */
+function dollarsToCentsOrNull(value: string | undefined | null): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  return Math.round(parseFloat(value) * 100);
+}
+
 export function transformOrder(
   raw: ShopifyApiOrder,
   syncedAt: Date
@@ -63,8 +76,19 @@ export function transformLineItem(
     productType: raw.product?.productType ?? null,
     sku: raw.variant?.sku ?? null,
     title: raw.title,
+    variantTitle: raw.variant?.title ?? null,
+    vendor: raw.vendor ?? null,
     quantity: raw.quantity,
     priceCents: dollarsToCents(raw.originalUnitPriceSet.shopMoney.amount),
+    totalDiscountCents: dollarsToCentsOrNull(
+      raw.totalDiscountSet?.shopMoney?.amount
+    ),
+    requiresShipping:
+      raw.requiresShipping === undefined || raw.requiresShipping === null
+        ? null
+        : raw.requiresShipping
+          ? 1
+          : 0,
     rawJson: raw,
   };
 }
