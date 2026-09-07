@@ -66,9 +66,16 @@ function loadSeedFile(): VoiceProfile {
 }
 
 /**
- * Load voice profile from seed file (sync, used at startup before DB is needed).
+ * Load voice profile from the seed file only, ignoring the database.
+ *
+ * Named explicitly because it is almost never what a caller wants. Samples are
+ * edited through the /voice dashboard, the API, and the `!voice add` Slack
+ * command, and every one of those writes to the database — so anything that
+ * generates copy from this function is working off a frozen snapshot and will
+ * silently ignore every edit. Use `loadVoiceProfileWithDb` unless there is
+ * genuinely no database available.
  */
-export function loadVoiceProfile(): VoiceProfile {
+export function loadVoiceProfileFromSeedFile(): VoiceProfile {
   return loadSeedFile();
 }
 

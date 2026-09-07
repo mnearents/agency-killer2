@@ -61,7 +61,7 @@ import { getAllSamples, addSample } from "@/domain/voice/queries";
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
-import { loadVoiceProfile } from "@/domain/voice/loader";
+import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
 
 const SCHEDULER_CRON = "* * * * *";
 
@@ -162,7 +162,10 @@ async function main() {
   }
 
   // ─── Build orchestrator ─────────────────────────────────────────────
-  const voiceProfile = loadVoiceProfile();
+  // Must read the DB, not the seed file: the /voice dashboard, the API route,
+  // and the `!voice add` command below all write there. Reading the file makes
+  // every one of those edits a no-op that still reports success.
+  const voiceProfile = await loadVoiceProfileWithDb(db);
   console.log(`[worker] Loaded voice profile: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`);
   const voice = assembleVoicePrompt(voiceProfile);
 
