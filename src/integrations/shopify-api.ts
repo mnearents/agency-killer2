@@ -31,8 +31,16 @@ export interface ShopifyApiLineItem {
   title: string;
   quantity: number;
   originalUnitPriceSet: { shopMoney: { amount: string } };
+  /** Discount allocated to this line, not the order. Order-level discounts are
+   *  apportioned across lines by Shopify, so summing this over an order's lines
+   *  reconciles to the order's total discount. */
+  totalDiscountSet: { shopMoney: { amount: string } };
+  /** Separates physical goods from digital printables at the line, which
+   *  product_type does not reliably do — the same product type covers both. */
+  requiresShipping: boolean;
+  vendor: string | null;
   product: { id: string; productType: string } | null;
-  variant: { id: string; sku: string | null } | null;
+  variant: { id: string; sku: string | null; title: string | null } | null;
 }
 
 export interface ShopifyApiCustomer {
@@ -62,6 +70,9 @@ export interface ShopifyApiVariant {
 export interface ShopifyApiClient {
   getOrders(params: {
     since?: string;
+    /** Exclusive upper bound. Lets a backfill crawl in resumable chunks
+     *  instead of one open-ended run that starts over after any throttle. */
+    until?: string;
     limit?: number;
   }): Promise<ShopifyApiOrder[]>;
   getCustomersWithEnrollments(params?: {
@@ -89,8 +100,11 @@ const ORDERS_QUERY = `
           nodes {
             id title quantity
             originalUnitPriceSet { shopMoney { amount } }
+            totalDiscountSet { shopMoney { amount } }
+            requiresShipping
+            vendor
             product { id productType }
-            variant { id sku }
+            variant { id sku title }
           }
         }
       }
@@ -213,7 +227,10 @@ export function createShopifyApiClient(
   return {
     async getOrders(params) {
       const limit = params.limit ?? 50;
-      const query = params.since ? `created_at:>='${params.since}'` : undefined;
+      const clauses: string[] = [];
+      if (params.since) clauses.push(`created_at:>='${params.since}'`);
+      if (params.until) clauses.push(`created_at:<'${params.until}'`);
+      const query = clauses.length ? clauses.join(" AND ") : undefined;
       const allOrders: ShopifyApiOrder[] = [];
       let after: string | null = null;
 

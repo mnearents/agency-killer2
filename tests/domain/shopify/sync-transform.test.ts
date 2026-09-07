@@ -31,8 +31,15 @@ const BASE_LINE_ITEM: ShopifyApiLineItem = {
   title: "Daily Planner - Rose Gold",
   quantity: 2,
   originalUnitPriceSet: { shopMoney: { amount: "14.99" } },
+  totalDiscountSet: { shopMoney: { amount: "3.00" } },
+  requiresShipping: true,
+  vendor: "Rad & Happy",
   product: { id: "gid://shopify/Product/111", productType: "Planner" },
-  variant: { id: "gid://shopify/ProductVariant/222", sku: "PLN-RG-001" },
+  variant: {
+    id: "gid://shopify/ProductVariant/222",
+    sku: "PLN-RG-001",
+    title: "Rose Gold / Large",
+  },
 };
 
 // ─── Order transforms ─────────────────────────────────────────────────
@@ -147,6 +154,48 @@ describe("transformLineItem", () => {
     expect(result.variantId).toBe("gid://shopify/ProductVariant/222");
     expect(result.sku).toBe("PLN-RG-001");
     expect(result.productType).toBe("Planner");
+  });
+
+  it("converts the line-level discount to cents", () => {
+    const result = transformLineItem(BASE_LINE_ITEM, "order_123");
+    // "3.00" → 300 cents. Without this, per-product revenue is gross.
+    expect(result.totalDiscountCents).toBe(300);
+  });
+
+  it("records a zero discount as 0, distinct from unknown", () => {
+    const item = {
+      ...BASE_LINE_ITEM,
+      totalDiscountSet: { shopMoney: { amount: "0.00" } },
+    };
+    expect(transformLineItem(item, "order_123").totalDiscountCents).toBe(0);
+  });
+
+  it("leaves the discount null when Shopify omits it entirely", () => {
+    // Pre-backfill rows and any response missing the field must read as
+    // unknown. A 0 here would be indistinguishable from a real undiscounted
+    // line and would silently overstate net revenue.
+    const item = { ...BASE_LINE_ITEM, totalDiscountSet: undefined } as unknown as ShopifyApiLineItem;
+    expect(transformLineItem(item, "order_123").totalDiscountCents).toBeNull();
+  });
+
+  it("maps variant title and vendor", () => {
+    const result = transformLineItem(BASE_LINE_ITEM, "order_123");
+    expect(result.variantTitle).toBe("Rose Gold / Large");
+    expect(result.vendor).toBe("Rad & Happy");
+  });
+
+  it("stores requiresShipping as 1 for physical goods", () => {
+    expect(transformLineItem(BASE_LINE_ITEM, "order_123").requiresShipping).toBe(1);
+  });
+
+  it("stores requiresShipping as 0 for digital printables", () => {
+    const item = { ...BASE_LINE_ITEM, requiresShipping: false };
+    expect(transformLineItem(item, "order_123").requiresShipping).toBe(0);
+  });
+
+  it("leaves requiresShipping null when Shopify omits it", () => {
+    const item = { ...BASE_LINE_ITEM, requiresShipping: undefined } as unknown as ShopifyApiLineItem;
+    expect(transformLineItem(item, "order_123").requiresShipping).toBeNull();
   });
 
   it("handles null product and variant", () => {
