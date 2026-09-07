@@ -12,6 +12,7 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDb } from "@/db/client";
+import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 
 async function main() {
@@ -21,9 +22,19 @@ async function main() {
     process.exit(1);
   }
 
+  // A second, deliberately weaker connection for the `query` tool. Missing is
+  // a supported state: the rest of the server still works and that one tool
+  // reports itself unavailable. What must never happen is DATABASE_URL being
+  // used in its place — that would hand arbitrary SQL the owner's privileges.
+  const analyticsUrl = process.env.ANALYTICS_DATABASE_URL;
+  if (!analyticsUrl) {
+    console.error("[mcp] ANALYTICS_DATABASE_URL not set — the query tool will be unavailable");
+  }
+
   const server = createMcpServer({
     db: createDb(databaseUrl),
     now: () => new Date(),
+    analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
   });
 
   await server.connect(new StdioServerTransport());

@@ -3,9 +3,11 @@ import { McpArgumentError } from "@/mcp/args";
 import {
   ALL_TOOLS,
   dispatchTool,
+  findTool,
   toJsonSchema,
   type McpToolContext,
 } from "@/mcp/tools";
+import { createMockAnalyticsDb } from "../mocks/analytics-db";
 
 vi.mock("@/domain/meta/queries", () => ({
   getInsightTotals: vi.fn().mockResolvedValue([]),
@@ -730,5 +732,104 @@ describe("pilot notes tools", () => {
       const result = (await dispatchTool(ctx, "pilot_notes_export", {})) as { markdown: string };
       expect(result.markdown).toMatch(/no notes/i);
     });
+  });
+});
+
+describe("query", () => {
+  const NOW = new Date("2026-09-06T10:00:00.000Z");
+
+  function ctxWith(analytics: ReturnType<typeof createMockAnalyticsDb> | undefined) {
+    const inserted: Record<string, unknown>[] = [];
+    const db = {
+      insert: () => ({ values: (v: Record<string, unknown>) => { inserted.push(v); return Promise.resolve(); } }),
+    };
+    return { ctx: { db: db as never, now: () => NOW, analytics }, inserted };
+  }
+
+  it("runs a read and returns rows", async () => {
+    const analytics = createMockAnalyticsDb({
+      select: vi.fn().mockResolvedValue({ columns: ["n"], rows: [{ n: "4395" }], truncated: false }),
+    });
+    const { ctx } = ctxWith(analytics);
+
+    const result = (await dispatchTool(ctx, "query", {
+      sql: "SELECT count(*) n FROM subscriptions",
+    })) as { ok: boolean; rows: unknown[] };
+
+    expect(result.ok).toBe(true);
+    expect(result.rows).toEqual([{ n: "4395" }]);
+  });
+
+  it("writes an entry to query_log", async () => {
+    const { ctx, inserted } = ctxWith(createMockAnalyticsDb());
+    await dispatchTool(ctx, "query", { sql: "SELECT 1" });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ sqlText: "SELECT 1", ranAt: NOW });
+  });
+
+  it("describes the live catalog", async () => {
+    const analytics = createMockAnalyticsDb({
+      describe: vi.fn().mockResolvedValue([
+        { view: "subscriptions", comment: null, columns: [{ name: "id", type: "text" }] },
+      ]),
+    });
+    const { ctx } = ctxWith(analytics);
+
+    const result = (await dispatchTool(ctx, "query", { action: "describe" })) as {
+      ok: boolean;
+      viewCount: number;
+    };
+
+    expect(result).toMatchObject({ ok: true, viewCount: 1 });
+    expect(analytics.describe).toHaveBeenCalled();
+  });
+
+  // The whole security model is "this connects as a role that cannot see PII".
+  // Falling back to the owner pool when the read-only URL is missing would make
+  // that a comment rather than a fact.
+  it("is unavailable rather than falling back to the owner connection", async () => {
+    const { ctx } = ctxWith(undefined);
+    const result = (await dispatchTool(ctx, "query", { sql: "SELECT 1" })) as {
+      ok: boolean;
+      error: string;
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/ANALYTICS_DATABASE_URL/);
+  });
+
+  it("requires sql when running a query", async () => {
+    const { ctx } = ctxWith(createMockAnalyticsDb());
+    const result = (await dispatchTool(ctx, "query", {})) as { ok: boolean; error: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/"sql" is required/i);
+  });
+
+  // `sql` alongside `describe` means the caller expected the SQL to run.
+  // Ignoring it would return a schema listing that looks like a query result.
+  it("rejects sql passed to the describe action", async () => {
+    const { ctx } = ctxWith(createMockAnalyticsDb());
+    const result = (await dispatchTool(ctx, "query", {
+      action: "describe",
+      sql: "SELECT 1",
+    })) as { ok: boolean; error: string };
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/describe.*does not take.*sql/i);
+  });
+
+  it("refuses a write without touching the connection", async () => {
+    const analytics = createMockAnalyticsDb();
+    const { ctx } = ctxWith(analytics);
+    const result = (await dispatchTool(ctx, "query", {
+      sql: "DELETE FROM subscriptions",
+    })) as { ok: boolean };
+    expect(result.ok).toBe(false);
+    expect(analytics.select).not.toHaveBeenCalled();
+  });
+
+  it("is declared read-only and names the schema in its description", () => {
+    const tool = findTool("query")!;
+    expect(tool.readOnly).toBe(true);
+    expect(tool.description).toMatch(/analytics/);
+    expect(tool.description).toMatch(/describe/);
   });
 });

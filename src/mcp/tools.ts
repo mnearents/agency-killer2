@@ -18,6 +18,9 @@
 
 import { randomUUID } from "node:crypto";
 import type { Db } from "@/db/client";
+import { queryLog } from "@/db/schema";
+import type { AnalyticsDb } from "./analytics-db";
+import { runQuery, describeViews, ROW_CAP, type QueryDeps } from "./query";
 import {
   parseArgs,
   resolveRange,
@@ -65,6 +68,12 @@ export interface McpToolContext {
   db: Db;
   /** Injected so tests can freeze time — no wall clock inside a tool. */
   now: () => Date;
+  /**
+   * The read-only connection the `query` tool runs on. Absent when
+   * ANALYTICS_DATABASE_URL is unset, in which case that tool reports itself
+   * unavailable — it never falls back to `db`, which connects as the owner.
+   */
+  analytics?: AnalyticsDb;
 }
 
 export interface McpTool {
@@ -718,6 +727,80 @@ const pilotNotesExport: McpTool = {
   },
 };
 
+// ─── Ad-hoc SQL ───────────────────────────────────────────────────────
+
+/**
+ * The purpose-built tools above are not replaced by this one. They encode
+ * decisions — how MRR amortises an annual plan, how dunning is derived from
+ * billing attempts rather than error codes — that should not be re-derived
+ * differently every time somebody asks. Use SQL for the questions nobody
+ * anticipated, and the named tools for the ones that were.
+ */
+const query: McpTool = {
+  name: "query",
+  title: "Query the warehouse",
+  readOnly: true,
+  description:
+    `Run read-only SQL against the "analytics" schema, or list what is in it.\n\n` +
+    `Call with action="describe" FIRST if you do not already know the schema: it ` +
+    `returns every view, its columns and types, and a comment recording how to ` +
+    `read it correctly. That listing comes from the live catalog, so it cannot ` +
+    `drift from what is actually there.\n\n` +
+    `The connection is a role with SELECT on these views and nothing else — no ` +
+    `base tables, no writes, no DDL. Customer email, names, phone, address, card ` +
+    `details and raw API payloads are not in the views at all, so they cannot be ` +
+    `selected. customer_id IS available, already resolved to its numeric form, ` +
+    `for joining subscriptions to orders.\n\n` +
+    `Rules: one statement, which must be a SELECT or WITH...SELECT. Queries time ` +
+    `out after 30 seconds. At most ${ROW_CAP} rows come back, and the result says ` +
+    `so when there were more — prefer an aggregate over pulling rows. Money is ` +
+    `stored in CENTS in these views, unlike every other tool here, because they ` +
+    `are the raw columns: divide by 100 yourself.`,
+  schema: {
+    action: { type: "enum", values: ["query", "describe"], default: "query" },
+    sql: { type: "string" },
+  },
+  async run(ctx, args) {
+    const action = args.action as "query" | "describe";
+    const sql = args.sql as string | undefined;
+
+    // Never `?? ctx.db`. The owner pool can read every base table, so a
+    // fallback would quietly turn this into arbitrary SQL over the PII the
+    // views exist to exclude.
+    if (!ctx.analytics) {
+      return {
+        ok: false,
+        error:
+          "The query tool is not available: ANALYTICS_DATABASE_URL is not set. It " +
+          "needs its own read-only connection and deliberately does not fall back " +
+          "to the main one.",
+      };
+    }
+
+    const deps: QueryDeps = {
+      analytics: ctx.analytics,
+      // Written on the owner connection: the read-only role has no INSERT
+      // anywhere, including on its own audit trail.
+      log: (entry) => ctx.db.insert(queryLog).values(entry),
+    };
+
+    if (action === "describe") {
+      if (sql !== undefined) {
+        return {
+          ok: false,
+          error: `The "describe" action does not take a "sql" argument. Drop it, or use action="query" to run the statement.`,
+        };
+      }
+      return describeViews(deps);
+    }
+
+    if (sql === undefined) {
+      return { ok: false, error: `"sql" is required when action is "query".` };
+    }
+    return runQuery(deps, sql, ctx.now());
+  },
+};
+
 /**
  * Every tool on the server. All but `pilot_notes_add` are read-only; that one
  * appends to the pilot notes log and can do nothing else. Anything that spends
@@ -741,6 +824,7 @@ export const ALL_TOOLS: McpTool[] = [
   pilotNotesGet,
   pilotNotesAdd,
   pilotNotesExport,
+  query,
 ];
 
 // ─── Dispatch ─────────────────────────────────────────────────────────
