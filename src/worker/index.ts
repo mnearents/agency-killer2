@@ -209,6 +209,7 @@ async function main() {
       const s = result.summary;
       console.log(
         `[sync:seal] Done: ${result.subscriptions} subscriptions, ${result.snapshots} snapshots, ` +
+          `${result.tierChangeEvents} tier changes, ` +
           `${s.inDunning} in dunning, ${s.unknownTier} unmapped, ${s.priceAnomalies} price anomalies`
       );
       if (result.errors.length > 0) {
