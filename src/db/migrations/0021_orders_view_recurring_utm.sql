@@ -75,6 +75,18 @@ SELECT
   o.synced_at
 FROM public.shopify_orders o;
 
+COMMENT ON COLUMN analytics.shopify_orders.is_recurring_reliable IS
+  '1 where is_recurring can be believed, 0 where it undercounts. The boundary '
+  'is 2026-06-01, and that date is a genuine billing day rather than a '
+  'migration dump — renewals have billed on the 1st all along, with total '
+  'orders on the 1st steady at 3,100-3,600 back through 2025-09. Only flag '
+  'coverage moved, and it moved erratically: 2,069 flagged in September, 917 '
+  'in November, 348 in January, before going effectively complete from the '
+  'first full billing cycle after the Seal migration. It is therefore not a '
+  'date to nudge when a number looks wrong. Before it, unflagged renewals sit '
+  'in is_recurring = 0 at about $5.50 each. After it, 4 of 3,102 orders on a '
+  'billing day are unflagged.';
+
 COMMENT ON VIEW analytics.shopify_orders IS
   'One row per Shopify order. raw_json excluded — it carries the full customer '
   'and shipping payload. customer_id is the bare numeric id, already extracted '
