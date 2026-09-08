@@ -120,6 +120,13 @@
       "when": 1788797922928,
       "tag": "0016_line_item_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1788798500000,
+      "tag": "0022_line_item_revenue_line",
+      "breakpoints": true
     }
   ]
 }
