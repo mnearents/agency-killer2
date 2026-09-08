@@ -31,6 +31,8 @@ import {
 } from "./args";
 
 import { getDataFreshness } from "@/db/freshness";
+import { getEnvironmentStatus } from "@/db/env-status";
+import { checkEnv } from "@/lib/env-check";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
@@ -74,6 +76,11 @@ export interface McpToolContext {
    * unavailable — it never falls back to `db`, which connects as the owner.
    */
   analytics?: AnalyticsDb;
+  /**
+   * This process's own environment. Injected rather than read from
+   * `process.env` inside a tool so a test can state exactly what is set.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 export interface McpTool {
@@ -104,12 +111,30 @@ const dataFreshness: McpTool = {
   name: "data_freshness",
   title: "Data freshness",
   description:
-    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time.",
+    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time. `environment` reports, per process, which expected environment variables were present when it last started and what each absent one breaks — an unset variable is a common reason a source is empty. A surface with `ok: null` has never reported and is unknown, not healthy.",
   readOnly: true,
   schema: {},
   async run(ctx) {
-    const sources = await getDataFreshness(ctx.db, ctx.now());
-    return { sources, anyStale: sources.some((s) => s.stale) };
+    // This process can read its own environment now; the worker's and the web
+    // app's come from what they recorded at startup.
+    const live = checkEnv("mcp", ctx.env ?? process.env, ctx.now());
+    const [sources, environment] = await Promise.all([
+      getDataFreshness(ctx.db, ctx.now()),
+      getEnvironmentStatus(ctx.db, live, ctx.now()),
+    ]);
+
+    return {
+      sources,
+      anyStale: sources.some((s) => s.stale),
+      environment,
+      // An empty list means the check did not run, and `ok: null` means a
+      // surface has never reported. Both are unknowns, and an unknown counts as
+      // a problem — reporting false here would be a pass with nothing behind it,
+      // which is the failure this whole section exists to make visible.
+      anyEnvProblem:
+        environment.length === 0 ||
+        environment.some((e) => e.ok !== true || e.stale),
+    };
   },
 };
 

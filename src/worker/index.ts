@@ -20,7 +20,10 @@ import { createSealApiClient } from "@/integrations/seal-api";
 import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
 import { createEmbeddingClient } from "@/integrations/openai";
-import { createDb } from "@/db/client";
+import { createDb, type Db } from "@/db/client";
+import { recordEnvCheck } from "@/db/env-status";
+import { checkEnv, formatEnvCheck } from "@/lib/env-check";
+import type { Surface } from "@/lib/env-manifest";
 
 // Sync services
 import { syncIncremental, recordUnconfiguredSync } from "@/domain/meta/sync";
@@ -62,6 +65,8 @@ import { assembleVoicePrompt } from "@/domain/voice/voice";
 import { loadVoiceProfile } from "@/domain/voice/loader";
 
 const SCHEDULER_CRON = "* * * * *";
+// Daily, well inside the 36-hour window env-status treats as stale.
+const ENV_RECHECK_CRON = "0 3 * * *";
 
 function getEnv(key: string): string {
   const value = process.env[key];
@@ -73,11 +78,41 @@ function getEnvOptional(key: string): string | undefined {
   return process.env[key];
 }
 
+/**
+ * Log this process's environment and store it for the MCP to read back.
+ *
+ * Runs at startup and again daily. The daily repeat is what makes `checked_at`
+ * mean something: a record that stops advancing is a worker that stopped
+ * running, and without it every healthy long-lived worker would eventually
+ * report itself stale — a permanent warning nobody would read.
+ *
+ * A failure to store is logged and swallowed. Losing the record is not worth
+ * refusing to start over, and it fails closed anyway: no record reads as
+ * unknown, which `data_freshness` already reports as a problem.
+ */
+async function reportEnv(db: Db, surface: Surface): Promise<void> {
+  const result = checkEnv(surface, process.env, new Date());
+  for (const line of formatEnvCheck(result)) console.log(line);
+
+  try {
+    await recordEnvCheck(db, result);
+  } catch (err) {
+    console.error("[env] Could not record the environment check:", err);
+  }
+}
+
 async function main() {
   console.log("[worker] Starting agency-killer2 worker...");
 
   // ─── Initialize clients ─────────────────────────────────────────────
   const db = createDb(getEnv("DATABASE_URL"));
+
+  // Every expected variable and whether it arrived. Each `getEnvOptional`
+  // branch below turns an absent variable into a null client and a skipped
+  // task, which is the right behaviour and completely invisible — three
+  // features have run that way in production for months. This says so out loud,
+  // and records it so the MCP can report it to whoever asks why a table is empty.
+  await reportEnv(db, "worker");
 
   const metaClient = getEnvOptional("META_ACCESS_TOKEN")
     ? createMetaApiClient(getEnv("META_ACCESS_TOKEN"))
@@ -413,6 +448,13 @@ async function main() {
     handlerMap: getTaskHandlerMap(),
     handlerFns,
   };
+
+  // Re-state the environment daily. Not a registered task: it reports on the
+  // worker rather than doing any of its work, and it must keep running even if
+  // every task is disabled.
+  cron.schedule(ENV_RECHECK_CRON, () => {
+    void reportEnv(db, "worker");
+  });
 
   let schedulerRunning = false;
 

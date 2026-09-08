@@ -59,6 +59,9 @@ vi.mock("@/domain/alerts/runner", () => ({
 vi.mock("@/db/freshness", () => ({
   getDataFreshness: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/db/env-status", () => ({
+  getEnvironmentStatus: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("@/domain/pilot/queries", () => ({
   getPilotEntries: vi.fn().mockResolvedValue([]),
   noteExists: vi.fn().mockResolvedValue(true),
@@ -74,6 +77,8 @@ import * as voiceQueries from "@/domain/voice/queries";
 import * as subscriptionQueries from "@/domain/subscriptions/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { getDataFreshness } from "@/db/freshness";
+import { getEnvironmentStatus } from "@/db/env-status";
+import type { SurfaceEnvStatus } from "@/db/env-status";
 import * as pilotQueries from "@/domain/pilot/queries";
 import type { PilotEntry } from "@/domain/pilot/notes";
 
@@ -303,6 +308,98 @@ describe("data_freshness", () => {
     };
 
     expect(result.sources[0].lastRun?.outcome).toBe("not-configured");
+  });
+
+  // An unset variable is the reason a source is empty at least three times over
+  // (SEAL_API_TOKEN, META_AD_ACCOUNT_ID, ANALYTICS_DATABASE_URL). This tool is
+  // where someone already looks to ask "why is this empty?", so the answer
+  // belongs here rather than in a log nobody tails.
+  describe("environment", () => {
+    function status(over: Partial<SurfaceEnvStatus> = {}): SurfaceEnvStatus {
+      return {
+        surface: "worker",
+        basis: "recorded",
+        ok: true,
+        checkedAt: NOW.toISOString(),
+        ageHours: 1,
+        stale: false,
+        expected: 18,
+        missingRequired: [],
+        missingDegraded: [],
+        consequences: [],
+        ...over,
+      };
+    }
+
+    it("reports each surface's environment alongside the data sources", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([status()]);
+      const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+        environment: SurfaceEnvStatus[];
+      };
+      expect(result.environment).toHaveLength(1);
+      expect(result.environment[0].surface).toBe("worker");
+    });
+
+    it("flags a missing variable and says what it breaks", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([
+        status({
+          ok: false,
+          missingDegraded: ["SEAL_API_TOKEN"],
+          consequences: [
+            { name: "SEAL_API_TOKEN", severity: "degraded", breaks: "the subscription sync is skipped" },
+          ],
+        }),
+      ]);
+      const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+        anyEnvProblem: boolean;
+        environment: SurfaceEnvStatus[];
+      };
+      expect(result.anyEnvProblem).toBe(true);
+      expect(result.environment[0].consequences[0].breaks).toContain("subscription sync");
+    });
+
+    // The guardrail rule, applied to the thing being guarded: a surface that has
+    // never reported is unknown, and unknown must read as a problem. If it read
+    // as fine, a worker that never boots would look identical to a healthy one.
+    it("treats an unknown surface as a problem, not as healthy", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([
+        status({ basis: "never-recorded", ok: null, checkedAt: null, ageHours: null, stale: true }),
+      ]);
+      const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+        anyEnvProblem: boolean;
+      };
+      expect(result.anyEnvProblem).toBe(true);
+    });
+
+    it("reports no problem when every surface is present and current", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([status()]);
+      const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+        anyEnvProblem: boolean;
+      };
+      expect(result.anyEnvProblem).toBe(false);
+    });
+
+    // Zero surfaces means the check itself did not run. Reporting "no problems"
+    // off an empty list is a pass from an unexecuted check.
+    it("treats an empty environment list as a problem, not a clean bill", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([]);
+      const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+        anyEnvProblem: boolean;
+      };
+      expect(result.anyEnvProblem).toBe(true);
+    });
+
+    it("checks its own process environment live rather than reading a record", async () => {
+      vi.mocked(getEnvironmentStatus).mockResolvedValue([status()]);
+      await dispatchTool(
+        { ...ctx, env: { DATABASE_URL: "set" } },
+        "data_freshness",
+        {}
+      );
+      const [, live] = vi.mocked(getEnvironmentStatus).mock.calls[0];
+      expect(live?.surface).toBe("mcp");
+      expect(live?.missingDegraded).toContain("ANALYTICS_DATABASE_URL");
+    });
   });
 });
 

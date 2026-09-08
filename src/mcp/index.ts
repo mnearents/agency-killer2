@@ -12,10 +12,17 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createDb } from "@/db/client";
+import { checkEnv, formatEnvCheck } from "@/lib/env-check";
 import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 
 async function main() {
+  // Every expected variable and whether it arrived, before anything else runs.
+  // stderr, not stdout — stdout is the JSON-RPC channel.
+  for (const line of formatEnvCheck(checkEnv("mcp", process.env, new Date()))) {
+    console.error(line);
+  }
+
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error("[mcp] DATABASE_URL not set");
@@ -35,6 +42,7 @@ async function main() {
     db: createDb(databaseUrl),
     now: () => new Date(),
     analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
+    env: process.env,
   });
 
   await server.connect(new StdioServerTransport());

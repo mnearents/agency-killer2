@@ -809,5 +809,37 @@ export const queryLog = pgTable(
   (table) => [index("query_log_ran_at_idx").on(table.ranAt)]
 );
 
+/**
+ * What each process found in its own environment when it last started.
+ *
+ * Three features have shipped tested and green with their variable unset in
+ * production — SEAL_API_TOKEN, META_AD_ACCOUNT_ID, ANALYTICS_DATABASE_URL — and
+ * in every case the code degraded politely and nothing downstream ever said so.
+ * A process can only read its own `process.env`, so this table is how the
+ * worker's environment becomes visible to the MCP, which is where anyone asking
+ * "why is this empty?" is actually looking.
+ *
+ * One row per surface, overwritten on each check: the question is what is true
+ * now, and a log of every startup would bury it. `checked_at` therefore doubles
+ * as a liveness signal — the worker rewrites it daily, so a row that stops
+ * advancing means the process stopped running.
+ *
+ * Names only. No value is ever written here.
+ */
+export const envChecks = pgTable("env_checks", {
+  /** "worker" | "web" | "mcp" — see SURFACES in src/lib/env-manifest.ts. */
+  surface: text("surface").primaryKey(),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  /** 1 when nothing required or feature-disabling was absent. Optionals excluded. */
+  ok: integer("ok").notNull(),
+  /** How many variables this surface expects, so a shrunken manifest is visible. */
+  expected: integer("expected").notNull(),
+  /** Names only — the surface cannot function without these. */
+  missingRequired: jsonb("missing_required").$type<string[]>().notNull(),
+  /** Names only — the surface runs, but a named feature is off. */
+  missingDegraded: jsonb("missing_degraded").$type<string[]>().notNull(),
+});
+
 export type SealTierChangeEvent = typeof sealTierChangeEvents.$inferSelect;
 export type QueryLogRow = typeof queryLog.$inferSelect;
+export type EnvCheckRow = typeof envChecks.$inferSelect;
