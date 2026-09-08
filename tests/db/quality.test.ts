@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { classifyQuality, type RawQualityCheck } from "@/db/quality";
+import { createDb } from "@/db/client";
+import { buildQualityQuery, classifyQuality, type RawQualityCheck } from "@/db/quality";
 
 function raw(overrides: Partial<RawQualityCheck> = {}): RawQualityCheck {
   return {
@@ -45,6 +46,33 @@ describe("classifyQuality", () => {
   it("leaves the share null when there is no denominator to divide by", () => {
     const [r] = classifyQuality([raw({ total: 0 })]);
     expect(r.affectedPct).toBeNull();
+  });
+});
+
+describe("buildQualityQuery", () => {
+  // postgres-js connects lazily, so this never opens a socket.
+  const { sql } = buildQualityQuery(
+    createDb("postgres://user:pass@localhost:5432/test")
+  ).toSQL();
+
+  // Must match analytics.shopify_line_items.revenue_line exactly. A check that
+  // counts 138 where the view classifies 137 sends whoever reconciles them
+  // looking for a data problem that is really a disagreement between two
+  // spellings of one rule.
+  it("counts non-product rows on all three id columns, as the view does", () => {
+    for (const col of ["variant_id", "product_id", "sku"]) {
+      expect(sql).toContain(col);
+    }
+  });
+
+  // "Coloring Tie Fabric Markers" has a null variant_id and a real product_id
+  // and product_type. variant_id alone calls it unusable when it is fine.
+  it("does not treat a null variant_id alone as a missing product", () => {
+    expect(sql).not.toMatch(/"variant_id" is null\)?\s*\)/i);
+  });
+
+  it("still counts blank product_type apart from null, being different faults", () => {
+    expect(sql).toContain("product_type");
   });
 });
 

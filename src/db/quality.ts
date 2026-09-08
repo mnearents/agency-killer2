@@ -55,17 +55,32 @@ export function anyQualityIssue(results: QualityCheckResult[]): boolean {
   return results.some((r) => r.status !== "ok");
 }
 
-export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
-  const [lineItems] = await db
+/**
+ * Exported so the predicates can be read off the generated SQL.
+ *
+ * "No product behind this row" is also written in
+ * `analytics.shopify_line_items.revenue_line`, and the two must agree. A check
+ * reporting 138 where the view classifies 137 sends whoever notices hunting a
+ * data problem that is really two spellings of one rule.
+ */
+export function buildQualityQuery(db: Db) {
+  return db
     .select({
       total: sql<number>`COUNT(*)`,
       // Empty string and NULL are different faults and are reported apart:
       // '' is a real product whose type was never set in Shopify, NULL is a
       // custom line with no product behind it at all.
       blankType: sql<number>`COUNT(*) FILTER (WHERE ${shopifyLineItems.productType} = '')`,
-      noProduct: sql<number>`COUNT(*) FILTER (WHERE ${shopifyLineItems.variantId} IS NULL)`,
+      // All three id columns, not variant_id alone. "Coloring Tie Fabric
+      // Markers" has a null variant_id but a real product_id and product_type,
+      // and the looser predicate reports a usable row as unusable.
+      noProduct: sql<number>`COUNT(*) FILTER (WHERE ${shopifyLineItems.variantId} IS NULL AND ${shopifyLineItems.productId} IS NULL AND ${shopifyLineItems.sku} IS NULL)`,
     })
     .from(shopifyLineItems);
+}
+
+export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
+  const [lineItems] = await buildQualityQuery(db);
 
   const total = Number(lineItems?.total ?? 0);
 
