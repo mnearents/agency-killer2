@@ -62,3 +62,29 @@ describe("analytics.shopify_inventory", () => {
     expect(comment).toMatch(/ACTIVE/);
   });
 });
+
+describe("analytics.shopify_orders", () => {
+  it("exposes is_recurring_reliable, so the flag cannot be trusted by default", () => {
+    expect(latestViewBody("analytics.shopify_orders")).toMatch(
+      /AS\s+is_recurring_reliable/
+    );
+  });
+
+  it("dates the reliable window from the 2026-06-01 billing cycle", () => {
+    expect(latestViewBody("analytics.shopify_orders")).toMatch(/2026-06-01/);
+  });
+
+  it("omits the utm columns, which are null on every order", () => {
+    const body = latestViewBody("analytics.shopify_orders");
+    for (const col of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"]) {
+      expect(body).not.toMatch(new RegExp(`\\b${col}\\b`));
+    }
+  });
+
+  it("documents the is_recurring undercount and the missing attribution", () => {
+    const comment = latestViewComment("analytics.shopify_orders");
+    expect(comment).toMatch(/2026-06-01/);
+    expect(comment).toMatch(/is_recurring/);
+    expect(comment).toMatch(/utm/i);
+  });
+});
