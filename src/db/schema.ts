@@ -306,6 +306,121 @@ export const shopifyLineItems = pgTable(
 );
 
 /**
+ * One row per Shopify customer — the entity that lets a person be followed
+ * across orders and subscriptions. Without it, "who buys this" has no subject.
+ *
+ * PII lives here and is excluded from the analytics view, per the structural
+ * approach in migration 0015: base tables are unreachable by `claude_readonly`,
+ * and the view is the only way in. Email is stored because the identity join to
+ * `seal_subscriptions` needs it and because pushing an audience to a sending
+ * platform needs it — not because anything analytical reads it.
+ *
+ * The `*_derived` fields are a materialised rollup, refreshed by the sync. They
+ * are a cache of what the orders and subscriptions tables already say, kept
+ * because the alternative is a five-way join in every question anyone asks.
+ * `days_since_last_order` is deliberately NOT stored: it would be wrong the
+ * moment a day passed, and a stale number that looks fresh is worse than a
+ * join. The view computes it.
+ */
+export const shopifyCustomers = pgTable(
+  "shopify_customers",
+  {
+    id: text("id").primaryKey(), // GID form: gid://shopify/Customer/123
+
+    // ─── PII — excluded from the analytics view ───
+    email: text("email"),
+    firstName: text("first_name"),
+    lastName: text("last_name"),
+
+    // ─── Shopify's own counters ───
+    // Kept alongside our derived equivalents rather than instead of them: when
+    // the two disagree it means our order history is incomplete, which is a
+    // fact worth being able to see rather than one to paper over.
+    ordersCount: integer("orders_count"),
+    totalSpentCents: bigint("total_spent_cents", { mode: "number" }),
+
+    tags: jsonb("tags"),
+    /** 0/1, null when Shopify does not report a consent state. */
+    acceptsMarketing: integer("accepts_marketing"),
+
+    // ─── Geography ───
+    // City/state/country only. Analytically useful and not identifying at this
+    // granularity. Street address is deliberately not synced at all.
+    city: text("city"),
+    state: text("state"),
+    country: text("country"),
+
+    customerCreatedAt: timestamp("customer_created_at", { withTimezone: true }),
+
+    // ─── Derived from orders ───
+    firstOrderAt: timestamp("first_order_at", { withTimezone: true }),
+    lastOrderAt: timestamp("last_order_at", { withTimezone: true }),
+    lifetimeOrders: integer("lifetime_orders"),
+    /**
+     * Split, never a single total. A customer worth $25.79 once and a customer
+     * worth $60-180 recurring at near-zero COGS are different businesses, and
+     * one lifetime_revenue number averages them into something that describes
+     * neither. This is the same distinction that makes the Meta attribution
+     * question answerable.
+     */
+    subscriptionRevenueCents: bigint("subscription_revenue_cents", { mode: "number" }),
+    oneOffRevenueCents: bigint("one_off_revenue_cents", { mode: "number" }),
+    /** Distinct product types across all line items. */
+    productTypesPurchased: jsonb("product_types_purchased"),
+
+    // ─── Derived from Seal ───
+    /** 0/1. Joined via split_part(id, '/', 5) — Seal stores the bare numeric ID. */
+    isSubscriber: integer("is_subscriber"),
+    subscriptionTier: text("subscription_tier"), // spark, studio, unknown
+    subscriptionStatus: text("subscription_status"), // ACTIVE, CANCELLED
+    /** When the rollup last ran. Distinguishes "no orders" from "never computed". */
+    derivedAt: timestamp("derived_at", { withTimezone: true }),
+
+    rawJson: jsonb("raw_json"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("shopify_customers_last_order_idx").on(table.lastOrderAt),
+    index("shopify_customers_subscriber_idx").on(table.isSubscriber),
+  ]
+);
+
+/**
+ * Named audience definitions, writable by Claude.
+ *
+ * The point is that "teachers" means the same thing in every analysis rather
+ * than being redefined ad hoc each time. Two analyses that both say "teachers"
+ * and mean different populations produce a contradiction nobody can debug,
+ * because the definition lives in whichever conversation produced it. Storing
+ * the predicate makes the number reproducible and, more usefully, arguable —
+ * you can disagree with a definition you can read.
+ *
+ * A segment IS its definition. `member_count` and `last_evaluated_at` are a
+ * cache of what that definition returned last time it ran, never the truth.
+ * Reading a count without checking when it was evaluated is how a stale number
+ * gets quoted as a current one.
+ */
+export const segments = pgTable(
+  "segments",
+  {
+    id: text("id").primaryKey(), // slug, e.g. "teachers"
+    name: text("name").notNull(),
+    /** SQL predicate evaluated against the customer view. */
+    definition: text("definition").notNull(),
+    /** Why this definition and not another — the arguable part. */
+    notes: text("notes"),
+    memberCount: integer("member_count"),
+    lastEvaluatedAt: timestamp("last_evaluated_at", { withTimezone: true }),
+    /** Set when the last evaluation failed, so a stale count is not read as current. */
+    lastEvaluationError: text("last_evaluation_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  }
+);
+
+/**
  * Variant-level stock levels, refreshed on every inventory sync.
  *
  * `tracked` is 0 when Shopify is not tracking stock for the variant — those
@@ -351,6 +466,12 @@ export type NewShopifyLineItem = typeof shopifyLineItems.$inferInsert;
 
 export type ShopifyInventoryRow = typeof shopifyInventory.$inferSelect;
 export type NewShopifyInventoryRow = typeof shopifyInventory.$inferInsert;
+
+export type ShopifyCustomer = typeof shopifyCustomers.$inferSelect;
+export type NewShopifyCustomer = typeof shopifyCustomers.$inferInsert;
+
+export type Segment = typeof segments.$inferSelect;
+export type NewSegment = typeof segments.$inferInsert;
 
 // ─── Knowledge Base ────────────────────────────────────────────────────
 
