@@ -49,6 +49,15 @@ AssemblyAI, Shotstack, Slack. See `.env.example` for the full list. Never commit
 Attentive and Statlas (CTC) have **no APIs** — data from these is imported
 manually.
 
+**Adding an environment variable means adding it to `src/lib/env-manifest.ts`**,
+not just to `.env.example`. Each entry names the surfaces that read it, how badly
+its absence hurts, and — in plain words — what stops working without it. Every
+process logs the whole list at startup and records it, so `data_freshness`
+reports an unset variable instead of a feature quietly doing nothing. Three
+features have shipped tested and green with their variable unset in production
+(`SEAL_API_TOKEN`, `META_AD_ACCOUNT_ID`, `ANALYTICS_DATABASE_URL`); a test fails
+if a manifest entry is undocumented in `.env.example`.
+
 ### MCP server (Claude Desktop)
 
 A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the

@@ -10,14 +10,30 @@ vi.mock("@/domain/meta/queries", () => ({
 vi.mock("@/db/freshness", () => ({
   getDataFreshness: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/db/env-status", () => ({
+  getEnvironmentStatus: vi.fn().mockResolvedValue([]),
+}));
 
-const ctx: McpToolContext = { db: {} as never, now: () => new Date("2026-09-02T12:00:00Z") };
+const ctx: McpToolContext = {
+  db: {} as never,
+  now: () => new Date("2026-09-02T12:00:00Z"),
+  // Stated rather than inherited from the real process, so this test does not
+  // change its answer depending on whose machine it runs on.
+  env: {},
+};
 
 describe("runToolCall", () => {
   it("returns the tool result as JSON text", async () => {
     const result = await runToolCall(ctx, "data_freshness", {});
     expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0].text)).toEqual({ sources: [], anyStale: false });
+    // No surfaces reported at all, so the environment is unknown — and unknown
+    // reads as a problem rather than a clean bill.
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      sources: [],
+      anyStale: false,
+      environment: [],
+      anyEnvProblem: true,
+    });
   });
 
   // A thrown error would kill the stdio transport and take the whole session
