@@ -339,7 +339,19 @@ export const shopifyCustomers = pgTable(
     ordersCount: integer("orders_count"),
     totalSpentCents: bigint("total_spent_cents", { mode: "number" }),
 
-    tags: jsonb("tags"),
+    /**
+     * Shopify's CUSTOMER tags — deliberately not called `tags`.
+     *
+     * `shopify_orders.tags` is a different thing that shares the name: those
+     * are the *product's* tags copied onto the order, so `homeschool` sits on
+     * 42,094 of 54,225 orders. Customer tags are the opposite — they carry
+     * subscription lifecycle state written by the subscription apps
+     * (`inactive_subscriber`, `inactive-subscriber`, `active-subscriber`,
+     * `paused-subscriber`, `appstle`, `color_happy_imported`, tier tags), and
+     * they are the authoritative source for who has lapsed. Two columns both
+     * named `tags` is what let one be queried in place of the other.
+     */
+    customerTags: jsonb("customer_tags").$type<string[]>(),
     /** 0/1, null when Shopify does not report a consent state. */
     acceptsMarketing: integer("accepts_marketing"),
 
@@ -368,6 +380,22 @@ export const shopifyCustomers = pgTable(
     /** Distinct product types across all line items. */
     productTypesPurchased: jsonb("product_types_purchased"),
 
+    /**
+     * Proxies for signup and cancellation, from orders of a product whose
+     * product_type is 'Subscription'.
+     *
+     * Real subscription dates did not survive two subscription-app migrations,
+     * so these are the only dates the lapsed population has. They are weak in a
+     * specific way: order history begins 2025-07-22, so 85.7% of lapsed
+     * customers have no subscription order at all and both columns stay NULL —
+     * which is the honest answer, not a reason to substitute first_order_at.
+     * A customer whose first subscription order sits at the start of that
+     * window was already subscribing when it opened, so the span between these
+     * two is a floor on tenure and never a measurement of it.
+     */
+    firstSubscriptionOrderAt: timestamp("first_subscription_order_at", { withTimezone: true }),
+    lastSubscriptionOrderAt: timestamp("last_subscription_order_at", { withTimezone: true }),
+
     // ─── Derived from Seal ───
     /** 0/1. Joined via split_part(id, '/', 5) — Seal stores the bare numeric ID. */
     isSubscriber: integer("is_subscriber"),
@@ -384,6 +412,7 @@ export const shopifyCustomers = pgTable(
   (table) => [
     index("shopify_customers_last_order_idx").on(table.lastOrderAt),
     index("shopify_customers_subscriber_idx").on(table.isSubscriber),
+    index("shopify_customers_last_sub_order_idx").on(table.lastSubscriptionOrderAt),
   ]
 );
 

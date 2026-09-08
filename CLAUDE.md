@@ -49,6 +49,34 @@ AssemblyAI, Shotstack, Slack. See `.env.example` for the full list. Never commit
 Attentive and Statlas (CTC) have **no APIs** — data from these is imported
 manually.
 
+### Subscription data — read this before counting subscribers
+
+**`shopify_customers.customer_tags` carries subscription lifecycle state and is
+the authoritative source for lapsed subscribers.** Seal only holds the current
+app's records and undercounts by roughly 10,000 due to migration loss.
+
+The business has run three subscription apps and migrated twice. Shopify
+subscription apps do not migrate cancelled subscribers, so each migration
+dropped its churned population and Seal holds only the survivors of the most
+recent one — 593 cancellations against a real **15,364**. Never define churn
+from `seal_subscriptions` or from `is_subscriber`.
+
+- Lapsed is `inactive_subscriber` **OR** `inactive-subscriber`, minus
+  `active-subscriber`. **Both spellings are live** (9,065 and 7,847); matching
+  one halves the segment and still returns a plausible five-figure number.
+  There is no `cancelled-subscriber` tag.
+- **`customer_tags` and `shopify_orders.tags` are different things that share a
+  name.** Order tags are the *product's* tags copied onto the order —
+  `homeschool` sits on 42,094 of 54,225 orders — and say nothing about the
+  buyer. Never segment on them.
+- Real subscription dates did not survive the migrations.
+  `first_subscription_order_at` / `last_subscription_order_at` are proxies from
+  orders of a `product_type = 'Subscription'` SKU, and are **NULL for 85.7% of
+  the lapsed**, who churned before order history begins (2025-07-22). Recovering
+  their dates needs an Appstle export, not more query work.
+- Seal covers Really Awesome Doodles only; Color Happy ran in Appstle. A
+  subscriber count from Seal is a RAD count.
+
 ### MCP server (Claude Desktop)
 
 A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the

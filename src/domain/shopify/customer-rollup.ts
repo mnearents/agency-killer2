@@ -28,6 +28,10 @@ export interface CustomerOrderAggregate {
   subscriptionRevenueCents: number;
   oneOffRevenueCents: number;
   productTypes: string[];
+  /** Proxy for signup. Null when no subscription order is in our history. */
+  firstSubscriptionOrderAt: Date | null;
+  /** Proxy for cancellation. Null on the same terms. */
+  lastSubscriptionOrderAt: Date | null;
 }
 
 export interface CustomerSubscription {
@@ -45,6 +49,8 @@ export interface CustomerDerivedFields {
   subscriptionRevenueCents: number;
   oneOffRevenueCents: number;
   productTypesPurchased: string[];
+  firstSubscriptionOrderAt: Date | null;
+  lastSubscriptionOrderAt: Date | null;
   isSubscriber: number;
   subscriptionTier: string | null;
   subscriptionStatus: string | null;
@@ -92,6 +98,12 @@ export function deriveCustomerFields(
     oneOffRevenueCents: orders?.oneOffRevenueCents ?? 0,
     productTypesPurchased: orders?.productTypes ?? [],
 
+    // Null, never a fallback to firstOrderAt. 13,174 lapsed customers have no
+    // subscription order in our history, and substituting an unrelated date
+    // would place every one of them in a tenure band computed from it.
+    firstSubscriptionOrderAt: orders?.firstSubscriptionOrderAt ?? null,
+    lastSubscriptionOrderAt: orders?.lastSubscriptionOrderAt ?? null,
+
     isSubscriber: subscriptions.some((s) => s.status === "ACTIVE") ? 1 : 0,
     subscriptionTier: chosen?.tier ?? null,
     subscriptionStatus: chosen?.status ?? null,
@@ -108,7 +120,24 @@ export function deriveCustomerFields(
  * would otherwise be counted as having placed four orders and spent four times
  * what they did.
  */
+/**
+ * The product_type every subscription SKU carries, across both brands: "Color
+ * Happy" and the three "Really Awesome Doodles" variants.
+ *
+ * Scoped on the product bought, not on `shopify_orders.is_recurring`. Color
+ * Happy has 36,604 line items of which only 15,518 sit on a recurring order —
+ * the rest are gifts and one-off purchases of the same product. Scoping on
+ * is_recurring would quietly change which population the proxy dates describe.
+ */
+export const SUBSCRIPTION_PRODUCT_TYPE = "Subscription";
+
 export function buildCustomerOrderAggregateQuery(db: Db) {
+  const boughtSubscriptionProduct = sql`EXISTS (
+    SELECT 1 FROM ${shopifyLineItems} li
+    WHERE li.order_id = ${shopifyOrders.id}
+      AND li.product_type = ${SUBSCRIPTION_PRODUCT_TYPE}
+  )`;
+
   const totals = db
     .select({
       customerId: shopifyOrders.customerId,
@@ -122,6 +151,16 @@ export function buildCustomerOrderAggregateQuery(db: Db) {
       oneOffRevenueCents:
         sql<number>`COALESCE(SUM(CASE WHEN ${shopifyOrders.isRecurring} = 1 THEN 0 ELSE ${shopifyOrders.totalPriceCents} END), 0)`.as(
           "one_off_revenue_cents"
+        ),
+      // MIN/MAX over the subscription orders only. FILTER leaves these NULL
+      // when the customer has none, which is the distinction the bands rest on.
+      firstSubscriptionOrderAt:
+        sql<Date | null>`MIN(${shopifyOrders.orderCreatedAt}) FILTER (WHERE ${boughtSubscriptionProduct})`.as(
+          "first_subscription_order_at"
+        ),
+      lastSubscriptionOrderAt:
+        sql<Date | null>`MAX(${shopifyOrders.orderCreatedAt}) FILTER (WHERE ${boughtSubscriptionProduct})`.as(
+          "last_subscription_order_at"
         ),
     })
     .from(shopifyOrders)
@@ -150,6 +189,8 @@ export function buildCustomerOrderAggregateQuery(db: Db) {
       lifetimeOrders: totals.lifetimeOrders,
       subscriptionRevenueCents: totals.subscriptionRevenueCents,
       oneOffRevenueCents: totals.oneOffRevenueCents,
+      firstSubscriptionOrderAt: totals.firstSubscriptionOrderAt,
+      lastSubscriptionOrderAt: totals.lastSubscriptionOrderAt,
       // Left, not inner: a customer whose orders predate line-item capture
       // still has orders, and an inner join would drop them from the rollup.
       productTypes: sql<string[] | null>`${types.productTypes}`,
@@ -217,6 +258,12 @@ export async function rollupCustomers(db: Db, derivedAt: Date): Promise<RollupRe
       subscriptionRevenueCents: Number(row.subscriptionRevenueCents),
       oneOffRevenueCents: Number(row.oneOffRevenueCents),
       productTypes: row.productTypes ?? [],
+      firstSubscriptionOrderAt: row.firstSubscriptionOrderAt
+        ? new Date(row.firstSubscriptionOrderAt)
+        : null,
+      lastSubscriptionOrderAt: row.lastSubscriptionOrderAt
+        ? new Date(row.lastSubscriptionOrderAt)
+        : null,
     });
   }
 

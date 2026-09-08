@@ -28,7 +28,13 @@ CREATE TABLE IF NOT EXISTS shopify_customers (
   orders_count integer,
   total_spent_cents bigint,
 
-  tags jsonb,
+  -- Shopify's CUSTOMER tags. Named customer_tags, never `tags`, because
+  -- shopify_orders.tags is a different thing sharing the name: those are the
+  -- product's tags copied onto the order (`homeschool` sits on 42,094 of 54,225
+  -- orders) and say nothing about the buyer. These carry subscription lifecycle
+  -- state written by the subscription apps and are the authoritative record of
+  -- who has lapsed. Two columns called `tags` is how one got read as the other.
+  customer_tags jsonb,
   -- Three states. NULL means Shopify reports no consent record at all, which is
   -- not the same as a customer declining; collapsing it to 0 would silently
   -- shrink every marketable audience by an unknown amount.
@@ -52,6 +58,16 @@ CREATE TABLE IF NOT EXISTS shopify_customers (
   one_off_revenue_cents bigint,
   product_types_purchased jsonb,
 
+  -- Proxies for signup and cancellation: first and last order containing a
+  -- product whose product_type is 'Subscription'. Real subscription dates did
+  -- not survive two app migrations, so these are all the lapsed population has.
+  -- NULL for 85.7% of them — order history begins 2025-07-22 and they churned
+  -- before it — and NULL is the honest answer rather than a reason to fall back
+  -- to first_order_at, which would place them in a tenure band computed from a
+  -- date unrelated to their subscription.
+  first_subscription_order_at timestamptz,
+  last_subscription_order_at timestamptz,
+
   -- Derived from Seal, joined via split_part(id, '/', 5).
   is_subscriber integer,
   subscription_tier text,
@@ -68,6 +84,12 @@ CREATE INDEX IF NOT EXISTS shopify_customers_last_order_idx
   ON shopify_customers (last_order_at);
 CREATE INDEX IF NOT EXISTS shopify_customers_subscriber_idx
   ON shopify_customers (is_subscriber);
+-- GIN, because every lapsed segment is a jsonb containment test over 99,265
+-- rows and there are six of them re-evaluated on every customer sync.
+CREATE INDEX IF NOT EXISTS shopify_customers_tags_idx
+  ON shopify_customers USING gin (customer_tags);
+CREATE INDEX IF NOT EXISTS shopify_customers_last_sub_order_idx
+  ON shopify_customers (last_subscription_order_at);
 
 -- ------------------------------------------------------------------- segments
 CREATE TABLE IF NOT EXISTS segments (
@@ -96,7 +118,7 @@ SELECT
 
   c.orders_count AS shopify_orders_count,
   c.total_spent_cents AS shopify_total_spent_cents,
-  c.tags,
+  c.customer_tags,
   c.accepts_marketing,
   c.city,
   c.state,
@@ -117,6 +139,20 @@ SELECT
   c.one_off_revenue_cents,
   c.product_types_purchased,
 
+  c.first_subscription_order_at,
+  c.last_subscription_order_at,
+  -- Both computed, never stored, for the same reason as days_since_last_order.
+  -- The span is a FLOOR on tenure, not a measurement: a customer whose first
+  -- subscription order sits at the start of our window was already subscribing
+  -- when it opened, and 370 of the 396 in the 12-24m band are exactly that.
+  CASE WHEN c.first_subscription_order_at IS NULL OR c.last_subscription_order_at IS NULL
+       THEN NULL
+       ELSE EXTRACT(DAY FROM (c.last_subscription_order_at - c.first_subscription_order_at))::int
+  END AS proxy_tenure_days,
+  CASE WHEN c.last_subscription_order_at IS NULL THEN NULL
+       ELSE EXTRACT(DAY FROM (now() - c.last_subscription_order_at))::int
+  END AS days_since_last_subscription_order,
+
   c.is_subscriber,
   c.subscription_tier,
   c.subscription_status,
@@ -134,9 +170,16 @@ COMMENT ON VIEW analytics.customers IS
   'lifetime revenue is split into subscription_revenue_cents and '
   'one_off_revenue_cents deliberately and has no combined column; add them only '
   'when the question really is about both. '
-  'is_subscriber covers Really Awesome Doodles only. Color Happy subscriptions '
-  'ran in Appstle and are not in this system, so a subscriber count here is a '
-  'RAD count and not a subscriber count. '
+  'is_subscriber and subscription_tier come from Seal, which holds Really '
+  'Awesome Doodles only and only the survivors of the most recent of two app '
+  'migrations — Shopify subscription apps do not migrate cancelled subscribers, '
+  'so Seal has 593 cancellations against a real 15,364. customer_tags is the '
+  'authoritative source for lapsed subscribers: inactive_subscriber and '
+  'inactive-subscriber (BOTH spellings are in use) minus active-subscriber. '
+  'Never define churn from is_subscriber. '
+  'first_subscription_order_at and last_subscription_order_at are proxies for '
+  'signup and cancellation and are NULL for 85.7% of the lapsed, who churned '
+  'before our orders begin. proxy_tenure_days is a floor, never a measurement. '
   'shopify_orders_count and shopify_total_spent_cents are Shopify''s own '
   'figures over all time; lifetime_orders and the revenue split are ours over '
   'the orders we hold, which begin 2025-07-22. Disagreement between them is the '

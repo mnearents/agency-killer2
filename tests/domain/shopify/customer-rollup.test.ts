@@ -19,6 +19,8 @@ function agg(over: Partial<CustomerOrderAggregate> = {}): CustomerOrderAggregate
     subscriptionRevenueCents: 12000,
     oneOffRevenueCents: 3400,
     productTypes: ["Planner", "Sticker"],
+    firstSubscriptionOrderAt: new Date("2025-08-01T00:00:00Z"),
+    lastSubscriptionOrderAt: new Date("2026-02-01T00:00:00Z"),
     ...over,
   };
 }
@@ -55,6 +57,36 @@ describe("deriveCustomerFields — orders", () => {
     expect(r.firstOrderAt).toBeNull();
     expect(r.lastOrderAt).toBeNull();
     expect(r.derivedAt).toEqual(DERIVED_AT);
+  });
+
+  it("carries the subscription-order proxy dates through", () => {
+    const r = deriveCustomerFields({ orders: agg(), subscriptions: [] }, DERIVED_AT);
+    expect(r.firstSubscriptionOrderAt).toEqual(new Date("2025-08-01T00:00:00Z"));
+    expect(r.lastSubscriptionOrderAt).toEqual(new Date("2026-02-01T00:00:00Z"));
+  });
+
+  // 85.7% of the lapsed have no subscription order in our history — it begins
+  // 2025-07-22 and they churned before it. Null is the answer, and a zero or a
+  // fallback to first_order_at would put 13,174 people into a tenure band
+  // computed from a date that has nothing to do with their subscription.
+  it("leaves the proxy dates null when the customer bought no subscription product", () => {
+    const r = deriveCustomerFields(
+      {
+        orders: agg({ firstSubscriptionOrderAt: null, lastSubscriptionOrderAt: null }),
+        subscriptions: [],
+      },
+      DERIVED_AT
+    );
+    expect(r.firstSubscriptionOrderAt).toBeNull();
+    expect(r.lastSubscriptionOrderAt).toBeNull();
+    // The ordinary order dates are still known — the absence is specific.
+    expect(r.firstOrderAt).toEqual(new Date("2025-04-01T00:00:00Z"));
+  });
+
+  it("leaves the proxy dates null for a customer with no orders at all", () => {
+    const r = deriveCustomerFields({ orders: null, subscriptions: [] }, DERIVED_AT);
+    expect(r.firstSubscriptionOrderAt).toBeNull();
+    expect(r.lastSubscriptionOrderAt).toBeNull();
   });
 
   it("always stamps derivedAt", () => {
@@ -197,7 +229,7 @@ describe("deriveCustomerFields — subscriptions", () => {
 const db = createDb("postgres://user:pass@localhost:5432/test");
 
 describe("buildCustomerOrderAggregateQuery", () => {
-  const { sql } = buildCustomerOrderAggregateQuery(db).toSQL();
+  const { sql, params } = buildCustomerOrderAggregateQuery(db).toSQL();
 
   // One lifetime_revenue number averages a $25.79 one-off buyer and a
   // $60-180/yr subscriber into something that describes neither.
@@ -215,6 +247,34 @@ describe("buildCustomerOrderAggregateQuery", () => {
   it("collects distinct product types from line items", () => {
     expect(sql).toMatch(/distinct/i);
     expect(sql).toContain("product_type");
+  });
+
+  // Subscription dates did not survive two app migrations, so first and last
+  // subscription order are the only signup and cancellation proxies we have.
+  // They are scoped by product_type = 'Subscription' rather than by title:
+  // "Color Happy" and the three "Really Awesome Doodles" variants all carry it,
+  // and a title pattern would have to be maintained against the catalogue.
+  it("derives the subscription-order proxy dates from the Subscription product type", () => {
+    expect(sql).toContain("first_subscription_order_at");
+    expect(sql).toContain("last_subscription_order_at");
+    // Bound, not inlined — so it is asserted where it actually appears.
+    expect(params).toContain("Subscription");
+  });
+
+  // is_recurring is set from the order; the proxy dates must come from what was
+  // bought. Color Happy sold 36,604 line items of which only 15,518 sat on a
+  // recurring order — the rest are gifts and one-offs of the same product, and
+  // scoping on is_recurring would silently change which population this is.
+  it("scopes the proxy dates on the product bought, not on is_recurring", () => {
+    // Read the FILTER clauses themselves. Searching the whole statement would
+    // find product_type in the unrelated product-types subquery and pass no
+    // matter what these two are scoped on.
+    const filters = sql.match(/filter \(where[\s\S]*?\)\s*\)/gi) ?? [];
+    expect(filters).toHaveLength(2);
+    for (const f of filters) {
+      expect(f).toContain("li.product_type");
+      expect(f).not.toContain("is_recurring");
+    }
   });
 
   // A customer whose only orders predate line-item capture still has orders.

@@ -65,10 +65,25 @@ describe("transformCustomer", () => {
     expect(r.acceptsMarketing).toBeNull();
   });
 
-  it("maps tags and the customer creation date", () => {
+  // Named customerTags, not tags. shopify_orders.tags holds the *product's*
+  // tags copied onto the order and is contaminated; customer tags carry
+  // subscription lifecycle state and are authoritative. Two columns both called
+  // `tags` is what made one get queried in place of the other.
+  it("maps customer tags to a field named apart from order tags", () => {
     const r = transformCustomer(BASE, SYNCED_AT);
-    expect(r.tags).toEqual(["teacher", "vip"]);
+    expect(r.customerTags).toEqual(["teacher", "vip"]);
+    expect(r).not.toHaveProperty("tags");
+  });
+
+  it("maps the customer creation date", () => {
+    const r = transformCustomer(BASE, SYNCED_AT);
     expect(r.customerCreatedAt).toEqual(new Date("2025-03-01T09:00:00Z"));
+  });
+
+  // A customer with no tags has an empty list; null would mean "we never
+  // fetched them", and the lapsed segment is defined by tag absence.
+  it("distinguishes no tags from tags not fetched", () => {
+    expect(transformCustomer({ ...BASE, tags: [] }, SYNCED_AT).customerTags).toEqual([]);
   });
 
   it("carries PII through to the base table", () => {

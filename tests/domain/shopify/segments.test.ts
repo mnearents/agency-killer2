@@ -55,12 +55,63 @@ describe("SEED_SEGMENTS", () => {
     }
   });
 
-  // ~329 Color Happy rows carry the bulk-import date as order_placed, so tenure
-  // and time-since-cancellation computed over them is fiction.
-  it("excludes bulk-imported subscriptions from the lapsed segment", () => {
+  // Seal holds only the survivors of the most recent of two app migrations, and
+  // Shopify subscription apps do not migrate cancelled subscribers, so each
+  // migration dropped its churned population. Defining lapsed from Seal returns
+  // 71 against a real 15,364 — a 200x undercount that reads as a real number.
+  it("defines the lapsed segment from customer tags, not from Seal", () => {
     const lapsed = SEED_SEGMENTS.find((s) => s.id === "rad_subscribers_lapsed")!;
-    expect(lapsed.definition).toContain("manual_origin");
-    expect(lapsed.notes).toMatch(/manual|import/i);
+    expect(lapsed.definition).toContain("customer_tags");
+    expect(lapsed.definition).not.toContain("analytics.subscriptions");
+  });
+
+  // Both spellings are live in Shopify: inactive_subscriber (9,065) and
+  // inactive-subscriber (7,847). Matching one drops roughly half the segment
+  // and still returns a plausible-looking five-figure number.
+  it("matches both spellings of the inactive-subscriber tag", () => {
+    const lapsed = SEED_SEGMENTS.find((s) => s.id === "rad_subscribers_lapsed")!;
+    expect(lapsed.definition).toContain("inactive_subscriber");
+    expect(lapsed.definition).toContain("inactive-subscriber");
+  });
+
+  it("excludes anyone currently tagged active-subscriber", () => {
+    const lapsed = SEED_SEGMENTS.find((s) => s.id === "rad_subscribers_lapsed")!;
+    expect(lapsed.definition).toMatch(/NOT.*active-subscriber/s);
+  });
+
+  // 85.7% of the lapsed have no subscription order in our history at all, so a
+  // recency band silently describes the 14.3% that do. Requiring the proxy date
+  // to be non-null is what keeps the other 13,174 out of a band they cannot be
+  // placed in, rather than defaulting them into the oldest one.
+  const RECENCY_BANDS = ["lapsed_under_12m", "lapsed_12_to_24m", "lapsed_24m_plus"];
+
+  it("bands the lapsed only where a proxy cancellation date exists", () => {
+    for (const id of RECENCY_BANDS) {
+      const s = SEED_SEGMENTS.find((seg) => seg.id === id);
+      expect(s, id).toBeDefined();
+      expect(s!.definition, id).toContain("last_subscription_order_at IS NOT NULL");
+      // A band that forgot it is a subset of the lapsed would count everyone.
+      expect(s!.definition, id).toContain("inactive_subscriber");
+    }
+  });
+
+  // The bands must partition, not overlap: a customer counted in two of them
+  // makes the three sizes sum to more than the population they describe.
+  it("gives the recency bands non-overlapping bounds", () => {
+    const bounds = RECENCY_BANDS.map(
+      (id) => SEED_SEGMENTS.find((s) => s.id === id)!.definition
+    );
+    expect(bounds[0]).toMatch(/< interval '365 days'/);
+    expect(bounds[1]).toMatch(/>= interval '365 days'/);
+    expect(bounds[1]).toMatch(/< interval '730 days'/);
+    expect(bounds[2]).toMatch(/>= interval '730 days'/);
+    expect(bounds[2]).not.toMatch(/< interval/);
+  });
+
+  it("has a segment for the lapsed with no proxy date, so they are not lost", () => {
+    const undated = SEED_SEGMENTS.find((s) => s.id === "lapsed_no_proxy_date")!;
+    expect(undated).toBeDefined();
+    expect(undated.definition).toContain("last_subscription_order_at IS NULL");
   });
 });
 

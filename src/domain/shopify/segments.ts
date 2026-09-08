@@ -5,7 +5,7 @@
  * cache of what that predicate returned last time it ran; a count read without
  * its timestamp is a number with no date on it.
  *
- * ## Why these definitions do not use tags
+ * ## Two different columns are called "tags", and only one is usable
  *
  * `shopify_orders.tags` looks like customer intent and is not. The tags are the
  * *product's* tags copied onto the order, so `homeschool` appears on 42,094 of
@@ -13,7 +13,16 @@
  * homeschool. A `homeschoolers` segment defined as "orders tagged homeschool"
  * returns roughly the whole customer base and looks entirely plausible while
  * doing it. Every behavioural segment below is therefore defined from what was
- * bought, by product title or type, never from a tag.
+ * bought, by product title or type, never from an order tag.
+ *
+ * `shopify_customers.customer_tags` is the opposite and must not be tarred with
+ * the same brush — that mistake was made here once already. Those tags are
+ * written by the subscription apps and carry lifecycle state, and they are the
+ * only complete record of who has lapsed. Seal cannot answer it: the business
+ * has run three subscription apps and migrated twice, Shopify subscription apps
+ * do not migrate cancelled subscribers, and so each migration dropped its
+ * churned population. Seal holds 593 cancelled subscriptions; the tags hold
+ * 15,364. Anything about churn is defined from customer_tags.
  *
  * ## Predicate safety
  *
@@ -43,6 +52,48 @@ const HOMESCHOOL_TITLES = "Homeschool";
 
 /** Gifting and redemption SKUs — someone buying for another person. */
 const GIFT_TITLES = "^Gift |Gift Card|Redeem ";
+
+/**
+ * Both spellings are live in Shopify — `inactive_subscriber` on 9,065 customers
+ * and `inactive-subscriber` on 7,847, written by different apps at different
+ * times. Matching one drops roughly half the segment and still returns a
+ * five-figure number that looks right.
+ */
+const LAPSED_TAGS = ["inactive_subscriber", "inactive-subscriber"];
+
+/** Written by the current app while a subscription is live. */
+const ACTIVE_TAG = "active-subscriber";
+
+function hasAnyTag(tags: string[]): string {
+  return `(${tags.map((t) => `c.customer_tags @> '["${t}"]'::jsonb`).join(" OR ")})`;
+}
+
+/**
+ * Held a subscription under any app and holds none now.
+ *
+ * `@>` containment rather than the `?|` any-key operator: `?` is a parameter
+ * placeholder in several drivers as well as an operator here, and a predicate
+ * whose meaning depends on which one wins is not worth the brevity.
+ */
+const LAPSED_PREDICATE = `${hasAnyTag(LAPSED_TAGS)} AND NOT ${hasAnyTag([ACTIVE_TAG])}`;
+
+/**
+ * A recency band over the proxy cancellation date.
+ *
+ * `last_subscription_order_at IS NOT NULL` is load-bearing, not defensive.
+ * 13,174 of the 15,364 lapsed have no subscription order in our history at all
+ * — it begins 2025-07-22 and they churned before it — so without this clause
+ * they would fall into whichever band NULL comparisons happen to land in and a
+ * band would silently describe 14% of the people it claims to.
+ */
+function lapsedBand(minDays: number, maxDays: number | null): string {
+  const since = "(now() - c.last_subscription_order_at)";
+  const upper = maxDays === null ? "" : ` AND ${since} < interval '${maxDays} days'`;
+  return (
+    `${LAPSED_PREDICATE} AND c.last_subscription_order_at IS NOT NULL ` +
+    `AND ${since} >= interval '${minDays} days'${upper}`
+  );
+}
 
 function boughtTitleMatching(pattern: string): string {
   return (
@@ -119,21 +170,91 @@ export const SEED_SEGMENTS: NewSegment[] = [
       "Has at least one ACTIVE Seal subscription. Seal carries only Really " +
       "Awesome Doodles; Color Happy subscriptions were run in Appstle and are " +
       "not in this system at all, so this is a RAD number and not a " +
-      "subscriber number.",
+      "subscriber number. Shopify's own active-subscriber tag sits on 4,419 " +
+      "customers against Seal's ~3,794 — kept on Seal because this segment is " +
+      "read alongside tier and status, which only Seal has. Use the tag when " +
+      "the question is how many people are subscribed, not what they are on.",
   },
   {
     id: "rad_subscribers_lapsed",
-    name: "RAD subscribers — lapsed",
-    definition:
-      "c.is_subscriber = 0 AND EXISTS (SELECT 1 FROM analytics.subscriptions s " +
-      "WHERE s.customer_id = c.customer_id AND s.manual_origin = 0)",
+    name: "Lapsed subscribers (all apps)",
+    definition: LAPSED_PREDICATE,
     notes:
-      "Held a RAD subscription and holds none now. Bulk-imported rows " +
-      "(manual_origin = 1) are excluded: their order_placed is the import " +
-      "timestamp, so tenure and time-since-cancellation computed over them is " +
-      "fiction, and those are exactly the fields a win-back campaign splits on. " +
-      "This will NOT reconcile to the ~15,000 lapsed figure — Seal holds 593 " +
-      "cancelled subscriptions in total. See the issue for the reconciliation.",
+      "Tagged inactive_subscriber or inactive-subscriber and not " +
+      "active-subscriber. ~15,364 customers. Defined from customer_tags and " +
+      "NOT from Seal: three subscription apps, two migrations, and Shopify " +
+      "subscription apps do not migrate cancelled subscribers, so each " +
+      "migration dropped its churned population and Seal holds only the " +
+      "survivors of the last one. The Seal-based definition returned 71. " +
+      "Both spellings are matched because both are in use. This spans Color " +
+      "Happy and RAD together — the tags do not distinguish brand, and " +
+      "color_happy_imported / appstle / seal-subscriber are the closest proxy.",
+  },
+  {
+    id: "lapsed_under_12m",
+    name: "Lapsed — under 12 months",
+    definition: lapsedBand(0, 365),
+    notes:
+      "~1,794 customers. Banded on last_subscription_order_at, a proxy for " +
+      "cancellation taken from the last order of a Subscription product. Only " +
+      "the 2,190 lapsed customers who have such an order can be banded at all; " +
+      "the rest are in lapsed_no_proxy_date and are not silently included here.",
+  },
+  {
+    id: "lapsed_12_to_24m",
+    name: "Lapsed — 12 to 24 months",
+    definition: lapsedBand(365, 730),
+    notes:
+      "~396 customers, and they are an artefact worth knowing about: 370 of " +
+      "them have their FIRST subscription order within 14 days of 2025-07-22, " +
+      "where our order history starts. They were already subscribing when the " +
+      "window opened, so their proxy tenure is truncated at the left edge and " +
+      "every one of them reads as short-tenure regardless of what they were. " +
+      "Treat tenure here as unknown, not short.",
+  },
+  {
+    id: "lapsed_24m_plus",
+    name: "Lapsed — 24 months or more",
+    definition: lapsedBand(730, null),
+    notes:
+      "Structurally EMPTY, and expected to stay empty. Order history begins " +
+      "2025-07-22, so the largest computable time-since is 413 days. A zero " +
+      "here means the question cannot be asked from this data, not that nobody " +
+      "churned that long ago — most of the 15,364 did. It exists as a " +
+      "definition so that the zero is visible and explained rather than absent.",
+  },
+  {
+    id: "lapsed_no_proxy_date",
+    name: "Lapsed — no proxy date",
+    definition: `${LAPSED_PREDICATE} AND c.last_subscription_order_at IS NULL`,
+    notes:
+      "~13,174 customers: 85.7% of the lapsed population, of whom 12,783 have " +
+      "no order of any kind in our history. They churned before 2025-07-22, so " +
+      "no signup date, cancellation date or tenure exists for them anywhere in " +
+      "this system. They are reachable — we hold their email and their tags — " +
+      "but they can only be split on tag, never on date. Splitting the lapsed " +
+      "by tenure means addressing the other 14%, and this segment is what makes " +
+      "that visible instead of leaving it as a shortfall nobody notices. " +
+      "Recovering their dates needs an Appstle export, not more query work.",
+  },
+  {
+    id: "lapsed_failed_payment",
+    name: "Lapsed — involuntary (failed payment)",
+    definition:
+      `${LAPSED_PREDICATE} AND ` +
+      hasAnyTag([
+        "appstle-failed-payment",
+        "failed-payment-color-happy",
+        "ch-cancelled-failed-payment",
+        "sub-failed-payment",
+        "subscription-failed-payment",
+      ]),
+    notes:
+      "Lapsed carrying any failed-payment tag — churn by card, not by choice. " +
+      "A distinction worth keeping separate from voluntary churn because the " +
+      "message that wins them back is a different message. Tag names differ by " +
+      "app, hence the list; the union across all five is ~2,400 customers " +
+      "before intersecting with lapsed.",
   },
   {
     id: "grandfathered_spark",

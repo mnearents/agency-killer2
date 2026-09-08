@@ -28,7 +28,10 @@ export function transformCustomer(
     ordersCount: raw.numberOfOrders ? parseInt(raw.numberOfOrders, 10) : null,
     totalSpentCents: dollarsToCentsOrNull(raw.amountSpent?.amount),
 
-    tags: raw.tags,
+    // customerTags, not tags: shopify_orders.tags holds product tags copied
+    // onto the order and means nothing about the buyer, while these carry
+    // subscription lifecycle state. The names are kept apart on purpose.
+    customerTags: raw.tags ?? [],
     // Three states, not two. Shopify reporting no consent record is not the
     // same as a customer declining, and collapsing it to 0 would silently
     // shrink every marketable audience by an unknown amount.
