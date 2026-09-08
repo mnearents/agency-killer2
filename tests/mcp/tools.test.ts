@@ -59,6 +59,10 @@ vi.mock("@/domain/alerts/runner", () => ({
 vi.mock("@/db/freshness", () => ({
   getDataFreshness: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/db/quality", () => ({
+  getDataQuality: vi.fn().mockResolvedValue([]),
+  anyQualityIssue: vi.fn().mockReturnValue(false),
+}));
 vi.mock("@/domain/pilot/queries", () => ({
   getPilotEntries: vi.fn().mockResolvedValue([]),
   noteExists: vi.fn().mockResolvedValue(true),
@@ -74,6 +78,7 @@ import * as voiceQueries from "@/domain/voice/queries";
 import * as subscriptionQueries from "@/domain/subscriptions/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { getDataFreshness } from "@/db/freshness";
+import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import * as pilotQueries from "@/domain/pilot/queries";
 import type { PilotEntry } from "@/domain/pilot/notes";
 
@@ -303,6 +308,56 @@ describe("data_freshness", () => {
     };
 
     expect(result.sources[0].lastRun?.outcome).toBe("not-configured");
+  });
+
+  // A feed can run perfectly and still deliver rows nothing can classify. That
+  // is how product_type sat blank on 2,114 line items for a year behind a
+  // green freshness report.
+  it("reports data quality checks alongside sync recency", async () => {
+    vi.mocked(getDataQuality).mockResolvedValue([
+      {
+        check: "line items with a blank product_type",
+        table: "shopify_line_items",
+        detail: "Cannot be split by product_type.",
+        affected: 1977,
+        total: 58000,
+        status: "issue",
+        affectedPct: 3.4,
+      },
+    ]);
+    vi.mocked(anyQualityIssue).mockReturnValue(true);
+
+    const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+      quality: unknown[];
+      anyQualityIssue: boolean;
+    };
+
+    expect(result.quality).toHaveLength(1);
+    expect(result.anyQualityIssue).toBe(true);
+  });
+
+  it("keeps quality separate from staleness so one cannot mask the other", async () => {
+    vi.mocked(getDataFreshness).mockResolvedValue([]);
+    vi.mocked(getDataQuality).mockResolvedValue([
+      {
+        check: "line items with a blank product_type",
+        table: "shopify_line_items",
+        detail: "Cannot be split by product_type.",
+        affected: 1977,
+        total: 58000,
+        status: "issue",
+        affectedPct: 3.4,
+      },
+    ]);
+    vi.mocked(anyQualityIssue).mockReturnValue(true);
+
+    const result = (await dispatchTool(ctx, "data_freshness", {})) as {
+      anyStale: boolean;
+      anyQualityIssue: boolean;
+    };
+
+    expect(result.anyStale).toBe(false);
+    expect(result.anyQualityIssue).toBe(true);
   });
 });
 

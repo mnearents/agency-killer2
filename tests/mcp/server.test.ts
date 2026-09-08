@@ -10,6 +10,10 @@ vi.mock("@/domain/meta/queries", () => ({
 vi.mock("@/db/freshness", () => ({
   getDataFreshness: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/db/quality", () => ({
+  getDataQuality: vi.fn().mockResolvedValue([]),
+  anyQualityIssue: vi.fn().mockReturnValue(false),
+}));
 
 const ctx: McpToolContext = { db: {} as never, now: () => new Date("2026-09-02T12:00:00Z") };
 
@@ -17,7 +21,12 @@ describe("runToolCall", () => {
   it("returns the tool result as JSON text", async () => {
     const result = await runToolCall(ctx, "data_freshness", {});
     expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0].text)).toEqual({ sources: [], anyStale: false });
+    expect(JSON.parse(result.content[0].text)).toEqual({
+      sources: [],
+      anyStale: false,
+      quality: [],
+      anyQualityIssue: false,
+    });
   });
 
   // A thrown error would kill the stdio transport and take the whole session

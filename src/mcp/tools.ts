@@ -31,6 +31,7 @@ import {
 } from "./args";
 
 import { getDataFreshness } from "@/db/freshness";
+import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
@@ -104,12 +105,20 @@ const dataFreshness: McpTool = {
   name: "data_freshness",
   title: "Data freshness",
   description:
-    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time.",
+    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time. `quality` is a separate axis: rows that arrived through a healthy sync but cannot answer the question being asked of them. A check with status `unknown` inspected nothing and is not a pass.",
   readOnly: true,
   schema: {},
   async run(ctx) {
-    const sources = await getDataFreshness(ctx.db, ctx.now());
-    return { sources, anyStale: sources.some((s) => s.stale) };
+    const [sources, quality] = await Promise.all([
+      getDataFreshness(ctx.db, ctx.now()),
+      getDataQuality(ctx.db),
+    ]);
+    return {
+      sources,
+      anyStale: sources.some((s) => s.stale),
+      quality,
+      anyQualityIssue: anyQualityIssue(quality),
+    };
   },
 };
 
