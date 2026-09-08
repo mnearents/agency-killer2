@@ -113,6 +113,20 @@
       "when": 1788734505275,
       "tag": "0015_analytics_views",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788734509275,
+      "tag": "0019_inventory_view_filter",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788734510275,
+      "tag": "0020_inventory_item_id",
+      "breakpoints": true
     }
   ]
 }

@@ -308,6 +308,14 @@ export const shopifyInventory = pgTable(
     sku: text("sku"),
     quantity: integer("quantity").notNull(),
     tracked: integer("tracked").notNull(), // 0/1
+    /**
+     * Shopify InventoryItem GID — the stock pool, not the variant. Several
+     * variants pointing at one id sell the same physical units, so summing
+     * their quantities counts that stock once per variant. Null until the
+     * first sync after migration 0020, and null for variants Shopify returns
+     * without an inventoryItem.
+     */
+    inventoryItemId: text("inventory_item_id"),
     productStatus: text("product_status").notNull(), // ACTIVE, DRAFT, ARCHIVED
     productType: text("product_type"),
     priceCents: bigint("price_cents", { mode: "number" }).notNull(),
@@ -317,6 +325,7 @@ export const shopifyInventory = pgTable(
   (table) => [
     index("shopify_inventory_product_idx").on(table.productId),
     index("shopify_inventory_status_idx").on(table.productStatus),
+    index("shopify_inventory_item_idx").on(table.inventoryItemId),
   ]
 );
 

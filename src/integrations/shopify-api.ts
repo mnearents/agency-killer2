@@ -49,8 +49,12 @@ export interface ShopifyApiVariant {
   sku: string | null;
   inventoryQuantity: number | null;
   price: string;
-  /** null when Shopify returns no inventory item — treat as untracked. */
-  inventoryItem: { tracked: boolean } | null;
+  /**
+   * null when Shopify returns no inventory item — treat as untracked.
+   * `id` identifies the stock pool: two variants sharing one sell the same
+   * physical units, which is the condition #9 exists to detect.
+   */
+  inventoryItem: { id: string; tracked: boolean } | null;
   product: {
     id: string;
     title: string;
@@ -125,7 +129,7 @@ const INVENTORY_QUERY = `
         sku
         inventoryQuantity
         price
-        inventoryItem { tracked }
+        inventoryItem { id tracked }
         product { id title status productType }
       }
     }
