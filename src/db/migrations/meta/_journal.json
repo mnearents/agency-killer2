@@ -115,17 +115,17 @@
       "breakpoints": true
     },
     {
-      "idx": 19,
+      "idx": 16,
       "version": "7",
-      "when": 1788734509275,
-      "tag": "0019_inventory_view_filter",
+      "when": 1788797922928,
+      "tag": "0016_inventory_view_filter",
       "breakpoints": true
     },
     {
-      "idx": 20,
+      "idx": 17,
       "version": "7",
-      "when": 1788734510275,
-      "tag": "0020_inventory_item_id",
+      "when": 1788797923928,
+      "tag": "0017_inventory_item_id",
       "breakpoints": true
     }
   ]
