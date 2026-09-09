@@ -51,6 +51,27 @@ export interface ShopifyApiCustomer {
   enrollments: string | null; // JSON string of automatik.enrollments metafield
 }
 
+/** The full customer record, for everyone — not just enrollment holders. */
+export interface ShopifyApiCustomerProfile {
+  id: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  createdAt: string;
+  /** Shopify returns this as a string. */
+  numberOfOrders: string;
+  amountSpent: { amount: string } | null;
+  tags: string[];
+  /** Null when Shopify reports no consent record at all — not the same as declining. */
+  emailMarketingConsent: { marketingState: string } | null;
+  /** City/province/country only. Street address is deliberately never requested. */
+  defaultAddress: {
+    city: string | null;
+    province: string | null;
+    country: string | null;
+  } | null;
+}
+
 export interface ShopifyApiVariant {
   id: string;
   title: string;
@@ -82,6 +103,10 @@ export interface ShopifyApiClient {
   getCustomersWithEnrollments(params?: {
     limit?: number;
   }): Promise<ShopifyApiCustomer[]>;
+  /** Every customer, unfiltered — unlike getCustomersWithEnrollments. */
+  getCustomerProfiles(params?: {
+    limit?: number;
+  }): Promise<ShopifyApiCustomerProfile[]>;
   getInventory(params?: { limit?: number }): Promise<ShopifyApiVariant[]>;
 }
 
@@ -128,6 +153,31 @@ const CUSTOMERS_QUERY = `
         metafield(namespace: "automatik", key: "enrollments") {
           value
         }
+      }
+    }
+  }
+`;
+
+/**
+ * Deliberately does NOT request `addresses` or any street field — only the
+ * default address's city/province/country. Geography at that granularity is
+ * analytically useful and not identifying; a street address is neither.
+ */
+const CUSTOMER_PROFILES_QUERY = `
+  query GetCustomerProfiles($first: Int!, $after: String) {
+    customers(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        email
+        firstName
+        lastName
+        createdAt
+        numberOfOrders
+        amountSpent { amount }
+        tags
+        emailMarketingConsent { marketingState }
+        defaultAddress { city province country }
       }
     }
   }
@@ -303,6 +353,36 @@ export function createShopifyApiClient(
       } while (after);
 
       return allCustomers;
+    },
+
+    async getCustomerProfiles(params) {
+      const limit = params?.limit ?? 100;
+      const all: ShopifyApiCustomerProfile[] = [];
+      let after: string | null = null;
+
+      interface ProfilesResponse {
+        customers: {
+          pageInfo: { hasNextPage: boolean; endCursor: string };
+          nodes: ShopifyApiCustomerProfile[];
+        };
+      }
+
+      do {
+        const data: ProfilesResponse = await graphql<ProfilesResponse>(
+          CUSTOMER_PROFILES_QUERY,
+          { first: limit, after }
+        );
+
+        // No filtering. getCustomersWithEnrollments drops customers without the
+        // metafield; this one must not, or every segment is computed over a
+        // subset nobody realises is a subset.
+        all.push(...data.customers.nodes);
+        after = data.customers.pageInfo.hasNextPage
+          ? data.customers.pageInfo.endCursor
+          : null;
+      } while (after);
+
+      return all;
     },
 
     async getInventory(params) {

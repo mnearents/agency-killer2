@@ -26,6 +26,8 @@ import { createDb } from "@/db/client";
 import { syncIncremental, recordUnconfiguredSync } from "@/domain/meta/sync";
 import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
+import { syncCustomers } from "@/domain/shopify/customer-sync";
+import { evaluateSegments } from "@/domain/shopify/segments";
 import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
 import { getInventoryItems } from "@/domain/inventory/queries";
@@ -226,6 +228,38 @@ async function main() {
       console.log(`[sync:inventory] Done: ${result.variants} variants, ${result.pruned} pruned`);
       if (result.errors.length > 0) {
         console.error("[sync:inventory] Errors:", result.errors);
+      }
+    },
+
+    "sync:customers": async () => {
+      if (!shopifyClient) {
+        console.log("[sync:customers] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+        return;
+      }
+      const result = await syncCustomers({ client: shopifyClient, db });
+      // Reported separately, and the rollup line is not printed when it did not
+      // run. Folding both into one "Done" would let a sync that wrote customers
+      // and then failed to roll them up read as a clean run.
+      console.log(`[sync:customers] Customers written: ${result.customers}`);
+      if (result.rollup) {
+        console.log(
+          `[sync:customers] Rollup: ${result.rollup.updated} updated, ` +
+            `${result.rollup.withOrders} with orders, ${result.rollup.subscribers} subscribers`
+        );
+        const segmentResult = await evaluateSegments(db, new Date());
+        console.log(
+          `[sync:customers] Segments: ${segmentResult.evaluated} evaluated, ` +
+            `${segmentResult.failed} failed`
+        );
+      } else {
+        // Segments are counted over the derived columns, so sizing them against
+        // a rollup that did not run produces numbers describing the previous run.
+        console.error(
+          "[sync:customers] Rollup did NOT run — derived fields are stale, segments not re-counted"
+        );
+      }
+      if (result.errors.length > 0) {
+        console.error("[sync:customers] Errors:", result.errors);
       }
     },
 

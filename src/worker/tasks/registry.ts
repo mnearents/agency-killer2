@@ -15,6 +15,7 @@ import type { TaskDefinition } from "@/worker/scheduler";
  *   13:00 UTC (6 AM PT) — Meta ads sync
  *   13:15 UTC           — Shopify sync
  *   13:20 UTC           — Seal subscriptions sync
+ *   13:25 UTC           — Shopify customers sync + rollup + segments
  *   13:30 UTC           — Instagram sync
  *   13:45 UTC           — Inventory sync
  *   14:00 UTC (7 AM PT) — Ads analysis (after syncs finish)
@@ -41,6 +42,15 @@ export function getPhase1Tasks(): TaskDefinition[] {
       // the order table is current keeps a subscription-to-customer join
       // resolvable on the same day's data.
       schedule: { type: "daily", hour: 13, minute: 20 },
+      enabled: true,
+    },
+    {
+      id: "customers-sync",
+      name: "Shopify Customers Sync",
+      // After seal-sync: the rollup reads seal_subscriptions for is_subscriber
+      // and tier, so running it earlier would derive today's customers from
+      // yesterday's subscriptions.
+      schedule: { type: "daily", hour: 13, minute: 25 },
       enabled: true,
     },
     {
@@ -100,6 +110,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "meta-sync": "sync:meta",
     "shopify-sync": "sync:shopify",
     "seal-sync": "sync:seal",
+    "customers-sync": "sync:customers",
     "social-sync": "sync:social",
     "inventory-sync": "sync:inventory",
     "attentive-sync": "sync:attentive",
