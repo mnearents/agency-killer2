@@ -444,11 +444,20 @@ describe("social_performance", () => {
 describe("inventory_status", () => {
   const stocked = {
     variantId: "1", productTitle: "Doodle Pad", variantTitle: null, sku: "D-1",
-    quantity: 500, tracked: true, productStatus: "ACTIVE", unitsSoldLast30d: 1,
+    quantity: 500, priceCents: 2000, tracked: true, productStatus: "ACTIVE",
+    unitsSoldLast30d: 1, unitsSoldLast12m: 12,
   };
   const stockedOut = {
     variantId: "2", productTitle: "Sticker Set", variantTitle: null, sku: "S-1",
-    quantity: 0, tracked: true, productStatus: "ACTIVE", unitsSoldLast30d: 60,
+    quantity: 0, priceCents: 700, tracked: true, productStatus: "ACTIVE",
+    unitsSoldLast30d: 60, unitsSoldLast12m: 720,
+  };
+  // Real shape and real figures: 617 units at $10, selling ~25/month, against
+  // a 31 Dec 2026 deadline.
+  const datedPlanner = {
+    variantId: "3", productTitle: "2026 Dated 5x8 Planner", variantTitle: null,
+    sku: "PLNRD5X8Y26", quantity: 617, priceCents: 1000, tracked: true,
+    productStatus: "ACTIVE", unitsSoldLast30d: 25, unitsSoldLast12m: 300,
   };
 
   it("labels each item with what is actually wrong with it", async () => {
@@ -485,6 +494,101 @@ describe("inventory_status", () => {
       variantsChecked: number;
     };
     expect(result.variantsChecked).toBe(2);
+  });
+
+  // Days of cover cannot see a deadline. This SKU reads ~24 months of cover
+  // and classifies healthy while ~520 of its 617 units are heading for the
+  // skip on 1 January. Cover asks when stock runs out; a dated edition needs
+  // to be asked how much is left when the clock stops.
+  it("measures a dated edition against its deadline, not its days of cover", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([datedPlanner]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {
+      includeHealthy: true,
+    })) as {
+      items: {
+        classification: string;
+        daysOfCover: number | null;
+        datedEdition: { editionYear: number; unitsStranded: number; dollarsStranded: number } | null;
+      }[];
+    };
+
+    const [planner] = result.items;
+    expect(planner.classification).toBe("healthy");
+    expect(planner.daysOfCover).toBeGreaterThan(700);
+    expect(planner.datedEdition).not.toBeNull();
+    expect(planner.datedEdition!.editionYear).toBe(2026);
+    expect(planner.datedEdition!.unitsStranded).toBeGreaterThan(500);
+  });
+
+  // Money crosses this boundary in dollars. $5,210 misread as $521,000 is the
+  // kind of plausible wrong number that gets acted on.
+  it("reports the stranded value in dollars, as every other tool does", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([datedPlanner]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {
+      includeHealthy: true,
+    })) as { items: { datedEdition: { dollarsStranded: number } | null }[] };
+
+    const stranded = result.items[0].datedEdition!;
+    expect(stranded.dollarsStranded).toBeLessThan(10_000);
+    expect(stranded.dollarsStranded).toBeGreaterThan(4_000);
+  });
+
+  it("leaves the dated field null on an undated product", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([stocked]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {
+      includeHealthy: true,
+    })) as { items: { datedEdition: unknown }[] };
+    expect(result.items[0].datedEdition).toBeNull();
+  });
+
+  // The whole point of the flag is that this row is a problem while every
+  // velocity-based classification calls it healthy. Filtering on
+  // classification alone would drop it from the default response.
+  it("returns a stranding dated edition even though it classifies healthy", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([datedPlanner]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {})) as {
+      items: { variantId: string }[];
+    };
+    expect(result.items.map((i) => i.variantId)).toEqual(["3"]);
+  });
+
+  // 997 units of next year's planner, DRAFT, no sales because it isn't on
+  // sale. Whether it strands is genuinely unknown, and unknown is not safe —
+  // it must not be filtered out alongside the healthy stock.
+  it("returns a dated edition whose fate could not be projected", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([
+      {
+        ...datedPlanner,
+        variantId: "4",
+        productTitle: "2027 Dated 8x10 Planner - Pencil Edition",
+        productStatus: "DRAFT",
+        quantity: 997,
+        unitsSoldLast30d: 0,
+      },
+    ]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {})) as {
+      items: { variantId: string; datedEdition: { unitsStranded: number | null } | null }[];
+    };
+    expect(result.items.map((i) => i.variantId)).toEqual(["4"]);
+    expect(result.items[0].datedEdition!.unitsStranded).toBeNull();
+  });
+
+  // A dated edition that will sell through in time is not a problem, so it
+  // must not push its way into a response asking only for problems.
+  it("omits a dated edition that will sell through before its deadline", async () => {
+    vi.mocked(inventoryQueries.getInventoryItems).mockResolvedValue([
+      { ...datedPlanner, quantity: 50, unitsSoldLast30d: 30 },
+    ]);
+
+    const result = (await dispatchTool(ctx, "inventory_status", {})) as {
+      items: unknown[];
+    };
+    expect(result.items).toEqual([]);
   });
 });
 

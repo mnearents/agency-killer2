@@ -51,6 +51,7 @@ import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { classifyItem } from "@/domain/inventory/checks";
 import { computeDailyVelocity, computeDaysOfCover } from "@/domain/inventory/velocity";
+import { computeDatedOverhang } from "@/domain/inventory/dated";
 import { getEntriesByWeek } from "@/domain/calendar/queries";
 import { getAllSamples, getAllRules, getAllBannedWords } from "@/domain/voice/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
@@ -463,7 +464,7 @@ const inventoryStatus: McpTool = {
   name: "inventory_status",
   title: "Inventory status",
   description:
-    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Returns only problems unless includeHealthy is set.",
+    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Dated products — a year in the title, like the 2026 planners — also carry a datedEdition field measuring stock against the end of that year instead of a sell-through rate: unitsStranded is what will still be on the shelf when the edition expires. Returns only problems unless includeHealthy is set, and a dated edition that is stranding stock counts as a problem even when its days of cover read healthy.",
   readOnly: true,
   schema: {
     includeHealthy: { type: "boolean", default: false },
@@ -479,6 +480,7 @@ const inventoryStatus: McpTool = {
 
     const classified = items.map((item) => {
       const velocity = computeDailyVelocity(item.unitsSoldLast30d, SALES_WINDOW_DAYS);
+      const overhang = computeDatedOverhang(item, ctx.now());
       return {
         variantId: item.variantId,
         productTitle: item.productTitle,
@@ -489,13 +491,33 @@ const inventoryStatus: McpTool = {
         dailyVelocity: velocity,
         daysOfCover: computeDaysOfCover(item.quantity, velocity),
         classification: classifyItem(item, options),
+        // Reported alongside the classification rather than folded into it.
+        // The two answer different questions — "when do I run out" and "how
+        // much is left when the year ends" — and the 2026 planners are the
+        // case where they disagree: two years of cover, four months of life.
+        datedEdition: overhang && {
+          editionYear: overhang.editionYear,
+          daysOfSellableLife: overhang.daysOfSellableLife,
+          unitsStranded: overhang.unitsStranded,
+          dollarsStranded:
+            overhang.centsStranded === null ? null : overhang.centsStranded / 100,
+        },
       };
     });
 
+    // A dated edition heading for the skip is a problem no matter what its
+    // days of cover say, and days of cover say "healthy" — filtering on the
+    // classification alone would drop exactly the rows this field exists for.
+    // Null is included too: stock whose fate could not be projected is an open
+    // question, not a clean bill of health.
+    function isProblem(i: (typeof classified)[number]): boolean {
+      const stranded = i.datedEdition?.unitsStranded;
+      if (stranded === null || (stranded !== undefined && stranded > 0)) return true;
+      return i.classification !== "healthy" && i.classification !== "ignored";
+    }
+
     const includeHealthy = args.includeHealthy as boolean;
-    const shown = includeHealthy
-      ? classified
-      : classified.filter((i) => i.classification !== "healthy" && i.classification !== "ignored");
+    const shown = includeHealthy ? classified : classified.filter(isProblem);
 
     return {
       variantsChecked: classified.length,
