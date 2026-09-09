@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { drizzle } from "drizzle-orm/postgres-js";
 import {
   SEED_SEGMENTS,
   assertSafePredicate,
@@ -205,9 +206,14 @@ function createMockDb(counts: Record<string, number | Error>) {
   const outcomes = [...Object.values(counts)];
   let call = 0;
 
-  const db = {
+  const db: Record<string, unknown> = {
     _updates: updates,
+    _txConfigs: [] as unknown[],
     select: () => ({ from: () => Promise.resolve(rows) }),
+    transaction: (cb: (tx: unknown) => unknown, config: unknown) => {
+      (db._txConfigs as unknown[]).push(config);
+      return cb(db);
+    },
     execute: () => {
       const outcome = outcomes[call++];
       if (outcome instanceof Error) return Promise.reject(outcome);
@@ -222,7 +228,10 @@ function createMockDb(counts: Record<string, number | Error>) {
       }),
     }),
   };
-  return db as unknown as Db & { _updates: Array<Record<string, unknown>> };
+  return db as unknown as Db & {
+    _updates: Array<Record<string, unknown>>;
+    _txConfigs: unknown[];
+  };
 }
 
 describe("evaluateSegments", () => {
@@ -269,6 +278,14 @@ describe("evaluateSegments", () => {
     expect(result.failed).toBe(1);
   });
 
+  it("opens the counting transaction with an explicit read-only access mode", async () => {
+    const db = createMockDb({ teachers: 412 });
+    await evaluateSegments(db, NOW);
+    // Not `toHaveBeenCalled` on the wrapper: a transaction opened with no
+    // config is still a transaction, and it is read-write.
+    expect(db._txConfigs).toEqual([{ accessMode: "read only" }]);
+  });
+
   it("records an unsafe predicate as a failure without running it", async () => {
     const db = createMockDb({ teachers: 1 });
     const execute = vi.spyOn(db as unknown as { execute: () => unknown }, "execute");
@@ -281,5 +298,100 @@ describe("evaluateSegments", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(result.failed).toBe(1);
     expect(db._updates[0].lastEvaluationError).toMatch(/;/);
+  });
+});
+
+/**
+ * The read-only transaction, asserted on the SQL rather than on the wrapper.
+ *
+ * `segments.definition` is a Claude-writable column interpolated through
+ * `sql.raw()`. The documented defense is two layers: `assertSafePredicate`'s
+ * blocklist, and a read-only transaction underneath it so that anything the
+ * blocklist misses still cannot write. A blocklist over raw SQL is precisely
+ * the kind of guard that needs a second layer.
+ *
+ * The subtlety is that `db.transaction(cb)` with no config is a perfectly real
+ * transaction — and read-write. It emits no `set transaction` at all. So a test
+ * that asserts a transaction was opened passes on an implementation with no
+ * protection whatsoever. The only honest assertion is on the statement the
+ * server receives.
+ *
+ * These drive the real evaluator through a real Drizzle instance over a fake
+ * postgres-js client that records every query string. Drizzle turns
+ * `{ accessMode: "read only" }` into `set transaction read only` issued inside
+ * the transaction (postgres-js/session.js:117-119 → pg-core/session.js:148-163),
+ * so recording the queries proves the mode reached Postgres.
+ */
+function createRecordingDb() {
+  const queries: string[] = [];
+
+  const client: Record<string, unknown> = {
+    // Fields are mapped positionally from `.values()`, so the select returns
+    // an array-of-arrays matching { id, definition }.
+    unsafe: (query: string) => {
+      queries.push(query);
+      const rows: unknown = /^\s*select "id"/i.test(query)
+        ? [["teachers", "is_teacher = 1"]]
+        : /count\(\*\)/i.test(query)
+          ? [{ count: 7 }]
+          : [];
+      const p = Promise.resolve(rows) as Promise<unknown> & { values: () => Promise<unknown> };
+      p.values = () => Promise.resolve(rows);
+      return p;
+    },
+    begin: async (cb: (c: unknown) => Promise<unknown>) => {
+      queries.push("-- begin");
+      const out = await cb(client);
+      queries.push("-- commit");
+      return out;
+    },
+    options: { parsers: {}, serializers: {} },
+  };
+
+  return { db: drizzle(client as never) as unknown as Db, queries };
+}
+
+describe("evaluateSegments transaction SQL", () => {
+  it("issues `set transaction read only` before the count", async () => {
+    const { db, queries } = createRecordingDb();
+    await evaluateSegments(db, NOW);
+
+    const setMode = queries.findIndex((q) => /^set transaction read only$/i.test(q));
+    const count = queries.findIndex((q) => /count\(\*\)/i.test(q));
+
+    expect(setMode, `no read-only access mode was set; queries were:\n${queries.join("\n")}`)
+      .toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(setMode);
+  });
+
+  it("runs the count inside that transaction rather than beside it", async () => {
+    const { db, queries } = createRecordingDb();
+    await evaluateSegments(db, NOW);
+
+    const begin = queries.indexOf("-- begin");
+    const commit = queries.indexOf("-- commit");
+    const count = queries.findIndex((q) => /count\(\*\)/i.test(q));
+
+    expect(begin).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(begin);
+    expect(count).toBeLessThan(commit);
+  });
+
+  // The counterpart failure: putting the whole loop inside the read-only
+  // transaction would make every write fail, and the evaluator would report
+  // every segment as errored. The update has to stay outside.
+  it("writes the result outside the read-only transaction", async () => {
+    const { db, queries } = createRecordingDb();
+    const result = await evaluateSegments(db, NOW);
+
+    const commit = queries.indexOf("-- commit");
+    const update = queries.findIndex((q) => /^update "segments"/i.test(q));
+
+    // Without this, `commit` is -1 and the ordering assertion below holds of an
+    // implementation that opens no transaction at all.
+    expect(commit).toBeGreaterThan(-1);
+    expect(update).toBeGreaterThan(commit);
+    expect(result.failed).toBe(0);
+    expect(result.sizes).toEqual({ teachers: 7 });
   });
 });

@@ -29,8 +29,16 @@
  * These are SQL fragments interpolated into a counting query, and the table is
  * writable by Claude, so the fragment is untrusted input by design.
  * `assertSafePredicate` fails closed on anything that could end the statement
- * or write, and the count runs inside a read-only transaction. Read-only
- * subqueries are allowed — several definitions genuinely need them.
+ * or write, and the count runs inside a transaction opened `read only`. Both
+ * layers are required: the blocklist is a list of spellings someone thought of,
+ * and the access mode is what holds when they missed one. Read-only subqueries
+ * are allowed — several definitions genuinely need them.
+ *
+ * The second layer was documented here before it existed, and nothing failed
+ * while it did not. `tests/domain/shopify/segments.test.ts` now asserts the
+ * `set transaction read only` that actually reaches Postgres rather than that a
+ * transaction wrapper is present — an unconfigured transaction is read-write
+ * and would satisfy the weaker check.
  */
 
 import { sql } from "drizzle-orm";
@@ -387,8 +395,18 @@ export async function evaluateSegments(
     try {
       assertSafePredicate(row.definition);
 
-      const result = (await db.execute(
-        sql`SELECT COUNT(*)::int AS count FROM ${sql.raw(SEGMENT_SOURCE_VIEW)} c WHERE ${sql.raw(row.definition)}`
+      // Second layer under assertSafePredicate. The predicate is raw SQL from a
+      // Claude-writable column, and a keyword blocklist over raw SQL is exactly
+      // the kind of guard that is one unlisted spelling away from being wrong.
+      // `accessMode` is load-bearing: db.transaction(cb) with no config opens a
+      // perfectly ordinary read-write transaction. Only the write stays outside
+      // — the count is the untrusted part.
+      const result = (await db.transaction(
+        (tx) =>
+          tx.execute(
+            sql`SELECT COUNT(*)::int AS count FROM ${sql.raw(SEGMENT_SOURCE_VIEW)} c WHERE ${sql.raw(row.definition)}`
+          ),
+        { accessMode: "read only" }
       )) as unknown as Array<{ count: number }>;
 
       const count = Number(result[0].count);
