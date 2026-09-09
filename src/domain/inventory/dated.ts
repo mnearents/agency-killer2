@@ -19,13 +19,25 @@
  * value in its enum. "Will this stock out" and "will this expire" are
  * independent — a dated SKU can be about to sell out, which is good news — and
  * folding them together would make one answer overwrite the other.
+ *
+ * ASSUMPTION: demand is projected from the trailing TWELVE MONTHS, not the
+ * trailing thirty days the rest of this module runs on. Dated products are
+ * seasonal by construction — a wall calendar sells almost entirely in Q4 — so a
+ * thirty-day window reads whatever month it happens to be run in as if it were
+ * December. CALPRNT2026 sold 8 units in the thirty days to 2026-09-08 and 512
+ * in the twelve months to the same date; the short window strands 439 units
+ * against a 31 December deadline where the long one strands 310. The annual
+ * figure is not seasonally correct either, but it averages over exactly one
+ * cycle of the seasonality, which is the error this trades away. It does assume
+ * next season resembles last season — worth revisiting if the ads-off period
+ * turns out to have changed the shape of demand rather than just its level.
  */
 
 import type { InventoryItem } from "./checks";
 import { computeDailyVelocity } from "./velocity";
 
-const SALES_WINDOW_DAYS = 30;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DAYS_PER_YEAR = 365;
 
 /**
  * The edition year in a product title, or null if the product is undated.
@@ -118,6 +130,6 @@ function strandedUnits(item: InventoryItem, daysOfSellableLife: number): number 
   // about demand and cannot be projected across the life remaining.
   if (item.productStatus !== "ACTIVE") return null;
 
-  const dailyVelocity = computeDailyVelocity(item.unitsSoldLast30d, SALES_WINDOW_DAYS);
+  const dailyVelocity = computeDailyVelocity(item.unitsSoldLast12m, DAYS_PER_YEAR);
   return Math.max(0, Math.round(item.quantity - dailyVelocity * daysOfSellableLife));
 }

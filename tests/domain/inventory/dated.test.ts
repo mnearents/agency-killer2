@@ -20,6 +20,7 @@ function item(overrides: Partial<InventoryItem> = {}): InventoryItem {
     tracked: true,
     productStatus: "ACTIVE",
     unitsSoldLast30d: 25,
+    unitsSoldLast12m: 300,
     ...overrides,
   };
 }
@@ -86,20 +87,32 @@ describe("computeDatedOverhang", () => {
     ).toBeNull();
   });
 
-  // The distinction the whole module exists for. 617 units at 25/30 per day
-  // sells about 96 over the 115 days left, leaving 521 on the shelf on
-  // January 1st. A velocity ratio calls this 24 months of cover and healthy.
+  // The distinction the whole module exists for. 617 units at 300/year sells
+  // about 95 over the 115 days left, leaving 522 on the shelf on January 1st.
+  // A velocity ratio calls this 24 months of cover and healthy.
   it("strands the stock that will not sell before the deadline", () => {
     const overhang = computeDatedOverhang(item(), NOW)!;
     expect(overhang.editionYear).toBe(2026);
     expect(overhang.daysOfSellableLife).toBe(115);
-    expect(overhang.unitsStranded).toBe(521);
-    expect(overhang.centsStranded).toBe(521_000);
+    expect(overhang.unitsStranded).toBe(522);
+    expect(overhang.centsStranded).toBe(522_000);
+  });
+
+  // A dated product's demand is seasonal by construction — a wall calendar
+  // sells in Q4 — so the 30-day window the rest of the module runs on reads
+  // September as if it were December. CALPRNT2026 sold 8 units in the last 30
+  // days and 512 in the last twelve months; projecting the former across a
+  // December deadline strands 439 units instead of 310.
+  it("projects on the trailing year, not the trailing month", () => {
+    const seasonal = item({ unitsSoldLast30d: 0, unitsSoldLast12m: 1200 });
+    // 1200/year over 115 days is ~378 units, so 617 leaves ~239 behind. On the
+    // 30-day window this SKU sold nothing and every unit would be stranded.
+    expect(computeDatedOverhang(seasonal, NOW)!.unitsStranded).toBe(239);
   });
 
   it("strands nothing when the edition will sell through in time", () => {
     const overhang = computeDatedOverhang(
-      item({ quantity: 50, unitsSoldLast30d: 30 }),
+      item({ quantity: 50, unitsSoldLast12m: 365 }),
       NOW
     )!;
     expect(overhang.unitsStranded).toBe(0);
@@ -111,18 +124,11 @@ describe("computeDatedOverhang", () => {
   // whoever is deciding whether to discount.
   it("still reports the edition when nothing is stranded", () => {
     const overhang = computeDatedOverhang(
-      item({ quantity: 50, unitsSoldLast30d: 30 }),
+      item({ quantity: 50, unitsSoldLast12m: 365 }),
       NOW
     );
     expect(overhang).not.toBeNull();
     expect(overhang!.editionYear).toBe(2026);
-  });
-
-  // The worst case, and the one a velocity ratio cannot see at all: cover is
-  // infinite, so every unit is stranded.
-  it("strands the whole quantity when nothing is selling", () => {
-    const overhang = computeDatedOverhang(item({ unitsSoldLast30d: 0 }), NOW)!;
-    expect(overhang.unitsStranded).toBe(617);
   });
 
   it("strands the whole quantity once the edition's year has passed", () => {
@@ -174,7 +180,7 @@ describe("computeDatedOverhang", () => {
         productStatus: "DRAFT",
         productTitle: "2027 Dated 8x10 Planner - Pencil Edition",
         quantity: 997,
-        unitsSoldLast30d: 0,
+        unitsSoldLast12m: 0,
       }),
       NOW
     )!;
@@ -186,7 +192,7 @@ describe("computeDatedOverhang", () => {
 
   it("does not report an unlisted edition as having nothing stranded", () => {
     const overhang = computeDatedOverhang(
-      item({ productStatus: "UNLISTED", unitsSoldLast30d: 0 }),
+      item({ productStatus: "UNLISTED", unitsSoldLast12m: 0 }),
       NOW
     )!;
     expect(overhang.unitsStranded).not.toBe(0);
@@ -200,7 +206,7 @@ describe("computeDatedOverhang", () => {
         productStatus: "ARCHIVED",
         productTitle: "2024 Wall Calendar",
         quantity: 6,
-        unitsSoldLast30d: 0,
+        unitsSoldLast12m: 0,
       }),
       NOW
     )!;
@@ -210,7 +216,7 @@ describe("computeDatedOverhang", () => {
   // Zero sales from a product that WAS on sale is real evidence, and the
   // strongest case of all — a velocity ratio reports infinite cover.
   it("strands the whole quantity when a listed edition is not selling", () => {
-    const overhang = computeDatedOverhang(item({ unitsSoldLast30d: 0 }), NOW)!;
+    const overhang = computeDatedOverhang(item({ unitsSoldLast12m: 0 }), NOW)!;
     expect(overhang.unitsStranded).toBe(617);
   });
 });

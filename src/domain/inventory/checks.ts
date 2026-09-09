@@ -28,6 +28,8 @@ export interface InventoryItem {
   tracked: boolean;
   productStatus: string;
   unitsSoldLast30d: number;
+  /** Sales over the trailing year. Dated editions project on this. */
+  unitsSoldLast12m: number;
 }
 
 /**

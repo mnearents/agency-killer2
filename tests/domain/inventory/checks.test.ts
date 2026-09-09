@@ -16,6 +16,7 @@ function item(overrides: Partial<InventoryItem> = {}): InventoryItem {
     tracked: true,
     productStatus: "ACTIVE",
     unitsSoldLast30d: 30,
+    unitsSoldLast12m: 365,
     ...overrides,
   };
 }

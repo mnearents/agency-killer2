@@ -445,19 +445,19 @@ describe("inventory_status", () => {
   const stocked = {
     variantId: "1", productTitle: "Doodle Pad", variantTitle: null, sku: "D-1",
     quantity: 500, priceCents: 2000, tracked: true, productStatus: "ACTIVE",
-    unitsSoldLast30d: 1,
+    unitsSoldLast30d: 1, unitsSoldLast12m: 12,
   };
   const stockedOut = {
     variantId: "2", productTitle: "Sticker Set", variantTitle: null, sku: "S-1",
     quantity: 0, priceCents: 700, tracked: true, productStatus: "ACTIVE",
-    unitsSoldLast30d: 60,
+    unitsSoldLast30d: 60, unitsSoldLast12m: 720,
   };
   // Real shape and real figures: 617 units at $10, selling ~25/month, against
   // a 31 Dec 2026 deadline.
   const datedPlanner = {
     variantId: "3", productTitle: "2026 Dated 5x8 Planner", variantTitle: null,
     sku: "PLNRD5X8Y26", quantity: 617, priceCents: 1000, tracked: true,
-    productStatus: "ACTIVE", unitsSoldLast30d: 25,
+    productStatus: "ACTIVE", unitsSoldLast30d: 25, unitsSoldLast12m: 300,
   };
 
   it("labels each item with what is actually wrong with it", async () => {
