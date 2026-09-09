@@ -35,7 +35,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import type { Db } from "./client";
 
@@ -61,12 +62,38 @@ interface JournalEntry {
   tag: string;
 }
 
-/** The newest migration this build carries. */
+/**
+ * The newest migration this build carries.
+ *
+ * Resolved relative to this module first, cwd second — the same two-path pattern
+ * `voice/loader.ts` uses. This gate can stop the worker from starting, so a
+ * failure to locate the journal is an outage of every cron and the Slack bot
+ * rather than a missing feature, and it must not hinge on what directory the
+ * process happens to have been launched from.
+ */
 export function expectedSchemaMark(): SchemaMark {
-  const path = join(process.cwd(), "src/db/migrations/meta/_journal.json");
-  const journal = JSON.parse(readFileSync(path, "utf8")) as {
-    entries: JournalEntry[];
-  };
+  const paths = [
+    join(dirname(fileURLToPath(import.meta.url)), "migrations/meta/_journal.json"),
+    join(process.cwd(), "src/db/migrations/meta/_journal.json"),
+  ];
+
+  let raw: string | null = null;
+  for (const path of paths) {
+    try {
+      raw = readFileSync(path, "utf8");
+      break;
+    } catch {
+      continue;
+    }
+  }
+
+  if (raw === null) {
+    throw new Error(
+      `Could not read the migration journal from any of: ${paths.join(", ")}`
+    );
+  }
+
+  const journal = JSON.parse(raw) as { entries: JournalEntry[] };
 
   if (journal.entries.length === 0) {
     throw new Error("Migration journal is empty — cannot establish a schema mark.");

@@ -58,6 +58,16 @@ describe("expectedSchemaMark", () => {
     expect(expectedSchemaMark().when).toBe(newest.when);
     expect(expectedSchemaMark().tag).toBe(newest.tag);
   });
+
+  // This gate can stop the worker from booting, so failing to find the journal
+  // is an outage of every cron and the Slack bot — not a missing feature. It
+  // must not depend on the directory the process was launched from.
+  it("finds the journal without relying on the working directory", () => {
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue("/nowhere");
+    expect(() => expectedSchemaMark()).not.toThrow();
+    expect(expectedSchemaMark().tag).toMatch(/^\d{4}_/);
+    cwd.mockRestore();
+  });
 });
 
 describe("awaitSchema", () => {
