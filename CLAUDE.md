@@ -336,10 +336,9 @@ eval. Push logic OUT of the model boundary into testable deterministic code.
 ### Assert the call site, not just the behavior
 
 **A component that is never invoked reports identically to one that runs and
-finds nothing.** This is the most common way something ships broken here, and it
-has recurred six times. It is not a bug in the component — the component is
-usually correct and fully tested. The wiring is what is missing, and nothing
-tests the wiring.
+finds nothing.** This is the most common way something ships broken here. It is
+not a bug in the component — the component is usually correct and fully tested.
+The wiring is what is missing, and nothing tests the wiring.
 
 The signals it produces are all healthy ones:
 
@@ -364,6 +363,44 @@ So, when you ship anything invocable:
   header. Write the header after the test passes.
 - **Grep for the call site before calling it done.** Definition + tests +
   no caller is the whole failure. It takes one search.
+
+### Every fallback must be distinguishable from the success it replaces
+
+**If a degraded read and a healthy read produce the same log line and the same
+numbers, the degraded state is undetectable by construction.** No amount of
+attention finds it, because there is nothing to notice. This is the generalised
+form of the section above: the never-invoked component is one case, the silently
+degraded one is the other, and both are invisible for the same reason.
+
+So:
+
+- **Name the source in the output, not just the count.** `Loaded 34 samples` is
+  not a status. `Loaded 34 samples from the database` and `Loaded 34 samples from
+  the seed file (database unreachable)` are.
+- **The source has to survive the return.** The line an operator reads is printed
+  by the caller. A loader that logs its own fallback and then hands back a bare
+  value has told the wrong person.
+- **Never overload one return value with two conditions that need opposite
+  responses.** `null` meaning both "empty" and "the read threw" is what made an
+  unreachable database look like an empty one — and empty gets seeded, while
+  unreachable must not be. Return a discriminated union and let the type force
+  the caller to choose.
+- **Route the degraded path through a different channel.** `console.error`, not
+  `console.log`. A fallback that is styled as routine reads as routine.
+
+And, when verifying that something ran:
+
+**Verify a signal only that thing could have produced — not a state something
+else could have created.** After a corpus sync, `34 rows, 34 keyed, 0 unkeyed`
+looked like proof the sync worked. It was entirely the backfill in the migration
+that shipped alongside it. The sync's success and its total absence produce the
+same numbers, so the numbers are not evidence. That is worse than a silent
+failure: it is a silent failure with corroborating evidence pointing the wrong
+way. Find the signal with a single possible author — a log line only that code
+path emits, a row only it writes, a timestamp only it moves — and check that.
+
+This rule would have caught #54, the Meta sync's daily `Skipped`, the expired
+Seal token, and `seedSegments` never being called.
 
 ### Reconciling two figures that disagree
 - **When two counts disagree, ask what the other side EXCLUDED before reaching
