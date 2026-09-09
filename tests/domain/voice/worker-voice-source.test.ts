@@ -76,6 +76,15 @@ describe("worker voice corpus sync", () => {
     expect(workerSource).toMatch(/syncVoiceCorpus\s*\(\s*db\b/);
   });
 
+  // #54: the worker printed `Loaded voice profile: 34 samples, 3 rules, 7 banned
+  // words` after two failed database calls, because the summary never said where
+  // the profile came from. A degraded boot has to be readable as one.
+  it("names the profile's source in the line it logs about loading it", () => {
+    const summary = workerSource.match(/console\.log\(\s*[\s\S]{0,200}?Loaded voice profile[\s\S]{0,200}?\)/);
+    expect(summary, "no `Loaded voice profile` log line found in the worker").not.toBeNull();
+    expect(summary![0]).toMatch(/voiceProfile\.source/);
+  });
+
   it("syncs before loading, so the load sees this deploy's corpus", () => {
     // Loading first would serve the previous corpus for the whole process
     // lifetime — the profile is read once at startup and never refreshed.

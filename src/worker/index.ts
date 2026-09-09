@@ -183,7 +183,12 @@ async function main() {
   }
 
   const voiceProfile = await loadVoiceProfileWithDb(db);
-  console.log(`[worker] Loaded voice profile: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`);
+  // Naming the source is the point. This line previously read the same whether
+  // the corpus had been reached or not, so a worker permanently serving the
+  // seed file was indistinguishable from a healthy one — see #54.
+  console.log(
+    `[worker] Loaded voice profile from ${voiceProfile.source}: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`
+  );
   const voice = assembleVoicePrompt(voiceProfile);
 
   const orchestrator = anthropicClient
