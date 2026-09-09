@@ -69,19 +69,43 @@ export async function deleteBannedWord(db: Db, id: string) {
 
 // ─── Load full profile from DB ────────────────────────────────────────
 
-export async function loadVoiceProfileFromDb(db: Db): Promise<VoiceProfile | null> {
+/**
+ * The outcome of a corpus read. Three states, never two.
+ *
+ * This used to be `VoiceProfile | null`, where `null` meant both "the tables are
+ * empty" and "the read threw". Those need different responses — an empty corpus
+ * should be seeded, an unreachable one must not be — and collapsing them meant
+ * the caller could not tell which had happened. On 2026-09-09 a worker booted
+ * against a database missing a column it had just started selecting, got `null`,
+ * concluded the corpus was empty, tried to seed it, failed again, and reported a
+ * successful load of the seed file. See #54.
+ */
+export type VoiceProfileRead =
+  | { status: "loaded"; profile: VoiceProfile }
+  | { status: "empty" }
+  | { status: "unavailable"; error: unknown };
+
+export async function readVoiceProfileFromDb(db: Db): Promise<VoiceProfileRead> {
+  let samples, rules, bannedWords;
   try {
-    const [samples, rules, bannedWords] = await Promise.all([
+    [samples, rules, bannedWords] = await Promise.all([
       getAllSamples(db),
       getAllRules(db),
       getAllBannedWords(db),
     ]);
+  } catch (error) {
+    // The tables may not exist yet, the column may be mid-migration, or the
+    // database may simply be down. None of those is an empty corpus.
+    return { status: "unavailable", error };
+  }
 
-    if (samples.length === 0 && rules.length === 0 && bannedWords.length === 0) {
-      return null; // Empty — fall back to seed file
-    }
+  if (samples.length === 0 && rules.length === 0 && bannedWords.length === 0) {
+    return { status: "empty" };
+  }
 
-    return {
+  return {
+    status: "loaded",
+    profile: {
       samples: samples.map((s) => ({
         id: s.id,
         title: s.title,
@@ -90,10 +114,8 @@ export async function loadVoiceProfileFromDb(db: Db): Promise<VoiceProfile | nul
       })),
       rules: rules.map((r) => r.rule),
       bannedWords: bannedWords.map((b) => b.word),
-    };
-  } catch {
-    return null; // Table may not exist yet
-  }
+    },
+  };
 }
 
 /**
