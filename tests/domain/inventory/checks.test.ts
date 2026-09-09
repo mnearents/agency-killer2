@@ -12,6 +12,7 @@ function item(overrides: Partial<InventoryItem> = {}): InventoryItem {
     variantTitle: "Default",
     sku: "RAD-001",
     quantity: 100,
+    priceCents: 2000,
     tracked: true,
     productStatus: "ACTIVE",
     unitsSoldLast30d: 30,

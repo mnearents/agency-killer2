@@ -24,6 +24,7 @@ export interface InventoryItem {
   variantTitle: string | null;
   sku: string | null;
   quantity: number;
+  priceCents: number;
   tracked: boolean;
   productStatus: string;
   unitsSoldLast30d: number;
