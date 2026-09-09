@@ -61,3 +61,28 @@ describe("loadVoiceProfileWithDb", () => {
     expect(profile.samples[0].content).toBe("written after deploy");
   });
 });
+
+/**
+ * The corpus sync has to be invoked, and invoked before the profile is read.
+ *
+ * `syncVoiceCorpus` defined and never called would leave the seed file exactly
+ * as inert as it was before it existed, and the boot log would be identical.
+ * That is the shape this project keeps producing — see CLAUDE.md, "Assert the
+ * call site, not just the behavior" — so the call site is asserted here rather
+ * than only the function's behaviour.
+ */
+describe("worker voice corpus sync", () => {
+  it("calls syncVoiceCorpus", () => {
+    expect(workerSource).toMatch(/syncVoiceCorpus\s*\(\s*db\b/);
+  });
+
+  it("syncs before loading, so the load sees this deploy's corpus", () => {
+    // Loading first would serve the previous corpus for the whole process
+    // lifetime — the profile is read once at startup and never refreshed.
+    const sync = workerSource.search(/syncVoiceCorpus\s*\(\s*db\b/);
+    const load = workerSource.search(/loadVoiceProfileWithDb\s*\(\s*db\s*\)/);
+    expect(sync).toBeGreaterThan(-1);
+    expect(load).toBeGreaterThan(-1);
+    expect(sync).toBeLessThan(load);
+  });
+});

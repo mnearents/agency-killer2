@@ -62,6 +62,7 @@ import { getAllSamples, addSample } from "@/domain/voice/queries";
 import { createOrchestrator } from "@/ai/orchestrator";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
 import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
+import { syncVoiceCorpus } from "@/domain/voice/corpus-sync";
 
 const SCHEDULER_CRON = "* * * * *";
 
@@ -165,6 +166,22 @@ async function main() {
   // Must read the DB, not the seed file: the /voice dashboard, the API route,
   // and the `!voice add` command below all write there. Reading the file makes
   // every one of those edits a no-op that still reports success.
+  // Reconcile the seed-file corpus into the DB before reading it. Without this
+  // the seed file is write-only: it fills the tables on the very first boot and
+  // is never consulted again, so every later corpus edit ships as a real diff
+  // that changes nothing. Rows Tara added are left alone — see corpus-sync.ts.
+  try {
+    const corpus = await syncVoiceCorpus(db, new Date());
+    console.log(
+      `[voice] Corpus sync: ${corpus.inserted} added, ${corpus.updated} updated, ` +
+        `${corpus.removed} removed, ${corpus.unchanged} unchanged, ` +
+        `${corpus.userOwned} authored in-app and left alone`
+    );
+  } catch (err) {
+    // Loud, and does not stop the boot: an out-of-date corpus still generates.
+    console.error("[voice] Corpus sync FAILED — samples may be stale:", err);
+  }
+
   const voiceProfile = await loadVoiceProfileWithDb(db);
   console.log(`[worker] Loaded voice profile: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`);
   const voice = assembleVoicePrompt(voiceProfile);
