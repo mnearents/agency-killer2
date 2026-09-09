@@ -70,3 +70,79 @@ describe("voice corpus shape", () => {
     }
   });
 });
+
+/**
+ * Every sample carries exactly one `channel:` and one `intent:` tag.
+ *
+ * `brand_voice(channel)` selects by these, so an untagged sample is a sample no
+ * generation can ever reach — and it fails silently, as a smaller result set
+ * rather than an error. Before #27 all 84 samples were `tags: []`, which meant
+ * every channel filter returned nothing and read as "no samples for instagram".
+ *
+ * The assertions here are about well-formedness, deliberately not about the
+ * distribution. A test that expects, say, a tenth of the corpus to be
+ * `intent:educational` is a threshold picked to match what happens to be in the
+ * file today, and the next honest edit turns it red for no reason.
+ */
+const CHANNELS = ["instagram", "email", "sms", "ad", "product_page"] as const;
+const INTENTS = ["launch", "nurture", "story", "educational", "promo"] as const;
+
+const namespaced = (s: { tags?: string[] }, prefix: string) =>
+  (s.tags ?? []).filter((t) => t.startsWith(`${prefix}:`));
+
+describe("voice corpus tags", () => {
+  it("gives every sample exactly one channel", () => {
+    for (const s of profile.samples) {
+      const got = namespaced(s, "channel");
+      expect(got, `${s.title} has channel tags: [${got.join(", ")}]`).toHaveLength(1);
+    }
+  });
+
+  it("gives every sample exactly one intent", () => {
+    for (const s of profile.samples) {
+      const got = namespaced(s, "intent");
+      expect(got, `${s.title} has intent tags: [${got.join(", ")}]`).toHaveLength(1);
+    }
+  });
+
+  // A typo'd channel is not a smaller result set, it is a sample that belongs
+  // to a channel nothing will ever ask for.
+  it("uses only channels the system knows about", () => {
+    const known = CHANNELS.map((c) => `channel:${c}`);
+    for (const s of profile.samples) {
+      for (const t of namespaced(s, "channel")) {
+        expect(known, `${s.title} carries an unknown ${t}`).toContain(t);
+      }
+    }
+  });
+
+  it("uses only intents the system knows about", () => {
+    const known = INTENTS.map((i) => `intent:${i}`);
+    for (const s of profile.samples) {
+      for (const t of namespaced(s, "intent")) {
+        expect(known, `${s.title} carries an unknown ${t}`).toContain(t);
+      }
+    }
+  });
+
+  // Tagging all 84 samples `intent:story` satisfies every assertion above while
+  // classifying nothing. This is the cheapest guard against that.
+  it("actually distinguishes intents rather than labelling everything the same", () => {
+    const used = new Set(profile.samples.flatMap((s) => namespaced(s, "intent")));
+    expect([...used].sort().join(", ")).not.toBe("");
+    expect(used.size).toBeGreaterThan(1);
+  });
+
+  // Anything outside the two namespaces is a tag no filter reads, so it is
+  // either a typo'd prefix or a scheme someone added without a consumer.
+  it("carries no tag outside the two namespaces it defines", () => {
+    for (const s of profile.samples) {
+      for (const t of s.tags ?? []) {
+        expect(
+          t.startsWith("channel:") || t.startsWith("intent:"),
+          `${s.title} carries "${t}", which nothing selects on`
+        ).toBe(true);
+      }
+    }
+  });
+});
