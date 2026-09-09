@@ -11,7 +11,7 @@ function raw(overrides: Partial<ShopifyApiVariant> = {}): ShopifyApiVariant {
     sku: "RAD-001",
     inventoryQuantity: 42,
     price: "29.99",
-    inventoryItem: { tracked: true },
+    inventoryItem: { id: "gid://shopify/InventoryItem/222", tracked: true },
     product: {
       id: "gid://shopify/Product/999",
       title: "Really Awesome Doodles",
@@ -42,8 +42,9 @@ describe("transformVariant", () => {
   });
 
   it("stores tracked as 1/0 to match the schema's integer boolean convention", () => {
-    expect(transformVariant(raw({ inventoryItem: { tracked: true } }), syncedAt).tracked).toBe(1);
-    expect(transformVariant(raw({ inventoryItem: { tracked: false } }), syncedAt).tracked).toBe(0);
+    const item = (tracked: boolean) => ({ id: "gid://shopify/InventoryItem/222", tracked });
+    expect(transformVariant(raw({ inventoryItem: item(true) }), syncedAt).tracked).toBe(1);
+    expect(transformVariant(raw({ inventoryItem: item(false) }), syncedAt).tracked).toBe(0);
   });
 
   it("treats a missing inventoryItem as untracked so it cannot raise a false stockout", () => {
@@ -62,5 +63,22 @@ describe("transformVariant", () => {
     const row = transformVariant(raw({ product: null }), syncedAt);
     expect(row.productId).toBeNull();
     expect(row.productStatus).toBe("ARCHIVED");
+  });
+
+  /**
+   * Two variants sharing one inventoryItem id sell the same physical units.
+   * Without this field the only way to spot that is a title regex, which is
+   * what #9 explicitly ruled out.
+   */
+  it("records the inventory item id, which identifies the shared stock pool", () => {
+    const row = transformVariant(
+      raw({ inventoryItem: { id: "gid://shopify/InventoryItem/555", tracked: true } }),
+      syncedAt
+    );
+    expect(row.inventoryItemId).toBe("gid://shopify/InventoryItem/555");
+  });
+
+  it("leaves the inventory item id null when Shopify returns no inventoryItem", () => {
+    expect(transformVariant(raw({ inventoryItem: null }), syncedAt).inventoryItemId).toBeNull();
   });
 });

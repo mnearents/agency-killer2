@@ -28,6 +28,7 @@ export function transformVariant(
     sku: raw.sku ?? null,
     quantity: raw.inventoryQuantity ?? 0,
     tracked: raw.inventoryItem?.tracked ? 1 : 0,
+    inventoryItemId: raw.inventoryItem?.id ?? null,
     // No parent product means it isn't sellable — treat it like an archived one.
     productStatus: raw.product?.status ?? "ARCHIVED",
     productType: raw.product?.productType ?? null,
