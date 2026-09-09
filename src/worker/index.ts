@@ -21,6 +21,7 @@ import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
 import { createEmbeddingClient } from "@/integrations/openai";
 import { createDb } from "@/db/client";
+import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
 
 // Sync services
 import { syncIncremental, recordUnconfiguredSync } from "@/domain/meta/sync";
@@ -81,6 +82,22 @@ async function main() {
 
   // ─── Initialize clients ─────────────────────────────────────────────
   const db = createDb(getEnv("DATABASE_URL"));
+
+  // Migrations are a pre-deploy step on the WEB service; this worker deploys in
+  // parallel with no such step, so nothing orders it after them. Wait for the
+  // schema this build expects, then fail — `restartPolicyMaxRetries = 5` retries
+  // us into a window where the migration has landed. Booting anyway is how #54
+  // happened: a whole deploy cycle of stale output under a clean-looking log.
+  const expected = expectedSchemaMark();
+  const schema = await awaitSchema(createSchemaProbe(db), expected, {
+    attempts: 20,
+    delayMs: 3000,
+  });
+  if (!schema.ok) {
+    console.error(`[worker] REFUSING TO START — ${schema.reason}`);
+    process.exit(1);
+  }
+  console.log(`[worker] Schema confirmed at or past ${expected.tag}.`);
 
   const metaClient = getEnvOptional("META_ACCESS_TOKEN")
     ? createMetaApiClient(getEnv("META_ACCESS_TOKEN"))
