@@ -305,6 +305,22 @@ eval. Push logic OUT of the model boundary into testable deterministic code.
 - **Expected-negative tests assert the EXACT expected error only** — a different
   error must still fail the test.
 
+### Reconciling two figures that disagree
+- **When two counts disagree, ask what the other side EXCLUDED before reaching
+  for a basis mismatch.** "Different data source" and "different denominator"
+  are unfalsifiable — they explain any gap, so they end the investigation with
+  everyone satisfied and nobody right. The cause is almost always a predicate
+  one side applied and the other did not.
+- Do not grid-search filter combinations hunting for a target number. That
+  looks for a coincidence that reproduces the figure, not the reason for it,
+  and a coincidence will eventually turn up.
+- If you cannot reproduce a number, **say so plainly and name your predicates.**
+  Whoever quoted it can usually supply the missing one in a sentence.
+- Name the classifier alongside any figure that depends on one. "Physical AOV"
+  is two different numbers depending on whether physical means
+  `shopify_inventory.tracked = 1` or a known `product_type`, and the gap is not
+  noise — it is every product whose type was never set.
+
 ### Evals (the model boundary)
 - Golden fixtures + a rubric. Pin and version the judge model AND judge prompt;
   a changed judge/fixture is a new eval — re-baseline deliberately.
