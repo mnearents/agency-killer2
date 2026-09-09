@@ -333,6 +333,38 @@ eval. Push logic OUT of the model boundary into testable deterministic code.
 - **Expected-negative tests assert the EXACT expected error only** — a different
   error must still fail the test.
 
+### Assert the call site, not just the behavior
+
+**A component that is never invoked reports identically to one that runs and
+finds nothing.** This is the most common way something ships broken here, and it
+has recurred six times. It is not a bug in the component — the component is
+usually correct and fully tested. The wiring is what is missing, and nothing
+tests the wiring.
+
+The signals it produces are all healthy ones:
+
+- `0 evaluated, 0 failed` — nothing errored, because nothing ran
+- `Skipped — X not set` on a daily cron, logged calmly for months
+- an empty result set, which reads as "no matches" and not as "no query"
+- a stated property in a docstring that no code implements
+
+Every one of those is what a working system also prints on a quiet day. There is
+no threshold, alert or non-zero exit separating them.
+
+So, when you ship anything invocable:
+
+- **Test that it is called, from where it is called.** A unit test over a
+  function wired to nothing passes forever. The deliverable is the test that
+  goes red when the call site is deleted.
+- **Zero is UNKNOWN until something proves it means zero.** A count of nothing
+  over a table that should hold rows is an unrun check, not a clean one. Make
+  the empty case distinguishable in the return value, not just in a log line.
+- **A claim in a comment or docstring is a claim about code that must exist.**
+  If a header says a guard is in place, a test asserts the guard, not the
+  header. Write the header after the test passes.
+- **Grep for the call site before calling it done.** Definition + tests +
+  no caller is the whole failure. It takes one search.
+
 ### Reconciling two figures that disagree
 - **When two counts disagree, ask what the other side EXCLUDED before reaching
   for a basis mismatch.** "Different data source" and "different denominator"
