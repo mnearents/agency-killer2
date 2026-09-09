@@ -676,6 +676,10 @@ export const voiceSamples = pgTable("voice_samples", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
+  // Identifies the seed-file entry this row came from. NULL means a person
+  // wrote it — through /voice, the API, or `!voice add` — and the seed file has
+  // no authority to rewrite or delete it. See domain/voice/corpus-sync.ts.
+  sourceKey: text("source_key").unique(),
   title: text("title").notNull(),
   content: text("content").notNull(),
   tags: jsonb("tags").$type<string[]>().default([]),
@@ -687,6 +691,8 @@ export const voiceRules = pgTable("voice_rules", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
+  /** The rule text, when seed-authored. NULL for rules a person added. */
+  sourceKey: text("source_key").unique(),
   rule: text("rule").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -695,6 +701,8 @@ export const voiceBannedWords = pgTable("voice_banned_words", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
+  /** The word, when seed-authored. NULL for words a person added. */
+  sourceKey: text("source_key").unique(),
   word: text("word").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
