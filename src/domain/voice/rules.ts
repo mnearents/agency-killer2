@@ -1,0 +1,145 @@
+/**
+ * Channel/intent vocabulary and the three-layer rule structure.
+ *
+ * ## The layers
+ *
+ * 1. **Global rules** — apply on every channel. `exceptIn: []`.
+ * 2. **Channel-scoped rules** — apply everywhere *except* the channels listed.
+ * 3. **Banned words** — a flat vocabulary list, global, enforced separately
+ *    because it is authored and synced as its own thing.
+ *
+ * ## Why scope is "except in" rather than "applies to"
+ *
+ * Every rule here is a prohibition. Expressed as an allow-list of channels, a
+ * channel nobody remembered to add inherits *no* prohibitions and reports
+ * compliant — the failure is silent and looks like a pass. Expressed as an
+ * exclusion list, a new channel inherits *every* prohibition, which is wrong in
+ * the safe direction: someone notices a rule firing where it should not, and
+ * nobody ships copy that was never checked.
+ *
+ * ## Why the registry is keyed by rule text
+ *
+ * Rules are authored in `voice-profile-seed.json` and in the `/voice` dashboard,
+ * and stored in `voice_rules` with the text as the source key. Putting scope and
+ * enforcement in the database would mean a migration and a second authoring
+ * surface for something only code can act on. Keying on the text instead means
+ * the seed file stays the authoring surface.
+ *
+ * The cost is that editing a rule's wording orphans its registry entry and
+ * silently downgrades it to unenforced. `rules.test.ts` asserts every seed rule
+ * has an entry, so that drift goes red instead of quiet.
+ *
+ * ## Unenforced rules are allowed, but never invisible
+ *
+ * Most voice guidance cannot be pattern-matched — "sound like a friend" has no
+ * regex. Those rules still belong in the prompt. What is not allowed is for them
+ * to *look* enforced: `rulesForChannel` marks them `unenforced`, and `voiceCheck`
+ * reports them alongside its verdict, so a clean result over three uncheckable
+ * rules cannot be mistaken for a clean result over three checked ones.
+ */
+
+export const CHANNELS = ["instagram", "email", "sms", "ad", "product_page"] as const;
+export type Channel = (typeof CHANNELS)[number];
+
+export const INTENTS = ["launch", "nurture", "story", "educational", "promo"] as const;
+export type Intent = (typeof INTENTS)[number];
+
+export function isChannel(value: unknown): value is Channel {
+  return typeof value === "string" && (CHANNELS as readonly string[]).includes(value);
+}
+
+/**
+ * How a rule is checked.
+ *
+ * `unenforced` is a first-class state, not an error. The alternative — dropping
+ * uncheckable rules, or pretending a prompt instruction is a guardrail — is how
+ * a rules list becomes decorative.
+ */
+export type RuleEnforcement =
+  | { kind: "forbids"; pattern: RegExp }
+  | { kind: "unenforced"; why: string };
+
+export interface RuleScope {
+  /** Channels this rule does NOT apply to. Empty means every channel. */
+  exceptIn: Channel[];
+  enforcement: RuleEnforcement;
+}
+
+export interface ScopedRule {
+  text: string;
+  enforcement: RuleEnforcement;
+}
+
+/**
+ * Tara writes "dang", "freaking", "heck", "crap" and "booty" constantly and
+ * "damn" never — so this list is tuned to her register, not to a generic profanity
+ * filter. A guardrail that trips on "so dang happy" blocks correct copy, and a
+ * guardrail that blocks correct copy gets turned off.
+ */
+const VULGARITY = /\b(?:fuck|shit|bitch|bastard|asshole|cunt|goddamn|damn|piss)\w*/i;
+
+/**
+ * Em dash and en dash, plus the double hyphen people type when they mean one.
+ */
+const EM_DASH = /[—–]|(?<=\s)--(?=\s)/;
+
+/**
+ * A comment-to-DM CTA is correct Instagram copy — five of Tara's captions use it
+ * (IG2, IG6, IG8, IG19, IG32) — and meaningless in an inbox or a text message.
+ */
+const COMMENTS_GET = /comments?\s+get\b/i;
+
+const LINK_IN_BIO = /\blink in (?:my |your |the )?(?:bio|profile|stories)\b/i;
+
+export const RULE_REGISTRY: Record<string, RuleScope> = {
+  "Never use em dashes": {
+    exceptIn: [],
+    enforcement: { kind: "forbids", pattern: EM_DASH },
+  },
+  "No vulgarity": {
+    exceptIn: [],
+    enforcement: { kind: "forbids", pattern: VULGARITY },
+  },
+  "Don't say \"comments get\" as if you're writing an instagram post.": {
+    exceptIn: ["instagram"],
+    enforcement: { kind: "forbids", pattern: COMMENTS_GET },
+  },
+  'Don\'t say "link in bio" outside instagram.': {
+    exceptIn: ["instagram"],
+    enforcement: { kind: "forbids", pattern: LINK_IN_BIO },
+  },
+};
+
+/**
+ * The rules that apply on `channel`, each carrying how (or whether) it is
+ * enforced.
+ *
+ * A rule with no registry entry — one typed into the `/voice` dashboard, or one
+ * whose wording drifted — is kept and applied on every channel, and marked
+ * unenforced. Dropping it would silently discard brand guidance; scoping it
+ * narrowly would be a guess.
+ */
+export function rulesForChannel(rules: string[], channel: Channel): ScopedRule[] {
+  const applicable: ScopedRule[] = [];
+
+  for (const text of rules) {
+    const scope = RULE_REGISTRY[text];
+
+    if (!scope) {
+      applicable.push({
+        text,
+        enforcement: {
+          kind: "unenforced",
+          why: "no registry entry — authored outside the seed file, or the wording changed",
+        },
+      });
+      continue;
+    }
+
+    if (scope.exceptIn.includes(channel)) continue;
+
+    applicable.push({ text, enforcement: scope.enforcement });
+  }
+
+  return applicable;
+}

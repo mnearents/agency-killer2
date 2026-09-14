@@ -1,0 +1,203 @@
+/**
+ * `voiceCheck` is the enforcement half of the voice rules. It fails closed.
+ *
+ * Before this existed, `assembleVoicePrompt` handed the guardrail only
+ * `bannedWords`. "Never use em dashes", "No vulgarity" and the comments-get rule
+ * were injected into the prompt as prose and checked by nothing, so the rules
+ * list read like a gate and behaved like a suggestion.
+ *
+ * The two failure modes that matter here are both "passes when it should not":
+ *
+ * - An **unknown channel** must not resolve to an empty rule set. "No rules
+ *   matched, therefore clean" is the exact shape that made #54 invisible.
+ * - **Unenforced rules must be visible in the result.** `ok: true` with three
+ *   rules nothing can check is not the same as `ok: true` with everything
+ *   checked, and a caller that cannot tell them apart will read the first as the
+ *   second.
+ */
+
+import { describe, it, expect } from "vitest";
+import { voiceCheck } from "@/domain/voice/voice-check";
+import type { VoiceProfile } from "@/domain/voice/voice";
+
+const profile = (over: Partial<VoiceProfile> = {}): VoiceProfile => ({
+  samples: [],
+  rules: [],
+  bannedWords: [],
+  ...over,
+});
+
+const COMMENTS = 'Don\'t say "comments get" as if you\'re writing an instagram post.';
+
+describe("voiceCheck fail-closed behaviour", () => {
+  // An unchecked output is not a clean output.
+  it.each([
+    ["empty string", ""],
+    ["whitespace only", "   \n\t "],
+    ["null", null],
+    ["undefined", undefined],
+    ["a number", 42],
+    ["an object", { text: "hi" }],
+  ])("blocks %s rather than passing it through", (_label, input) => {
+    const r = voiceCheck(input, "email", profile({ rules: ["Never use em dashes"] }));
+    expect(r.ok).toBe(false);
+  });
+
+  // The dangerous case: a typo'd channel matches no scoped rule, and a naive
+  // implementation reports a clean pass over an empty rule set.
+  it("blocks an unknown channel instead of finding nothing to complain about", () => {
+    const r = voiceCheck("perfectly fine copy", "insta", profile({ bannedWords: ["synergy"] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("unknown-channel");
+  });
+
+  it("names the channel it rejected, so the typo is findable", () => {
+    const r = voiceCheck("copy", "e-mail", profile());
+    expect(r.violations[0].detail).toContain("e-mail");
+  });
+
+  // A profile with no rules and no banned words checks nothing. Reporting that
+  // as a pass is indistinguishable from a real one.
+  it("does not report a clean pass when there was nothing to check", () => {
+    const r = voiceCheck("anything at all", "email", profile());
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("nothing-checked");
+  });
+});
+
+describe("voiceCheck rule enforcement", () => {
+  it("catches an em dash", () => {
+    const r = voiceCheck("Planners — they're here", "email", profile({ rules: ["Never use em dashes"] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations[0].rule).toBe("Never use em dashes");
+  });
+
+  it("passes copy that obeys the rule", () => {
+    const r = voiceCheck("Planners are here", "email", profile({ rules: ["Never use em dashes"] }));
+    expect(r.ok).toBe(true);
+    expect(r.violations).toEqual([]);
+  });
+
+  it("catches vulgarity, including inflected forms", () => {
+    for (const bad of ["this is shit", "shitty planner", "damn right", "pissed off"]) {
+      const r = voiceCheck(bad, "email", profile({ rules: ["No vulgarity"] }));
+      expect(r.ok, bad).toBe(false);
+    }
+  });
+
+  // Tara's actual register. A vulgarity check that trips on these blocks correct
+  // copy, and a guardrail that cries wolf gets switched off.
+  it("leaves Tara's own emphatic words alone", () => {
+    for (const fine of [
+      "so dang happy",
+      "freaking cutest ever",
+      "whatever the heck this is",
+      "drove my booty straight to the store",
+      "that's a load of crap",
+    ]) {
+      const r = voiceCheck(fine, "instagram", profile({ rules: ["No vulgarity"] }));
+      expect(r.ok, fine).toBe(true);
+    }
+  });
+
+  it("catches a banned word regardless of case", () => {
+    const r = voiceCheck("What a DELIGHT", "email", profile({ bannedWords: ["delight"] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations[0].detail).toContain("delight");
+  });
+
+  it("does not trip a banned word inside a longer word", () => {
+    const r = voiceCheck("delightful is a different word", "email", profile({ bannedWords: ["delight"] }));
+    expect(r.ok).toBe(true);
+  });
+});
+
+/**
+ * These fixtures carry a global rule alongside the scoped one on purpose. With
+ * only the scoped rule, an instagram check evaluates nothing, and `ok: true`
+ * would mean "nothing ran" rather than "the scoped rule correctly did not fire".
+ * The first draft of these tests made exactly that mistake and `nothing-checked`
+ * caught it.
+ */
+describe("voiceCheck channel scoping", () => {
+  const withGlobal = (scoped: string) => profile({ rules: [scoped, "Never use em dashes"] });
+
+  it("allows a comment CTA on instagram, where it is correct copy", () => {
+    const r = voiceCheck("All comments get a link!", "instagram", withGlobal(COMMENTS));
+    expect(r.ok).toBe(true);
+    expect(r.enforced).toEqual(["Never use em dashes"]);
+  });
+
+  it("blocks the same line in email, where there are no comments", () => {
+    const r = voiceCheck("All comments get a link!", "email", profile({ rules: [COMMENTS] }));
+    expect(r.ok).toBe(false);
+  });
+
+  // Five of Tara's captions say this. If the scoping regressed, the corpus
+  // itself would fail its own check.
+  it("passes the real captions that motivated the scope", () => {
+    for (const line of [
+      "All comments get a link to the all new Halloween advent calendar!",
+      "Easily the best $5 you'll spend this month. All comments get a link!",
+      "All comments get a link to the best sketchbooks and notebooks everrr.",
+    ]) {
+      const r = voiceCheck(line, "instagram", withGlobal(COMMENTS));
+      expect(r.ok, line).toBe(true);
+    }
+  });
+
+  it("blocks link-in-bio phrasing off instagram", () => {
+    for (const c of ["email", "sms"]) {
+      const r = voiceCheck("Link in bio!", c, profile({ rules: ["Don't say \"link in bio\" outside instagram."] }));
+      expect(r.ok, c).toBe(false);
+    }
+  });
+
+  it("allows link-in-bio phrasing on instagram", () => {
+    const r = voiceCheck(
+      "Sign up via link in my profile.",
+      "instagram",
+      withGlobal('Don\'t say "link in bio" outside instagram.')
+    );
+    expect(r.ok).toBe(true);
+  });
+});
+
+describe("voiceCheck reports what it could and could not check", () => {
+  it("lists the rules it actually evaluated", () => {
+    const r = voiceCheck("clean copy", "email", profile({ rules: ["Never use em dashes"] }));
+    expect(r.enforced).toEqual(["Never use em dashes"]);
+  });
+
+  // The rule this module exists to stop being broken: a pass over rules nothing
+  // checks must not read like a pass over rules that were checked.
+  it("names an applicable rule that nothing enforces", () => {
+    const r = voiceCheck("clean copy", "email", profile({
+      rules: ["Never use em dashes", "Sound like a friend, not a brand"],
+    }));
+    expect(r.unenforced).toEqual(["Sound like a friend, not a brand"]);
+    expect(r.enforced).toEqual(["Never use em dashes"]);
+  });
+
+  it("does not list a rule that does not apply to this channel as unenforced", () => {
+    const r = voiceCheck("clean copy", "instagram", profile({ rules: [COMMENTS, "Never use em dashes"] }));
+    expect(r.unenforced).toEqual([]);
+    expect(r.enforced).toEqual(["Never use em dashes"]);
+  });
+
+  // ok must not be weakened into "ok as far as I bothered to look".
+  it("still passes when some rules are unenforced, because blocking everything is not the answer", () => {
+    const r = voiceCheck("clean copy", "email", profile({
+      rules: ["Never use em dashes", "Sound like a friend, not a brand"],
+    }));
+    expect(r.ok).toBe(true);
+    expect(r.unenforced.length).toBeGreaterThan(0);
+  });
+
+  it("reports every violation, not just the first", () => {
+    const r = voiceCheck("This — is shit", "email", profile({
+      rules: ["Never use em dashes", "No vulgarity"],
+    }));
+    expect(r.violations).toHaveLength(2);
+  });
+});

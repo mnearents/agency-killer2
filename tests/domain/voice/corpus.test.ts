@@ -15,6 +15,11 @@
 
 import { describe, it, expect } from "vitest";
 import { loadVoiceProfileFromSeedFile } from "@/domain/voice/loader";
+// Imported, not redeclared. A second copy of this vocabulary drifts from the
+// one `rulesForChannel` actually scopes against, and the corpus would then be
+// asserted valid against channels nothing selects on.
+import { CHANNELS, INTENTS, rulesForChannel } from "@/domain/voice/rules";
+import { voiceCheck } from "@/domain/voice/voice-check";
 
 const profile = loadVoiceProfileFromSeedFile();
 const total = profile.samples.reduce((n, s) => n + s.content.length, 0);
@@ -84,9 +89,6 @@ describe("voice corpus shape", () => {
  * `intent:educational` is a threshold picked to match what happens to be in the
  * file today, and the next honest edit turns it red for no reason.
  */
-const CHANNELS = ["instagram", "email", "sms", "ad", "product_page"] as const;
-const INTENTS = ["launch", "nurture", "story", "educational", "promo"] as const;
-
 const namespaced = (s: { tags?: string[] }, prefix: string) =>
   (s.tags ?? []).filter((t) => t.startsWith(`${prefix}:`));
 
@@ -143,6 +145,41 @@ describe("voice corpus tags", () => {
           `${s.title} carries "${t}", which nothing selects on`
         ).toBe(true);
       }
+    }
+  });
+});
+
+/**
+ * The corpus has to obey the rules that apply to its own channel.
+ *
+ * Few-shot examples outrank instructions. A sample that breaks a rule teaches
+ * the break every time it is included, and the rule text arguing otherwise is
+ * the weaker signal by a wide margin — so a corpus that violates its own rules
+ * is not a contradiction to be resolved on paper, it is a corpus that trains the
+ * violation.
+ *
+ * Banned words are deliberately not checked here yet: IG13 says "a delight to
+ * look at" while "delight" is banned, and which one gives is Tara's call, not a
+ * test's. Turning that red now would only tempt someone to weaken the rule.
+ */
+describe("voice corpus obeys its own rules", () => {
+  const seedRules = profile.rules;
+
+  it("has rules to check, so this suite is not vacuous", () => {
+    expect(seedRules.length).toBeGreaterThan(0);
+    expect(rulesForChannel(seedRules, "instagram").length).toBeGreaterThan(0);
+  });
+
+  it("breaks no rule that applies on instagram", () => {
+    for (const s of profile.samples) {
+      const r = voiceCheck(s.content, "instagram", {
+        ...profile,
+        bannedWords: [],
+      });
+      expect(
+        r.violations.map((v) => v.rule),
+        `${s.title} violates a rule it is supposed to exemplify`
+      ).toEqual([]);
     }
   });
 });
