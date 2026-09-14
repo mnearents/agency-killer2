@@ -2,18 +2,27 @@
  * Voice generation API — compatible with the Figma plugin.
  *
  * POST /api/generate
- * Body: { prompt: string }
+ * Body: { prompt: string, channel?: Channel }
  * Headers: Authorization: Bearer <VOICE_API_KEY>
- * Returns: { generatedText, samplesUsed, model, violations?, warning? }
+ * Returns: { generatedText, samplesUsed, model, channel, rulesEnforced,
+ *            rulesUnenforced?, violations?, warning? }
  *
- * Loads voice profile from DB, assembles the prompt with samples +
- * rules + banned words, calls Claude, checks for banned word violations.
+ * Loads voice profile from DB, assembles the prompt with samples + rules +
+ * banned words, calls Claude, then runs the output through `voiceCheck`.
+ *
+ * `rulesEnforced` is in the response deliberately. This endpoint used to check
+ * banned words with a local regex loop and nothing else, so a response with no
+ * violations meant "no banned words" while reading as "passed the voice rules".
+ * Naming the rules that ran makes a clean result distinguishable from a check
+ * that did very little.
  */
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
+import { voiceCheck } from "@/domain/voice/voice-check";
+import { isChannel, CHANNELS } from "@/domain/voice/rules";
 import Anthropic from "@anthropic-ai/sdk";
 
 const corsHeaders = {
@@ -57,7 +66,7 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { prompt?: string };
+  let body: { prompt?: string; channel?: string };
   try {
     body = await request.json();
   } catch {
@@ -67,6 +76,19 @@ export async function POST(request: Request) {
   const prompt = body.prompt?.trim();
   if (!prompt) {
     return jsonResponse({ error: "Prompt is required" }, 400);
+  }
+
+  // The Figma plugin predates channels and sends none. Instagram is the only
+  // channel the corpus has samples for, and it is the plugin's use case, so it
+  // is the default — but a channel that was *sent* and is not recognised is an
+  // error, not something to quietly fall back from. A typo'd "e-mail" silently
+  // treated as instagram would skip every rule email exists to enforce.
+  const channel = body.channel ?? "instagram";
+  if (!isChannel(channel)) {
+    return jsonResponse(
+      { error: `Unknown channel "${channel}". Expected one of: ${CHANNELS.join(", ")}` },
+      400
+    );
   }
 
   try {
@@ -97,25 +119,24 @@ export async function POST(request: Request) {
       ? message.content[0].text
       : "";
 
-    // Check for banned word violations
-    const violations: string[] = [];
-    if (profile.bannedWords.length > 0) {
-      const lowerText = generatedText.toLowerCase();
-      for (const word of profile.bannedWords) {
-        const regex = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
-        if (regex.test(lowerText)) {
-          violations.push(word);
-        }
-      }
-    }
+    // Checked through the shared guardrail rather than a local banned-word loop.
+    // The loop this replaces enforced banned words only, so "never use em
+    // dashes" and the rest were prompt text that nothing verified.
+    const check = voiceCheck(generatedText, channel, profile);
+    const violations = check.violations.map((v) => v.detail);
 
     return jsonResponse({
       generatedText,
       samplesUsed: profile.samples.length,
       model: "claude-sonnet-4-5-20250929",
+      channel,
+      // Which rules actually ran. A caller that sees no violations and no
+      // enforced list cannot tell a clean check from one that did nothing.
+      rulesEnforced: check.enforced,
+      rulesUnenforced: check.unenforced.length > 0 ? check.unenforced : undefined,
       violations: violations.length > 0 ? violations : undefined,
       warning: violations.length > 0
-        ? `Generated text contains banned words/phrases: ${violations.join(", ")}`
+        ? `Generated text failed the voice check for ${channel}: ${violations.join("; ")}`
         : undefined,
     });
   } catch (err) {

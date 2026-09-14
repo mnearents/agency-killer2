@@ -844,7 +844,8 @@
   "rules": [
     "Never use em dashes",
     "No vulgarity",
-    "Don't say \"comments get\" as if you're writing an instagram post."
+    "Don't say \"comments get\" as if you're writing an instagram post.",
+    "Don't say \"link in bio\" outside instagram."
   ],
   "bannedWords": [
     "synergy",
