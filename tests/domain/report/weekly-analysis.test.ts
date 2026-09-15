@@ -4,6 +4,7 @@ import {
   type WeeklyReportInput,
 } from "@/domain/report/weekly-analysis";
 import type { VoicePromptResult } from "@/domain/voice/voice";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 
 const mockVoice: VoicePromptResult = {
   systemPrompt: "You are a brand voice assistant.",
@@ -12,6 +13,9 @@ const mockVoice: VoicePromptResult = {
     checkPii: true,
     checkFabricatedStats: false,
   },
+  audience: UNSPECIFIED,
+  rules: [],
+  samples: { source: { kind: "whole-corpus-unspecified" }, samples: [], corpusSize: 0 },
 };
 
 function makeInput(overrides: Partial<WeeklyReportInput> = {}): WeeklyReportInput {

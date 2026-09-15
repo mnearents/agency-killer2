@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { analyzeAdPerformance, type AnalyzeDeps } from "@/domain/meta/analyze";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 import type { OrchestratorResult } from "@/ai/orchestrator";
 
 const VOICE_PROFILE: VoiceProfile = {
@@ -28,7 +29,7 @@ function makeDeps(
 ): AnalyzeDeps {
   return {
     db: {} as AnalyzeDeps["db"], // queries are mocked
-    voice: assembleVoicePrompt(VOICE_PROFILE),
+    voice: assembleVoicePrompt(VOICE_PROFILE, UNSPECIFIED),
     runOrchestrator: vi.fn().mockResolvedValue(orchestratorResponse),
   };
 }

@@ -38,7 +38,7 @@ describe("generateEmailCreative", () => {
           }),
         }),
       } as unknown as EmailGenerateDeps["db"],
-      voice: assembleVoicePrompt(VOICE_PROFILE),
+      voice: assembleVoicePrompt(VOICE_PROFILE, "email"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
         text: validJson,
@@ -69,7 +69,7 @@ describe("generateEmailCreative", () => {
           }),
         }),
       } as unknown as EmailGenerateDeps["db"],
-      voice: assembleVoicePrompt(VOICE_PROFILE),
+      voice: assembleVoicePrompt(VOICE_PROFILE, "email"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
         guardrailResult: {

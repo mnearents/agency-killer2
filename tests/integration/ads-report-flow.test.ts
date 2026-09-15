@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { parseMessage } from "@/worker/slack/router";
 import { routeCommand, type ParsedCommand } from "@/worker/slack/router";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 import { handleAdsReport, type AdsReportDeps } from "@/worker/slack/handlers/ads-report";
 import { formatOrchestratorResult, formatGuardrailError, formatUnknownCommand } from "@/worker/slack/formatter";
 import type { OrchestratorResult } from "@/ai/orchestrator";
@@ -119,7 +120,7 @@ describe("ads report: full flow", () => {
     expect(route.handler).toBe("meta:analysis");
 
     // Step 3: Set up dependencies with mocks
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, UNSPECIFIED);
 
     const deps: AdsReportDeps = {
       getInsightRows: vi.fn().mockResolvedValue(MOCK_INSIGHTS),
@@ -154,7 +155,7 @@ describe("ads report: full flow", () => {
   });
 
   it("returns error when orchestrator guardrails block the response", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, UNSPECIFIED);
 
     const deps: AdsReportDeps = {
       getInsightRows: vi.fn().mockResolvedValue(MOCK_INSIGHTS),
@@ -180,7 +181,7 @@ describe("ads report: full flow", () => {
   });
 
   it("handles empty insight data gracefully", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, UNSPECIFIED);
 
     const deps: AdsReportDeps = {
       getInsightRows: vi.fn().mockResolvedValue([]),
