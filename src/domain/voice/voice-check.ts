@@ -15,7 +15,9 @@
  * - **An unknown channel.** Scope lookup on a typo matches no channel-scoped
  *   rule, and the natural result is an empty violation list — a clean pass over
  *   a rule set that was never assembled. This is the exact shape of #54 and it
- *   is rejected explicitly rather than relied on to fall out correctly.
+ *   is rejected explicitly rather than relied on to fall out correctly. A caller
+ *   that genuinely does not know its channel passes `UNSPECIFIED`, which applies
+ *   every rule; it does not get to guess at one.
  * - **A profile with nothing to check.** Zero rules and zero banned words means
  *   the check did no work, which is not the same as the copy being fine.
  *
@@ -27,7 +29,7 @@
  * less than it knows.
  */
 
-import { isChannel, rulesForChannel, type Channel } from "./rules";
+import { isRuleAudience, rulesForChannel, type RuleAudience } from "./rules";
 import type { VoiceProfile } from "./voice";
 
 export interface VoiceViolation {
@@ -38,8 +40,11 @@ export interface VoiceViolation {
 
 export interface VoiceCheckResult {
   ok: boolean;
-  /** Null when the channel was not recognised. */
-  channel: Channel | null;
+  /**
+   * The audience the check ran for, or null when it was not recognised.
+   * `UNSPECIFIED` is a recognised audience and means every rule was applied.
+   */
+  channel: RuleAudience | null;
   violations: VoiceViolation[];
   /** Rules that applied to this channel and were actually evaluated. */
   enforced: string[];
@@ -58,7 +63,10 @@ export function voiceCheck(
 ): VoiceCheckResult {
   const empty = { channel: null, enforced: [], unenforced: [] };
 
-  if (!isChannel(channel)) {
+  // `UNSPECIFIED` passes here and resolves to every rule. A *typo* does not:
+  // "unspecifed" and "insta" are still refused, because an audience nobody
+  // meant to name selects a rule set nobody meant to apply.
+  if (!isRuleAudience(channel)) {
     return {
       ...empty,
       ok: false,

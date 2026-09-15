@@ -18,6 +18,7 @@
 
 import { describe, it, expect } from "vitest";
 import { voiceCheck } from "@/domain/voice/voice-check";
+import { CHANNELS, UNSPECIFIED } from "@/domain/voice/rules";
 import type { VoiceProfile } from "@/domain/voice/voice";
 
 const profile = (over: Partial<VoiceProfile> = {}): VoiceProfile => ({
@@ -160,6 +161,42 @@ describe("voiceCheck channel scoping", () => {
       withGlobal('Don\'t say "link in bio" outside instagram.')
     );
     expect(r.ok).toBe(true);
+  });
+});
+
+/**
+ * The Figma plugin is Matt's main copy tool and is used mostly for **email**. It
+ * sends no channel. Defaulting that to instagram would have applied Instagram's
+ * exclusions to email copy and permitted "link in bio" and comment CTAs in the
+ * one context where they are wrong — the leakage this scoping exists to prevent,
+ * shipped as a default.
+ */
+describe("voiceCheck with an unspecified channel", () => {
+  const scoped = profile({
+    rules: [COMMENTS, 'Don\'t say "link in bio" outside instagram.', "Never use em dashes"],
+  });
+
+  it("enforces rules instagram is excused from", () => {
+    expect(voiceCheck("All comments get a link!", UNSPECIFIED, scoped).ok).toBe(false);
+    expect(voiceCheck("Link in bio!", UNSPECIFIED, scoped).ok).toBe(false);
+  });
+
+  it("is stricter than any real channel, never more permissive", () => {
+    const unspecified = voiceCheck("clean copy", UNSPECIFIED, scoped).enforced;
+    for (const c of CHANNELS) {
+      const forChannel = voiceCheck("clean copy", c, scoped).enforced;
+      for (const rule of forChannel) expect(unspecified, `${c}: ${rule}`).toContain(rule);
+    }
+  });
+
+  it("still passes copy that breaks nothing", () => {
+    expect(voiceCheck("Planners are here and they are lovely", UNSPECIFIED, scoped).ok).toBe(true);
+  });
+
+  // "unspecified" is a deliberate absence. A typo is not.
+  it("does not make the unknown-channel guard permissive", () => {
+    expect(voiceCheck("copy", "unspecifed", scoped).ok).toBe(false);
+    expect(voiceCheck("copy", "insta", scoped).ok).toBe(false);
   });
 });
 
