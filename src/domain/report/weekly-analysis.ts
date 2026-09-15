@@ -78,6 +78,9 @@ export function buildWeeklyReportRequest(
   const system = WEEKLY_REPORT_SYSTEM + "\n\n" + input.voice.systemPrompt;
 
   return {
+    // Inherited from the prompt, so the rules the model was steered by and
+    // the rules it is graded against cannot drift apart.
+    audience: input.voice.audience,
     prompt,
     system,
     guardrails,

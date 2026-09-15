@@ -7,6 +7,7 @@
  */
 
 import { App } from "@slack/bolt";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 import { parseMessage, routeCommand } from "./router";
 import { formatOrchestratorResult, formatUnknownCommand, type SlackResponse } from "./formatter";
 import type { OrchestratorRequest, OrchestratorResult } from "@/ai/orchestrator";
@@ -120,6 +121,11 @@ export function createSlackApp(deps: SlackAppDeps) {
         const prompt = contextParts.join("\n\n");
 
         const result = await deps.runOrchestrator({
+          // A conversational answer to Tara, not copy for a marketing channel.
+          // `UNSPECIFIED` is excused from nothing, which is the right default
+          // for text nobody classified — it is never more permissive than a
+          // real channel.
+          audience: UNSPECIFIED,
           prompt,
           system: `You are the marketing strategist for Rad & Happy, a stationery and lifestyle e-commerce brand. You have access to live data from the store's ad platform, Shopify, Instagram, and email/SMS system.
 

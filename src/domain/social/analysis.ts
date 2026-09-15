@@ -182,6 +182,9 @@ export function buildSocialAnalysisRequest(
   const system = SOCIAL_ANALYSIS_SYSTEM + "\n\n" + input.voice.systemPrompt;
 
   return {
+    // Inherited from the prompt, so the rules the model was steered by and
+    // the rules it is graded against cannot drift apart.
+    audience: input.voice.audience,
     prompt,
     system,
     guardrails,

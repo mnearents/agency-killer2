@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../mocks/orchestrator";
 import { parseMessage, routeCommand, type ParsedCommand } from "@/worker/slack/router";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
 import { handleEmailDesign, type EmailDesignDeps } from "@/worker/slack/handlers/email-design";
@@ -75,6 +76,7 @@ describe("email design: full flow", () => {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: VALID_CREATIVE_JSON,
         inputTokens: 1000,
         outputTokens: 300,
@@ -115,6 +117,7 @@ describe("email design: full flow", () => {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: VALID_CREATIVE_JSON,
         inputTokens: 1000,
         outputTokens: 300,
@@ -139,6 +142,7 @@ describe("email design: full flow", () => {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
+        voice: null,
         guardrailResult: {
           passed: false,
           violations: [
@@ -176,7 +180,7 @@ describe("guardrail config cross-check: ads vs email", () => {
       getCampaignName: vi.fn().mockResolvedValue("Test"),
       runOrchestrator: vi.fn().mockImplementation((req: unknown) => {
         adsCalls.push(req);
-        return { ok: true, text: "OK", inputTokens: 100, outputTokens: 10 };
+        return { ok: true, voice: cleanVoiceVerdict(), text: "OK", inputTokens: 100, outputTokens: 10 };
       }),
       voice,
     };
@@ -185,7 +189,7 @@ describe("guardrail config cross-check: ads vs email", () => {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
       runOrchestrator: vi.fn().mockImplementation((req: unknown) => {
         emailCalls.push(req);
-        return { ok: true, text: VALID_CREATIVE_JSON, inputTokens: 100, outputTokens: 10 };
+        return { ok: true, voice: cleanVoiceVerdict(), text: VALID_CREATIVE_JSON, inputTokens: 100, outputTokens: 10 };
       }),
       voice,
     };

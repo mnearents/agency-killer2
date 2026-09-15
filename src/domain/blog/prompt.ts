@@ -9,6 +9,7 @@
 
 import type { GuardrailOptions } from "@/ai/guardrails";
 import type { OrchestratorRequest } from "@/ai/orchestrator";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 import {
   AI_WRITING_AVOIDANCE_INSTRUCTIONS,
   AI_WRITING_BANNED_WORDS,
@@ -84,5 +85,15 @@ export function buildBlogRequest(
 
   const guardrails = buildBlogGuardrails(voiceBannedWords);
 
-  return { prompt, system, guardrails };
+  return {
+    // Blogs deliberately do not use Tara's voice — hers sounds forced in long
+    // form — so there is no assembled prompt to inherit an audience from. Not
+    // using her tone is not the same as being excused from the brand's
+    // prohibitions: em dashes and vulgarity still apply, so this names the
+    // audience excused from nothing.
+    audience: UNSPECIFIED,
+    prompt,
+    system,
+    guardrails,
+  };
 }

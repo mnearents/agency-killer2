@@ -10,7 +10,7 @@ import { createSchedulerState, getDueTasks, recordTaskRun } from "./scheduler";
 import { dispatchDueTasks, type DispatcherConfig } from "./dispatcher";
 import { getPhase1Tasks, getTaskHandlerMap } from "./tasks/registry";
 import { createSlackApp } from "./slack/app";
-import type { SlackResponse } from "./slack/formatter";
+import { AI_UNAVAILABLE, type SlackResponse } from "./slack/formatter";
 
 // Real API clients
 import { createMetaApiClient } from "@/integrations/meta-api";
@@ -236,7 +236,14 @@ async function main() {
   const baseGuardrails = assembleVoicePrompt(voiceProfile, UNSPECIFIED).guardrailOptions;
 
   const orchestrator = anthropicClient
-    ? createOrchestrator({ client: anthropicClient, defaultGuardrails: baseGuardrails })
+    ? createOrchestrator({
+        client: anthropicClient,
+        defaultGuardrails: baseGuardrails,
+        // Every generation is voice-checked here rather than at each generator.
+        // `voiceCheck` shipped with one caller out of six; six call sites can
+        // drift to five, a required config field cannot go missing.
+        voiceProfile,
+      })
     : null;
 
   // ─── Register task handlers ─────────────────────────────────────────
@@ -1208,11 +1215,22 @@ async function main() {
   const slackApp = createSlackApp({
     runOrchestrator: async (request) => {
       if (!orchestrator) {
+        // Was `ok: true` with an apology as its text — a failure wearing a
+        // success's clothes, which is the shape this codebase has produced
+        // nine times. Nothing generated, nothing checked, so nothing here is
+        // allowed to read as a generation that came back clean.
         return {
-          ok: true as const,
-          text: "AI responses are not available — ANTHROPIC_API_KEY not set.",
-          inputTokens: 0,
-          outputTokens: 0,
+          ok: false as const,
+          voice: null,
+          guardrailResult: {
+            passed: false,
+            violations: [
+              {
+                rule: AI_UNAVAILABLE,
+                detail: "AI responses are not available. ANTHROPIC_API_KEY is not set.",
+              },
+            ],
+          },
         };
       }
       return orchestrator.run(request);
