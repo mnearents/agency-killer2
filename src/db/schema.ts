@@ -1130,6 +1130,96 @@ export type DraftDecisionRow = typeof draftDecisions.$inferSelect;
 export type NewDraftDecisionRow = typeof draftDecisions.$inferInsert;
 
 /**
+ * Segment pushes to Attentive — the history that makes a diff possible at all.
+ *
+ * Attentive exposes no endpoint that reads segment membership back. That
+ * absence is why #23 inverted into #32, and it means "what is in the segment
+ * right now" is not knowable from Attentive. The only possible basis for a
+ * diff is a record of what we last sent, which is this table.
+ *
+ * Removals depend entirely on it. A segment that is only ever added to is
+ * wrong the moment someone resubscribes, and they keep receiving win-back
+ * campaigns as a paying customer.
+ *
+ * Append-only, like every other table Claude writes. A dry run is recorded
+ * too, with `dry_run = 1`, because "we looked and decided not to" is worth
+ * keeping — but only a completed real push defines what Attentive holds.
+ */
+export const segmentPushes = pgTable(
+  "segment_pushes",
+  {
+    id: text("id").primaryKey(),
+    segmentId: text("segment_id").notNull(),
+    /** The externalId the segment carries in Attentive. */
+    externalId: text("external_id").notNull(),
+
+    /** 1 for a dry run, 0 for a real push. Only real pushes define membership. */
+    dryRun: integer("dry_run").notNull(),
+
+    /** The fingerprint of the diff that was approved. See planToken. */
+    planToken: text("plan_token").notNull(),
+
+    addedCount: integer("added_count").notNull(),
+    removedCount: integer("removed_count").notNull(),
+    unchangedCount: integer("unchanged_count").notNull(),
+
+    /**
+     * How many of the members a marketing message would actually reach, and
+     * how many were checked to find out. Null means it was not measured —
+     * never 0, which would claim nobody is reachable.
+     */
+    reachableChecked: integer("reachable_checked"),
+    reachableEligible: integer("reachable_eligible"),
+
+    /** Attentive job ids, so an outcome can be chased after the fact. */
+    batchJobIds: jsonb("batch_job_ids").$type<string[]>().notNull().default([]),
+
+    /**
+     * Per-record outcome, read from each job's result file. Null means the
+     * outcome was never established — the API's COMPLETED status alone does
+     * not establish it, so null is the honest value rather than 0 failures.
+     */
+    recordsSucceeded: integer("records_succeeded"),
+    recordsFailed: integer("records_failed"),
+
+    /** Non-null when the push did not do what it appears to have done. */
+    problem: text("problem"),
+
+    /** The person who approved it. Never an agent — see drafts.ts. */
+    pushedBy: text("pushed_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("segment_pushes_segment_idx").on(table.segmentId),
+    index("segment_pushes_created_idx").on(table.createdAt),
+  ]
+);
+
+export type SegmentPushRow = typeof segmentPushes.$inferSelect;
+export type NewSegmentPushRow = typeof segmentPushes.$inferInsert;
+
+/**
+ * The membership a real push sent, one row per member.
+ *
+ * Stored rather than recomputed, because the underlying customer data moves:
+ * re-running the predicate later answers "who matches now", not "who did we
+ * send". Only the second one can produce a correct removal list.
+ */
+export const segmentPushMembers = pgTable(
+  "segment_push_members",
+  {
+    pushId: text("push_id").notNull(),
+    email: text("email").notNull(),
+  },
+  (table) => [
+    index("segment_push_members_push_idx").on(table.pushId),
+    uniqueIndex("segment_push_members_unique").on(table.pushId, table.email),
+  ]
+);
+
+export type SegmentPushMemberRow = typeof segmentPushMembers.$inferSelect;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

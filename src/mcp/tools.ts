@@ -88,6 +88,16 @@ import {
   type DraftStatus,
   type DraftType,
 } from "@/domain/drafts/drafts";
+import type { AttentiveWriteClient } from "@/integrations/attentive-write";
+import { computePushPlan, planToken, canPush } from "@/domain/segments/push";
+import {
+  getSegmentMembers,
+  getLastRealPush,
+  recordPush,
+  getPushHistory,
+} from "@/domain/segments/queries";
+import { SEED_SEGMENTS } from "@/domain/shopify/segments";
+import { isAgentAttribution } from "@/domain/drafts/drafts";
 import {
   getDrafts,
   getDraftDecisions,
@@ -116,6 +126,12 @@ export interface McpToolContext {
    * unavailable — it never falls back to `db`, which connects as the owner.
    */
   analytics?: AnalyticsDb;
+  /**
+   * The Attentive write client. Absent when ATTENTIVE_API_KEY is unset, in
+   * which case the push tools report themselves unavailable — they never fall
+   * through to a no-op that reads like a push that happened.
+   */
+  attentive?: AttentiveWriteClient;
 }
 
 export interface McpTool {
@@ -1138,6 +1154,275 @@ const draftsList: McpTool = {
   },
 };
 
+// ─── Segment push (Attentive) ─────────────────────────────────────────
+
+const SEGMENT_IDS = SEED_SEGMENTS.map((s) => s.id) as [string, ...string[]];
+const SAMPLE_SIZE = 5;
+
+/** Addresses never leave this module in bulk — a handful is enough to sanity-check. */
+const sample = (emails: string[]) => emails.slice(0, SAMPLE_SIZE);
+
+const NO_CLIENT =
+  "The Attentive client is not configured: ATTENTIVE_API_KEY is not set for this process. " +
+  "Nothing was pushed and nothing was checked.";
+
+async function buildPlan(
+  ctx: McpToolContext,
+  segmentId: string,
+  opts: { checkReachability?: boolean } = {}
+) {
+  const definition = SEED_SEGMENTS.find((s) => s.id === segmentId)!.definition;
+  const membership = await getSegmentMembers(ctx.db, definition);
+  const last = await getLastRealPush(ctx.db, segmentId);
+
+  let reachability = null;
+  if (opts.checkReachability && ctx.attentive && membership.emails.length > 0) {
+    const elig = await ctx.attentive.getEligibility(membership.emails);
+    reachability = {
+      checked: elig.length,
+      known: elig.filter((e) => e.known).length,
+      marketingEligible: elig.filter((e) => e.marketingEligible).length,
+    };
+  }
+
+  const plan = computePushPlan({
+    segmentId,
+    externalId: segmentId,
+    currentMembers: membership.emails,
+    lastPushedMembers: last ? last.members : null,
+    membershipError: membership.error,
+    reachability,
+  });
+
+  return { plan, membership };
+}
+
+const segmentPushDryRun: McpTool = {
+  name: "segment_push_dry_run",
+  title: "Dry-run a segment push to Attentive",
+  description:
+    "Computes exactly what pushing a segment to Attentive would change, and touches nothing. " +
+    "Returns how many people would be added, removed and left alone, a short sample of each, and a planToken. " +
+    "segment_push requires that token, so a push can only ever apply the diff a person actually read — if the data moves in between, the token stops matching and you need a fresh dry run. " +
+    "Attentive has no endpoint that reads segment membership back, so the diff is computed against what we last pushed; a segment with no push history reports isFirstPush. " +
+    "Pass checkReachability to look up how many of the members can actually receive a marketing message — Shopify consent and Attentive eligibility disagree by roughly 13% on the lapsed cohort. It costs one API call per 25 people. " +
+    "The full address list is deliberately never returned.",
+  readOnly: true,
+  schema: {
+    segmentId: { type: "enum", values: SEGMENT_IDS, required: true },
+    checkReachability: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const segmentId = args.segmentId as string;
+    const checkReachability = args.checkReachability as boolean;
+
+    if (checkReachability && !ctx.attentive) {
+      return { error: NO_CLIENT };
+    }
+
+    const { plan } = await buildPlan(ctx, segmentId, { checkReachability });
+    const token = planToken(plan);
+    const now = ctx.now();
+
+    // Recorded even though nothing was sent: "we looked and decided not to" is
+    // worth keeping. `members` stays empty — a dry run that stored membership
+    // would become the baseline for the next diff and describe a state that
+    // never existed.
+    await recordPush(ctx.db, {
+      id: `${now.toISOString()}-${randomUUID().slice(0, 8)}`,
+      segmentId,
+      externalId: plan.externalId,
+      dryRun: true,
+      planToken: token,
+      addedCount: plan.adds.length,
+      removedCount: plan.removes.length,
+      unchangedCount: plan.unchanged.length,
+      reachableChecked: plan.reachability?.checked ?? null,
+      reachableEligible: plan.reachability?.marketingEligible ?? null,
+      batchJobIds: [],
+      recordsSucceeded: null,
+      recordsFailed: null,
+      problem: plan.blockers.length > 0 ? plan.blockers.join(" ") : null,
+      pushedBy: "claude",
+      createdAt: now,
+      members: [],
+    });
+
+    return {
+      segmentId,
+      externalId: plan.externalId,
+      isFirstPush: plan.isFirstPush,
+      added: plan.adds.length,
+      removed: plan.removes.length,
+      unchanged: plan.unchanged.length,
+      sampleOfAdds: sample(plan.adds),
+      sampleOfRemoves: sample(plan.removes),
+      reachability: plan.reachability,
+      canPush: canPush(plan),
+      blockers: plan.blockers,
+      planToken: token,
+      batchesRequired: plan.addBatches.length + plan.removeBatches.length,
+    };
+  },
+};
+
+const segmentPush: McpTool = {
+  name: "segment_push",
+  title: "Push a segment to Attentive",
+  description:
+    "Applies a segment diff to Attentive. This sends nothing itself, but it changes who a future campaign would reach, so it is a deliberate human action: it requires the planToken from a dry run and the name of the person who approved it. " +
+    "The plan is recomputed here rather than taken as an argument — you cannot hand this tool a list of addresses. If the recomputed diff no longer matches the token, the push is refused and you need a fresh dry run. " +
+    "Attentive's bulk jobs are asynchronous and a COMPLETED job can still have rejected records, so this reads each job's result file and reports per-record counts. When it cannot, it reports null rather than claiming zero failures.",
+  readOnly: false,
+  schema: {
+    segmentId: { type: "enum", values: SEGMENT_IDS, required: true },
+    planToken: { type: "string", required: true },
+    pushedBy: { type: "string", required: true },
+  },
+  async run(ctx, args) {
+    const segmentId = args.segmentId as string;
+    const suppliedToken = args.planToken as string;
+    const pushedBy = args.pushedBy as string;
+
+    if (isAgentAttribution(pushedBy)) {
+      throw new McpArgumentError(
+        `"pushedBy" must name the person who approved this push. Changing who a campaign reaches ` +
+          `is a human decision that this tool records — it does not make it.`
+      );
+    }
+
+    if (!ctx.attentive) return { pushed: false, error: NO_CLIENT };
+
+    const { plan } = await buildPlan(ctx, segmentId);
+    const currentToken = planToken(plan);
+
+    // The approval was of a specific diff. If the data moved since the dry
+    // run, the human approved something that is no longer what would happen.
+    if (currentToken !== suppliedToken) {
+      return {
+        pushed: false,
+        error:
+          `The diff has changed since that dry run (token ${suppliedToken} is now ${currentToken}). ` +
+          `Nothing was pushed. Run segment_push_dry_run again and approve the new diff.`,
+        planToken: currentToken,
+      };
+    }
+
+    if (!canPush(plan)) {
+      return { pushed: false, error: "This plan is blocked.", blockers: plan.blockers };
+    }
+
+    const client = ctx.attentive;
+    const batchJobIds: string[] = [];
+
+    for (const batch of plan.addBatches) {
+      const job = await client.addSegmentMembers(plan.externalId, batch.map((email) => ({ email })));
+      batchJobIds.push(job.batchJobId);
+    }
+    for (const batch of plan.removeBatches) {
+      const job = await client.removeSegmentMembers(plan.externalId, batch.map((email) => ({ email })));
+      batchJobIds.push(job.batchJobId);
+    }
+
+    // COMPLETED is a job state, not a record count. Read the result files.
+    let succeeded: number | null = 0;
+    let failed: number | null = 0;
+    const problems: string[] = [];
+
+    for (const id of batchJobIds) {
+      const job = await client.getBulkJob(id);
+      if (job.succeeded === null || job.failed === null) {
+        succeeded = null;
+        failed = null;
+      } else if (succeeded !== null && failed !== null) {
+        succeeded += job.succeeded;
+        failed += job.failed;
+      }
+      if (job.problem) problems.push(`${id}: ${job.problem}`);
+      if (job.status === "IN_PROGRESS") {
+        problems.push(`${id}: still running — its outcome is not established yet.`);
+      }
+    }
+
+    const now = ctx.now();
+    const problem = problems.length > 0 ? problems.join(" ") : null;
+
+    await recordPush(ctx.db, {
+      id: `${now.toISOString()}-${randomUUID().slice(0, 8)}`,
+      segmentId,
+      externalId: plan.externalId,
+      dryRun: false,
+      planToken: currentToken,
+      addedCount: plan.adds.length,
+      removedCount: plan.removes.length,
+      unchangedCount: plan.unchanged.length,
+      reachableChecked: plan.reachability?.checked ?? null,
+      reachableEligible: plan.reachability?.marketingEligible ?? null,
+      batchJobIds,
+      recordsSucceeded: succeeded,
+      recordsFailed: failed,
+      problem,
+      pushedBy,
+      // What Attentive now holds, and the baseline the next diff is computed
+      // against. Recomputing later would answer "who matches now", which
+      // cannot produce a correct removal list.
+      members: [...plan.adds, ...plan.unchanged].sort(),
+      createdAt: now,
+    });
+
+    return {
+      pushed: true,
+      segmentId,
+      added: plan.adds.length,
+      removed: plan.removes.length,
+      batchJobIds,
+      recordsSucceeded: succeeded,
+      recordsFailed: failed,
+      problem,
+      pushedBy,
+      note:
+        succeeded === null
+          ? "The jobs were accepted but their per-record outcome could not be established. Do not treat this as a completed push."
+          : undefined,
+    };
+  },
+};
+
+const segmentPushHistory: McpTool = {
+  name: "segment_push_history",
+  title: "Segment push history",
+  description:
+    "Every dry run and real push recorded for a segment, newest first. This is also the only record of what Attentive holds — it has no endpoint that reads segment membership back — so a push whose outcome was never established shows here with null record counts rather than as a success.",
+  readOnly: true,
+  schema: {
+    segmentId: { type: "enum", values: SEGMENT_IDS },
+    limit: { type: "integer", min: 1, max: 100, default: 20 },
+  },
+  async run(ctx, args) {
+    const rows = await getPushHistory(ctx.db, args.segmentId as string | undefined, args.limit as number);
+    return {
+      returned: rows.length,
+      pushes: rows.map((r) => ({
+        id: r.id,
+        segmentId: r.segmentId,
+        dryRun: r.dryRun === 1,
+        planToken: r.planToken,
+        added: r.addedCount,
+        removed: r.removedCount,
+        unchanged: r.unchangedCount,
+        reachableChecked: r.reachableChecked,
+        reachableEligible: r.reachableEligible,
+        recordsSucceeded: r.recordsSucceeded,
+        recordsFailed: r.recordsFailed,
+        problem: r.problem,
+        pushedBy: r.pushedBy,
+        at: r.createdAt.toISOString(),
+      })),
+      ...(rows.length === 0 ? { note: "No segment push has ever been recorded." } : {}),
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1408,6 +1693,9 @@ export const ALL_TOOLS: McpTool[] = [
   draftSave,
   draftRecordDecision,
   draftsList,
+  segmentPushDryRun,
+  segmentPush,
+  segmentPushHistory,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,
