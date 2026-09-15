@@ -54,6 +54,15 @@ import { classifyItem } from "@/domain/inventory/checks";
 import { computeDailyVelocity, computeDaysOfCover } from "@/domain/inventory/velocity";
 import { getEntriesByWeek } from "@/domain/calendar/queries";
 import { getAllSamples, getAllRules, getAllBannedWords } from "@/domain/voice/queries";
+import {
+  CHANNELS,
+  UNSPECIFIED,
+  isChannel,
+  rulesForChannel,
+  type RuleAudience,
+} from "@/domain/voice/rules";
+import { selectSamples, describeSampleSelection, type VoiceProfile } from "@/domain/voice/voice";
+import { voiceCheck } from "@/domain/voice/voice-check";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { CHECK_FAILED_TYPE } from "@/domain/alerts/checks";
 import { getPilotEntries, noteExists, appendPilotEntry } from "@/domain/pilot/queries";
@@ -540,28 +549,131 @@ const calendarEntriesTool: McpTool = {
   },
 };
 
+/**
+ * Reads the whole voice profile out of the database in one go.
+ *
+ * Returns `null` when every part of it is empty. Four rules, seven banned words
+ * and eighty-four samples is what production holds; all three coming back empty
+ * is a read that did not happen, not a brand with no rules — and handing that
+ * back as data invites copy written against nothing and checked against
+ * nothing. Zero is UNKNOWN until something proves it means zero.
+ */
+async function readVoiceProfile(ctx: McpToolContext): Promise<VoiceProfile | null> {
+  const [samples, rules, bannedWords] = await Promise.all([
+    getAllSamples(ctx.db),
+    getAllRules(ctx.db),
+    getAllBannedWords(ctx.db),
+  ]);
+
+  if (samples.length === 0 && rules.length === 0 && bannedWords.length === 0) return null;
+
+  return {
+    samples: samples.map((s) => ({
+      id: s.id,
+      title: s.title,
+      content: s.content,
+      tags: (s.tags as string[] | null) ?? [],
+    })),
+    rules: rules.map((r) => r.rule),
+    bannedWords: bannedWords.map((b) => b.word),
+  };
+}
+
+const EMPTY_CORPUS_ERROR =
+  "The voice corpus is empty: no samples, no rules and no banned words. " +
+  "Production holds 84 samples, 4 rules and 7 banned words, so this is a failed " +
+  "read rather than a brand without rules. Refusing rather than returning an " +
+  "empty rule set that would read as permission.";
+
 const brandVoice: McpTool = {
   name: "brand_voice",
   title: "Brand voice rules",
   description:
-    "Tara's voice rules and banned words, which all marketing copy must respect, plus optionally the writing samples used for few-shot prompting. Note: blog posts deliberately do NOT use this voice — they are friendly and SEO-oriented instead.",
+    "Tara's voice rules, banned words and writing samples for a given channel, which all marketing copy must respect. " +
+    "Pass the channel you are writing for: rules are scoped, and a rule that is correct on Instagram (\"comments get a link\") is wrong in an inbox. " +
+    "Omitting the channel applies every rule, which is the strictest set, not the laxest. " +
+    "Each rule says whether anything mechanically enforces it — an unenforced rule is guidance that voice_check will not catch. " +
+    "If no sample carries the channel's tag, the whole corpus stands in rather than returning nothing, and samples.source says corpus-fallback. " +
+    "Note: blog posts deliberately do NOT use this voice; they are friendly and SEO-oriented instead.",
   readOnly: true,
-  schema: { includeSamples: { type: "boolean", default: false } },
+  schema: {
+    channel: { type: "enum", values: CHANNELS },
+    includeSamples: { type: "boolean", default: false },
+  },
   async run(ctx, args) {
-    const [samples, rules, bannedWords] = await Promise.all([
-      getAllSamples(ctx.db),
-      getAllRules(ctx.db),
-      getAllBannedWords(ctx.db),
-    ]);
+    const profile = await readVoiceProfile(ctx);
+    if (!profile) return { error: EMPTY_CORPUS_ERROR };
 
+    const audience: RuleAudience = isChannel(args.channel) ? args.channel : UNSPECIFIED;
+    const applicable = rulesForChannel(profile.rules, audience);
+    const applicableText = new Set(applicable.map((r) => r.text));
+    const selection = selectSamples(profile.samples, audience);
     const includeSamples = args.includeSamples as boolean;
+
     return {
-      rules: rules.map((r) => r.rule),
-      bannedWords: bannedWords.map((b) => b.word),
-      sampleCount: samples.length,
-      samples: includeSamples
-        ? samples.map((s) => ({ title: s.title, content: s.content, tags: s.tags ?? [] }))
-        : null,
+      audience,
+      rules: applicable.map((r) => ({
+        text: r.text,
+        enforced: r.enforcement.kind === "forbids",
+        ...(r.enforcement.kind === "unenforced" ? { unenforcedBecause: r.enforcement.why } : {}),
+      })),
+      // Named, not merely absent. A rule the caller cannot see cannot be told
+      // apart from one that was never written, and the difference matters when
+      // the caller is deciding whether a convention is safe to use here.
+      excusedOnThisChannel: profile.rules.filter((r) => !applicableText.has(r)),
+      bannedWords: profile.bannedWords,
+      samples: {
+        source: selection.source.kind,
+        explanation: describeSampleSelection(selection),
+        // Both what came back and what matched, so a subset is never read as
+        // the whole set.
+        used: selection.samples.length,
+        corpusSize: selection.corpusSize,
+        items: includeSamples
+          ? selection.samples.map((s) => ({ title: s.title, content: s.content, tags: s.tags }))
+          : null,
+      },
+    };
+  },
+};
+
+/**
+ * The enforcement half of `brand_voice`, exposed so the caller that writes the
+ * copy is also the caller that checks it.
+ *
+ * Rules that cannot be enforced are wishes. Claude has the rules through
+ * `brand_voice`; without this it has no way to find out whether what it wrote
+ * actually obeys them, and the check would exist for the Figma plugin and the
+ * worker but not for the model doing the marketing.
+ */
+const voiceCheckTool: McpTool = {
+  name: "voice_check",
+  title: "Check copy against the brand voice",
+  description:
+    "Checks a piece of copy against Tara's voice rules and banned words for a channel, and returns the violations. " +
+    "Run anything you wrote through this before proposing it. Pass the same channel you passed to brand_voice. " +
+    "Fails closed: empty text, or a profile with nothing to check, comes back ok:false rather than clean — a check that evaluated nothing has established nothing. " +
+    "Read `enforced` and `unenforced` alongside `ok`: a clean result over three uncheckable rules is not a clean result over three checked ones.",
+  readOnly: true,
+  schema: {
+    text: { type: "string", required: true },
+    channel: { type: "enum", values: CHANNELS },
+  },
+  async run(ctx, args) {
+    const profile = await readVoiceProfile(ctx);
+    if (!profile) return { error: EMPTY_CORPUS_ERROR };
+
+    const audience: RuleAudience = isChannel(args.channel) ? args.channel : UNSPECIFIED;
+    const result = voiceCheck(args.text as string, audience, profile);
+
+    return {
+      ok: result.ok,
+      // `channel` on the underlying result; named `audience` here because
+      // `unspecified` is not a channel.
+      audience: result.channel,
+      violations: result.violations,
+      enforced: result.enforced,
+      unenforced: result.unenforced,
     };
   },
 };
@@ -829,6 +941,7 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   calendarEntriesTool,
   brandVoice,
+  voiceCheckTool,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,
