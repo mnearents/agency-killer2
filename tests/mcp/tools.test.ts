@@ -123,9 +123,18 @@ describe("the tool catalogue", () => {
    * decision rather than something that slips in behind a readOnly flag nobody
    * looked at.
    *
-   * Every entry here writes only Claude's own work product. The business
-   * systems — Shopify, Seal, Meta, Attentive — stay strictly read-only, and
-   * nothing here spends money or sends a message.
+   * Most entries here write only Claude's own work product. `segment_push` is
+   * the exception and the first of its kind: it changes something in a live
+   * sending platform. It still sends no message and spends no money — it
+   * changes who a future campaign would reach — but it is a different category
+   * from the rest and should be read as one.
+   *
+   * Its guardrails live elsewhere and are tested in segment-push.test.ts: it
+   * recomputes the diff rather than accepting a list, requires the token from
+   * a dry run the human read, requires a named person, and is unreachable from
+   * the worker process that runs every cron.
+   *
+   * Shopify, Seal and Meta remain strictly read-only.
    *
    * Every writer here is append-only by construction — there is no UPDATE and
    * no DELETE in `src/domain/experiments/queries.ts` or
@@ -146,6 +155,7 @@ describe("the tool catalogue", () => {
         "experiment_record_result",
         "experiment_start",
         "pilot_notes_add",
+        "segment_push",
       ].sort()
     );
   });

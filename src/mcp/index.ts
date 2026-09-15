@@ -14,6 +14,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createDb } from "@/db/client";
 import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
+import { createAttentiveWriteClient } from "@/integrations/attentive-write";
 
 async function main() {
   const databaseUrl = process.env.DATABASE_URL;
@@ -31,10 +32,22 @@ async function main() {
     console.error("[mcp] ANALYTICS_DATABASE_URL not set — the query tool will be unavailable");
   }
 
+  // The segment push tools. Absent is a supported state and they say so
+  // rather than no-opping — but note where this key deliberately is NOT: the
+  // worker process that runs every cron does not hold it, and `src/worker/`
+  // imports nothing from `src/mcp/`. That is how "no cron may push a segment,
+  // ever" is guaranteed by construction rather than by a test asserting a
+  // negative about the scheduler.
+  const attentiveKey = process.env.ATTENTIVE_API_KEY;
+  if (!attentiveKey) {
+    console.error("[mcp] ATTENTIVE_API_KEY not set — the segment push tools will be unavailable");
+  }
+
   const server = createMcpServer({
     db: createDb(databaseUrl),
     now: () => new Date(),
     analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
+    attentive: attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
   });
 
   await server.connect(new StdioServerTransport());
