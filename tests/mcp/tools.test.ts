@@ -576,39 +576,264 @@ describe("current_alerts", () => {
   });
 });
 
-describe("brand_voice", () => {
-  it("returns the rules and banned words that any generated copy must respect", async () => {
-    vi.mocked(voiceQueries.getAllRules).mockResolvedValue([
-      { id: "r1", rule: "No exclamation marks", createdAt: NOW },
-    ] as never);
-    vi.mocked(voiceQueries.getAllBannedWords).mockResolvedValue([
-      { id: "b1", word: "synergy", createdAt: NOW },
-    ] as never);
+/**
+ * ─── brand_voice(channel) and voice_check ─────────────────────────────
+ *
+ * This is the MCP half of #27. Claude Desktop is the head of marketing here:
+ * it asks what the rules are, writes the copy, and checks it. Handing it the
+ * flat rule list — every rule on every channel — is what made the Figma
+ * plugin's copy channel-inappropriate in the first place, and a rule set
+ * without an enforcement flag tells it a prohibition is checked when nothing
+ * checks it.
+ *
+ * These call `dispatchTool` rather than the tool object, so registration and
+ * argument parsing are exercised too: a tool that exists and is not in
+ * ALL_TOOLS answers exactly like one that was never written.
+ */
+const IG_ONLY = 'Don\'t say "comments get" as if you\'re writing an instagram post.';
+const BIO_ONLY = 'Don\'t say "link in bio" outside instagram.';
 
-    const result = (await dispatchTool(ctx, "brand_voice", {})) as {
-      rules: string[];
-      bannedWords: string[];
-    };
-    expect(result.rules).toEqual(["No exclamation marks"]);
+function seedVoice(opts: {
+  rules?: string[];
+  bannedWords?: string[];
+  samples?: Array<{ id: string; title: string; content: string; tags: string[] }>;
+} = {}) {
+  vi.mocked(voiceQueries.getAllRules).mockResolvedValue(
+    (opts.rules ?? ["Never use em dashes", "No vulgarity", IG_ONLY, BIO_ONLY]).map((rule, i) => ({
+      id: `r${i}`,
+      rule,
+      createdAt: NOW,
+    })) as never
+  );
+  vi.mocked(voiceQueries.getAllBannedWords).mockResolvedValue(
+    (opts.bannedWords ?? ["synergy"]).map((word, i) => ({ id: `b${i}`, word, createdAt: NOW })) as never
+  );
+  vi.mocked(voiceQueries.getAllSamples).mockResolvedValue(
+    (opts.samples ?? [
+      { id: "ig1", title: "IG1", content: "ig copy one", tags: ["channel:instagram", "intent:story"] },
+      { id: "ig2", title: "IG2", content: "ig copy two", tags: ["channel:instagram", "intent:promo"] },
+    ]).map((s) => ({ ...s, createdAt: NOW })) as never
+  );
+}
+
+type BrandVoiceResult = {
+  audience: string;
+  rules: Array<{ text: string; enforced: boolean; unenforcedBecause?: string }>;
+  excusedOnThisChannel: string[];
+  bannedWords: string[];
+  samples: {
+    source: string;
+    explanation: string;
+    used: number;
+    corpusSize: number;
+    items: Array<{ title: string; content: string; tags: string[] }> | null;
+  };
+};
+
+const brandVoice = (args: Record<string, unknown> = {}) =>
+  dispatchTool(ctx, "brand_voice", args) as Promise<BrandVoiceResult>;
+
+describe("brand_voice", () => {
+  beforeEach(() => seedVoice());
+
+  it("returns the rules and banned words that any generated copy must respect", async () => {
+    const result = await brandVoice();
+    expect(result.rules.map((r) => r.text)).toContain("Never use em dashes");
     expect(result.bannedWords).toEqual(["synergy"]);
   });
 
   it("leaves the writing samples out unless asked — they are large", async () => {
-    vi.mocked(voiceQueries.getAllSamples).mockResolvedValue([
-      { id: "s1", title: "A", content: "long text", tags: [], createdAt: NOW },
-    ] as never);
+    expect((await brandVoice()).samples.items).toBeNull();
+    expect((await brandVoice({ includeSamples: true })).samples.items).toHaveLength(2);
+  });
 
-    const withoutSamples = (await dispatchTool(ctx, "brand_voice", {})) as {
-      samples: unknown[] | null;
-      sampleCount: number;
-    };
-    expect(withoutSamples.samples).toBeNull();
-    expect(withoutSamples.sampleCount).toBe(1);
+  // Even with items omitted, the caller has to be able to tell a two-sample
+  // corpus from an eighty-four-sample one.
+  it("reports how many samples there are even when it does not return them", async () => {
+    const r = await brandVoice();
+    expect(r.samples.corpusSize).toBe(2);
+    expect(r.samples.used).toBe(2);
+  });
 
-    const withSamples = (await dispatchTool(ctx, "brand_voice", {
-      includeSamples: true,
-    })) as { samples: unknown[] | null };
-    expect(withSamples.samples).toHaveLength(1);
+  it("names the audience it answered for, including when none was asked for", async () => {
+    expect((await brandVoice({ channel: "email" })).audience).toBe("email");
+    expect((await brandVoice()).audience).toBe("unspecified");
+  });
+
+  // A typo'd channel widened to "everything" would hide the typo, and the
+  // model would believe it had asked a question it did not ask.
+  it.each(["e-mail", "insta", "Instagram", "unspecified"])(
+    "refuses %o rather than answering for a channel nobody named",
+    async (channel) => {
+      await expect(brandVoice({ channel })).rejects.toBeInstanceOf(McpArgumentError);
+    }
+  );
+
+  it("does not hand instagram the rules instagram is excused from", async () => {
+    const r = await brandVoice({ channel: "instagram" });
+    const texts = r.rules.map((x) => x.text);
+    expect(texts).not.toContain(IG_ONLY);
+    expect(texts).not.toContain(BIO_ONLY);
+    expect(texts).toContain("Never use em dashes");
+  });
+
+  // Not just absent from the list — named, so the model can see that a rule
+  // exists and does not apply here, rather than inferring it was never written.
+  it("says which rules this channel is excused from", async () => {
+    expect((await brandVoice({ channel: "instagram" })).excusedOnThisChannel).toEqual(
+      expect.arrayContaining([IG_ONLY, BIO_ONLY])
+    );
+    expect((await brandVoice({ channel: "email" })).excusedOnThisChannel).toEqual([]);
+  });
+
+  /**
+   * The model is about to write copy and then check it. A rule it is told
+   * about but that nothing enforces is guidance; one that is enforced will
+   * come back as a violation. Flattening the two makes `voice_check` look
+   * either stricter or laxer than it is.
+   */
+  it("says of each rule whether anything actually checks it", async () => {
+    seedVoice({ rules: ["Never use em dashes", "Sound like a friend, not a brand"] });
+    const byText = Object.fromEntries((await brandVoice()).rules.map((r) => [r.text, r]));
+    expect(byText["Never use em dashes"].enforced).toBe(true);
+    expect(byText["Sound like a friend, not a brand"].enforced).toBe(false);
+    expect(byText["Sound like a friend, not a brand"].unenforcedBecause).toBeTruthy();
+  });
+});
+
+/**
+ * All 84 real samples are `channel:instagram`, so asking for email samples
+ * returns Instagram ones. That is the agreed behaviour — email copy written
+ * from the Instagram corpus has been working in practice, so scoping to an
+ * empty set would be worse than the problem. What is not acceptable is the
+ * model being unable to tell that is what happened.
+ */
+describe("brand_voice: sample scoping and its fallback", () => {
+  beforeEach(() => seedVoice());
+
+  it("returns only the channel's samples when it has some", async () => {
+    const r = await brandVoice({ channel: "instagram", includeSamples: true });
+    expect(r.samples.source).toBe("channel");
+    expect(r.samples.used).toBe(2);
+  });
+
+  it("falls back to the whole corpus for a channel with none, rather than returning nothing", async () => {
+    const r = await brandVoice({ channel: "email", includeSamples: true });
+    expect(r.samples.source).toBe("corpus-fallback");
+    expect(r.samples.items).toHaveLength(2);
+    expect(r.samples.explanation).toMatch(/channel:email/);
+  });
+
+  it("distinguishes that fallback from having named no channel at all", async () => {
+    const asked = await brandVoice({ channel: "email" });
+    const unasked = await brandVoice();
+    expect(asked.samples.source).not.toBe(unasked.samples.source);
+    expect(asked.samples.explanation).not.toBe(unasked.samples.explanation);
+  });
+
+  // "Never infer channel from the corpus" — #61. An all-Instagram corpus does
+  // not make an email request an Instagram request.
+  it("still answers for email even though every sample is instagram", async () => {
+    expect((await brandVoice({ channel: "email" })).audience).toBe("email");
+  });
+});
+
+describe("brand_voice: an empty corpus is a fault, not a brand with no rules", () => {
+  // Zero rules over a table that should hold four is an unrun read, not a
+  // permissive brand. Returning it as data invites copy written against
+  // nothing and checked against nothing.
+  it("reports an error rather than an empty rule set", async () => {
+    seedVoice({ rules: [], bannedWords: [], samples: [] });
+    const r = (await dispatchTool(ctx, "brand_voice", {})) as { error?: string };
+    expect(r.error).toBeTruthy();
+    expect(r).not.toHaveProperty("rules");
+  });
+});
+
+type VoiceCheckToolResult = {
+  ok: boolean;
+  audience: string | null;
+  violations: Array<{ rule: string; detail: string }>;
+  enforced: string[];
+  unenforced: string[];
+};
+
+const check = (args: Record<string, unknown>) =>
+  dispatchTool(ctx, "voice_check", args) as Promise<VoiceCheckToolResult>;
+
+describe("voice_check", () => {
+  beforeEach(() => seedVoice());
+
+  it("is registered, so the model can reach it", () => {
+    expect(ALL_TOOLS.map((t) => t.name)).toContain("voice_check");
+  });
+
+  it("is read-only — checking copy writes nothing", () => {
+    expect(findTool("voice_check")?.readOnly).toBe(true);
+  });
+
+  it("passes clean copy and says what it checked", async () => {
+    const r = await check({ text: "Our new planners are here and they are lovely.", channel: "email" });
+    expect(r.ok).toBe(true);
+    expect(r.enforced).toContain("Never use em dashes");
+  });
+
+  it("catches a rule violation and names the rule, not a regex", async () => {
+    const r = await check({ text: "Planners — they're here", channel: "email" });
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("Never use em dashes");
+  });
+
+  it("catches a banned word", async () => {
+    const r = await check({ text: "Real synergy in this collection.", channel: "email" });
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("banned-word");
+  });
+
+  /**
+   * The scoping, end to end through the tool. "All comments get a link" is
+   * correct Instagram copy and wrong in an inbox. If the channel were dropped
+   * on the way in, both of these would return the same verdict.
+   */
+  it("excuses instagram from the rule instagram is excused from", async () => {
+    expect((await check({ text: "All comments get a link!", channel: "instagram" })).ok).toBe(true);
+    expect((await check({ text: "All comments get a link!", channel: "email" })).ok).toBe(false);
+  });
+
+  it("applies every rule when no channel is given", async () => {
+    expect((await check({ text: "All comments get a link!" })).ok).toBe(false);
+    expect((await check({ text: "All comments get a link!" })).audience).toBe("unspecified");
+  });
+
+  // Fail closed. Nothing was checked, so nothing is clean.
+  it.each(["", "   "])("refuses %o rather than passing an empty check", async (text) => {
+    const r = await check({ text, channel: "email" });
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("empty-output");
+  });
+
+  it("refuses a channel it does not recognise", async () => {
+    await expect(check({ text: "copy", channel: "e-mail" })).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("requires the text it is meant to check", async () => {
+    await expect(check({ channel: "email" })).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  // A clean pass over three uncheckable rules and a clean pass over three
+  // checked ones are different results.
+  it("separates the rules it enforced from the ones nothing checks", async () => {
+    seedVoice({ rules: ["Never use em dashes", "Sound like a friend, not a brand"] });
+    const r = await check({ text: "Our planners are here.", channel: "email" });
+    expect(r.enforced).toEqual(["Never use em dashes"]);
+    expect(r.unenforced).toEqual(["Sound like a friend, not a brand"]);
+  });
+
+  it("refuses when the profile gives it nothing to check", async () => {
+    seedVoice({ rules: [], bannedWords: [] });
+    const r = await check({ text: "anything at all", channel: "email" });
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("nothing-checked");
   });
 });
 

@@ -218,17 +218,52 @@ AssemblyAI, Shotstack, OpenAI, Attentive, Playwright, Slack.
 
 ## Brand voice
 
-Tara's writing voice is replicated via few-shot prompting — 37 writing samples,
-brand rules, and banned words assembled into the system prompt. No fine-tuning.
+Tara's writing voice is replicated via few-shot prompting — **84 writing
+samples**, brand rules, and banned words assembled into the system prompt. No
+fine-tuning.
+
+The count said 37 for a long time and was never right: 34 samples plus 3 rules,
+added together. The 34 became 84 when `IGMULTI` — forty unrelated captions
+concatenated into one 16,724-character record, 57% of the corpus by volume —
+was split into its constituent captions (#53).
 
 - Voice module lives in `src/domain/voice/`.
-- Samples stored in the knowledge base (Postgres, `voice` category). Small enough
-  to include in full for every generation.
+- Samples live in the dedicated `voice_samples` table, **not** the knowledge
+  base's `voice` category. Small enough to include in full for every generation.
+  `voice-profile-seed.json` is the authoring surface and is reconciled into the
+  table on every boot.
 - Brand rules and banned words are part of the cached brand bible prefix.
 - **Every marketing output routes through the voice module** — ad copy, email
   copy, blog posts, social captions, Slack-generated content.
 - The Figma plugin voice service (`../ig-crawler`) stays running separately on
-  Railway. Samples are mostly stable — no sync needed.
+  Railway. Samples are mostly stable — no sync needed. **The plugin is an email
+  tool** despite the name and the all-Instagram corpus, so never infer a channel
+  from either.
+
+### Channel scoping
+
+Rules are prohibitions, and scope is expressed as `exceptIn` — the channels a
+rule does *not* apply to — never `appliesTo`. A channel nobody remembered to add
+then inherits every prohibition rather than none, which is wrong in the direction
+someone notices. `unspecified` is not a channel: it is the audience excused from
+nothing, and it is what a caller passes when it genuinely does not know.
+
+Three things have to name the same audience, and two of them used to disagree:
+
+- `assembleVoicePrompt(profile, audience)` — what the model is *told*.
+- `voiceCheck(text, audience, profile)` — what the model is *graded against*.
+- `selectSamples(samples, audience)` — which few-shot examples it sees.
+
+Request builders derive `audience` from `voice.audience` rather than taking it
+separately, so the agreement is structural rather than a convention two call
+sites have to keep. `OrchestratorRequest.audience` is required, which is what
+forces every generator to state it.
+
+Every sample is currently tagged `channel:instagram`, so asking for any other
+channel falls back to the whole corpus. That is deliberate — email copy written
+from the Instagram corpus works in practice, and scoping to an empty set would be
+worse than the problem — but the fallback is always named in the return value,
+never silent.
 
 ## Video analysis pipeline
 
