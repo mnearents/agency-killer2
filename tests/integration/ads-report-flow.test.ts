@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../mocks/orchestrator";
 import { parseMessage } from "@/worker/slack/router";
 import { routeCommand, type ParsedCommand } from "@/worker/slack/router";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
@@ -45,6 +46,7 @@ describe("formatOrchestratorResult", () => {
   it("formats successful result as non-error Slack response", () => {
     const result: OrchestratorResult = {
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "Your ads are performing well! ROAS is 3.0x.",
       inputTokens: 500,
       outputTokens: 100,
@@ -57,6 +59,7 @@ describe("formatOrchestratorResult", () => {
   it("formats guardrail failure as error with human-readable violations", () => {
     const result: OrchestratorResult = {
       ok: false,
+      voice: null,
       guardrailResult: {
         passed: false,
         violations: [
@@ -73,6 +76,7 @@ describe("formatOrchestratorResult", () => {
   it("includes context label when provided", () => {
     const result: OrchestratorResult = {
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "Looking good!",
       inputTokens: 100,
       outputTokens: 50,
@@ -127,6 +131,7 @@ describe("ads report: full flow", () => {
       getCampaignName: vi.fn().mockResolvedValue("Summer Sale"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: "Your ads are doing great! The Summer Sale campaign has a 3x ROAS.",
         inputTokens: 800,
         outputTokens: 150,
@@ -162,6 +167,7 @@ describe("ads report: full flow", () => {
       getCampaignName: vi.fn().mockResolvedValue("Summer Sale"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
+        voice: null,
         guardrailResult: {
           passed: false,
           violations: [
@@ -188,6 +194,7 @@ describe("ads report: full flow", () => {
       getCampaignName: vi.fn().mockResolvedValue("Summer Sale"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: "No data available for this period.",
         inputTokens: 200,
         outputTokens: 20,

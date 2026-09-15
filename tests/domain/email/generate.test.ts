@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../../mocks/orchestrator";
 import { generateEmailCreative, type EmailGenerateDeps } from "@/domain/email/generate";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
 import type { OrchestratorResult } from "@/ai/orchestrator";
@@ -41,6 +42,7 @@ describe("generateEmailCreative", () => {
       voice: assembleVoicePrompt(VOICE_PROFILE, "email"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: validJson,
         inputTokens: 500,
         outputTokens: 200,
@@ -72,6 +74,7 @@ describe("generateEmailCreative", () => {
       voice: assembleVoicePrompt(VOICE_PROFILE, "email"),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
+        voice: null,
         guardrailResult: {
           passed: false,
           violations: [{ rule: "invalid-json", detail: "Output is not valid JSON" }],

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../mocks/orchestrator";
 import { parseMessage, routeCommand, type ParsedCommand } from "@/worker/slack/router";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
 import { UNSPECIFIED } from "@/domain/voice/rules";
@@ -46,6 +47,7 @@ describe("blog generate: full flow", () => {
       ),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: MOCK_ARTICLE,
         inputTokens: 2000,
         outputTokens: 800,
@@ -83,6 +85,7 @@ describe("blog generate: full flow", () => {
       getBrandContext: vi.fn().mockResolvedValue("Brand context."),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: MOCK_ARTICLE,
         inputTokens: 1000,
         outputTokens: 500,
@@ -117,6 +120,7 @@ describe("blog generate: full flow", () => {
       getBrandContext: vi.fn().mockResolvedValue(""),
       runOrchestrator: vi.fn().mockResolvedValue({
         ok: false,
+        voice: null,
         guardrailResult: {
           passed: false,
           violations: [
@@ -149,7 +153,7 @@ describe("guardrail config three-way cross-check", () => {
         calls,
         fn: vi.fn().mockImplementation((req: Record<string, unknown>) => {
           calls.push(req);
-          return { ok: true, text: '{"subjectLine":"test"}', inputTokens: 100, outputTokens: 10 };
+          return { ok: true, voice: cleanVoiceVerdict(), text: '{"subjectLine":"test"}', inputTokens: 100, outputTokens: 10 };
         }),
       };
     };

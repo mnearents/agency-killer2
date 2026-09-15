@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../../mocks/orchestrator";
 import { generateBlogArticle, type BlogGenerateDeps } from "@/domain/blog/generate";
 import type { OrchestratorResult } from "@/ai/orchestrator";
 
@@ -44,6 +45,7 @@ describe("generateBlogArticle", () => {
   it("generates article from override title (doesn't query DB)", async () => {
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "<h2>Great Article</h2><p>Content here.</p>",
       inputTokens: 1000,
       outputTokens: 500,
@@ -63,7 +65,7 @@ describe("generateBlogArticle", () => {
 
   it("returns no-topics message when DB has no pending topics", async () => {
     const deps = makeDeps(
-      { ok: true, text: "unused", inputTokens: 0, outputTokens: 0 },
+      { ok: true, voice: cleanVoiceVerdict(), text: "unused", inputTokens: 0, outputTokens: 0 },
       [] // no pending topics
     );
 
@@ -80,6 +82,7 @@ describe("generateBlogArticle", () => {
     const deps = makeDeps(
       {
         ok: true,
+        voice: cleanVoiceVerdict(),
         text: "<h2>Article</h2>",
         inputTokens: 500,
         outputTokens: 200,
@@ -108,6 +111,7 @@ describe("generateBlogArticle", () => {
     const deps = makeDeps(
       {
         ok: false,
+        voice: null,
         guardrailResult: {
           passed: false,
           violations: [
@@ -136,6 +140,7 @@ describe("generateBlogArticle", () => {
   it("includes brand context in the prompt", async () => {
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "<h2>Article</h2>",
       inputTokens: 500,
       outputTokens: 200,
@@ -151,6 +156,7 @@ describe("generateBlogArticle", () => {
   it("uses neutral blog tone, not Tara's voice", async () => {
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "<h2>Article</h2>",
       inputTokens: 500,
       outputTokens: 200,

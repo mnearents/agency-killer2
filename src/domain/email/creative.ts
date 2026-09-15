@@ -109,6 +109,10 @@ export function buildEmailCreativeRequest(
   const guardrails = buildEmailGuardrails(voice.guardrailOptions);
 
   return {
+    // The audience the prompt was assembled for, not a second opinion about it.
+    // Two call sites that have to agree eventually disagree — that is #27's
+    // gap (a) in one line.
+    audience: voice.audience,
     prompt,
     system: voice.systemPrompt,
     guardrails,

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { cleanVoiceVerdict } from "../../mocks/orchestrator";
 import { analyzeAdPerformance, type AnalyzeDeps } from "@/domain/meta/analyze";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
 import { UNSPECIFIED } from "@/domain/voice/rules";
@@ -40,6 +41,7 @@ describe("analyzeAdPerformance", () => {
 
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "unused",
       inputTokens: 0,
       outputTokens: 0,
@@ -76,6 +78,7 @@ describe("analyzeAdPerformance", () => {
 
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "Your Summer Sale campaign is performing well with a 3.0x ROAS.",
       inputTokens: 800,
       outputTokens: 100,
@@ -126,6 +129,7 @@ describe("analyzeAdPerformance", () => {
 
     const deps = makeDeps({
       ok: true,
+      voice: cleanVoiceVerdict(),
       text: "Both campaigns are performing well.",
       inputTokens: 1000,
       outputTokens: 150,
@@ -157,6 +161,7 @@ describe("analyzeAdPerformance", () => {
 
     const deps = makeDeps({
       ok: false,
+      voice: null,
       guardrailResult: {
         passed: false,
         violations: [
@@ -176,7 +181,7 @@ describe("analyzeAdPerformance", () => {
     mockGetInsights.mockResolvedValue([]);
 
     const deps = makeDeps({
-      ok: true, text: "", inputTokens: 0, outputTokens: 0,
+      ok: true, voice: cleanVoiceVerdict(), text: "", inputTokens: 0, outputTokens: 0,
     });
 
     const result = await analyzeAdPerformance(deps, 30);
