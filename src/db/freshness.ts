@@ -21,6 +21,7 @@ import {
   experimentResults,
   drafts,
   draftDecisions,
+  gscDaily,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -175,6 +176,10 @@ export const FRESHNESS_SOURCES = [
     { source: "Experiment results", table: experimentResults, name: "experiment_results", column: experimentResults.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     { source: "Drafts", table: drafts, name: "drafts", column: drafts.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     { source: "Draft decisions", table: draftDecisions, name: "draft_decisions", column: draftDecisions.createdAt, basis: "authored" as const, staleAfterHours: 0 },
+    // Synced, not authored: nobody writes this by hand, so silence means the
+    // sync stopped — and every day it is stopped costs a day of history that
+    // cannot be recovered afterwards.
+    { source: "Search Console", table: gscDaily, name: "gsc_daily", column: gscDaily.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
   ];
 
 export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshness[]> {

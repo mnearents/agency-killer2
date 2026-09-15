@@ -185,3 +185,20 @@ describe("drafts freshness", () => {
     expect(source?.staleAfterHours).toBe(0);
   });
 });
+
+/**
+ * Search Console is synced, not authored. Nobody writes it by hand, so silence
+ * means the sync stopped — and unlike every other feed here, a day it is
+ * stopped is a day of history lost permanently.
+ */
+describe("search console freshness", () => {
+  it("is registered as a source", () => {
+    expect(FRESHNESS_SOURCES.map((s) => s.name)).toContain("gsc_daily");
+  });
+
+  it("is treated as a sync that can go stale, not as authored data", () => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === "gsc_daily");
+    expect(source?.basis).toBe("synced");
+    expect(source?.staleAfterHours).toBeGreaterThan(0);
+  });
+});
