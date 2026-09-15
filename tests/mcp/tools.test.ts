@@ -60,6 +60,13 @@ vi.mock("@/domain/experiments/queries", () => ({
   insertDeclaration: vi.fn().mockResolvedValue(undefined),
   insertResult: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("@/domain/drafts/queries", () => ({
+  getDrafts: vi.fn().mockResolvedValue([]),
+  getDraftDecisions: vi.fn().mockResolvedValue([]),
+  draftExists: vi.fn().mockResolvedValue(false),
+  insertDraft: vi.fn().mockResolvedValue(undefined),
+  insertDraftDecision: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@/domain/alerts/runner", () => ({
   runAlertChecks: vi.fn().mockResolvedValue([]),
 }));
@@ -88,6 +95,7 @@ import { getDataFreshness } from "@/db/freshness";
 import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import * as pilotQueries from "@/domain/pilot/queries";
 import * as experimentQueries from "@/domain/experiments/queries";
+import * as draftQueries from "@/domain/drafts/queries";
 import type { PilotEntry } from "@/domain/pilot/notes";
 
 const NOW = new Date("2026-09-02T12:00:00Z");
@@ -119,14 +127,26 @@ describe("the tool catalogue", () => {
    * systems — Shopify, Seal, Meta, Attentive — stay strictly read-only, and
    * nothing here spends money or sends a message.
    *
-   * Both experiment writers are append-only by construction: there is no
-   * UPDATE and no DELETE in `src/domain/experiments/queries.ts`, which is what
-   * makes a pre-declared success criterion a guarantee instead of a convention.
+   * Every writer here is append-only by construction — there is no UPDATE and
+   * no DELETE in `src/domain/experiments/queries.ts` or
+   * `src/domain/drafts/queries.ts`. That absence is what makes a pre-declared
+   * success criterion, and a rejection that survives a later approval,
+   * guarantees rather than conventions.
+   *
+   * `draft_save` writes only after `voiceCheck` passes, and
+   * `draft_record_decision` records a human decision rather than making one:
+   * neither publishes anything, and there is nothing here that could.
    */
   it("exposes exactly the write-enabled tools it means to", () => {
     const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name).sort();
     expect(writers).toEqual(
-      ["experiment_record_result", "experiment_start", "pilot_notes_add"].sort()
+      [
+        "draft_record_decision",
+        "draft_save",
+        "experiment_record_result",
+        "experiment_start",
+        "pilot_notes_add",
+      ].sort()
     );
   });
 
@@ -1463,6 +1483,26 @@ describe("the required-argument contract the model actually sees", () => {
     );
   });
 
+  /**
+   * `decidedBy` has no default, deliberately. Every other write tool defaults
+   * `author` to "claude", and that habit applied here is how a draft reaches
+   * `approved` with nobody behind it. `validateDecision` would still catch it,
+   * but the model reads this schema — a default here tells it the field is
+   * optional, and it stops supplying one.
+   */
+  it("tells the model draft_record_decision will not proceed without a person", () => {
+    expect(requiredOf("draft_record_decision").sort()).toEqual(
+      ["decidedBy", "decision", "draftId"].sort()
+    );
+    expect(
+      toJsonSchema(findTool("draft_record_decision")!.schema).properties.decidedBy
+    ).not.toHaveProperty("default");
+  });
+
+  it("tells the model draft_save needs a channel and a body", () => {
+    expect(requiredOf("draft_save").sort()).toEqual(["body", "channel", "title", "type"].sort());
+  });
+
   // The declaration is unreachable from here, so these must never appear.
   it.each(["successCriteria", "hypothesis", "baselineValue", "plannedEndDate", "name"])(
     "does not advertise %s on experiment_record_result",
@@ -1472,4 +1512,362 @@ describe("the required-argument contract the model actually sees", () => {
       );
     }
   );
+});
+
+/**
+ * ─── Drafts (#26) ─────────────────────────────────────────────────────
+ *
+ * Two constraints carry this table, and neither is about the tools working.
+ *
+ * **Every draft passes voice_check before it is saved.** Retrofitting the check
+ * onto a table already full of unchecked rows ends with those rows
+ * grandfathered, which is why #26 says to build it after #27 or alongside it.
+ * It fails closed: a check that errors, or that could not run, blocks the save.
+ * This is the policy flip flagged in #64 — there, a style violation travels
+ * with the text because nothing auto-publishes and a blocked draft leaves a
+ * human with nothing. Here the draft is being *saved*, which is a commitment.
+ *
+ * **Claude writes drafts; Claude never publishes.** `draft_record_decision`
+ * records a human decision and refuses to attribute one to an agent.
+ */
+const VOICE_PROFILE_ROWS = {
+  rules: ["Never use em dashes", "No vulgarity", 'Don\'t say "link in bio" outside instagram.'],
+  bannedWords: ["synergy"],
+};
+
+function seedDrafts(
+  draftRows: Array<Record<string, unknown>> = [],
+  decisions: Array<Record<string, unknown>> = []
+) {
+  seedVoice(VOICE_PROFILE_ROWS);
+  vi.mocked(draftQueries.getDrafts).mockResolvedValue(draftRows as never);
+  vi.mocked(draftQueries.getDraftDecisions).mockResolvedValue(decisions as never);
+  vi.mocked(draftQueries.draftExists).mockImplementation(
+    async (_db, id) => draftRows.some((d) => d.id === id)
+  );
+}
+
+const CLEAN_BODY = "Our new planners are here and they are lovely. Grab yours today.";
+
+const SAVE_ARGS = {
+  type: "email",
+  title: "September planner launch",
+  channel: "email",
+  body: CLEAN_BODY,
+};
+
+describe("draft_save: nothing is stored without passing the voice check", () => {
+  beforeEach(() => seedDrafts());
+
+  it("is registered and is a write tool", () => {
+    expect(ALL_TOOLS.map((t) => t.name)).toContain("draft_save");
+    expect(findTool("draft_save")?.readOnly).toBe(false);
+  });
+
+  it("saves copy that passes, and records which rules it passed", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", SAVE_ARGS)) as {
+      saved: boolean;
+      draftId: string;
+      rulesChecked: string[];
+    };
+    expect(r.saved).toBe(true);
+    expect(r.rulesChecked).toContain("Never use em dashes");
+
+    const [, stored] = vi.mocked(draftQueries.insertDraft).mock.calls[0];
+    expect(stored.body).toBe(CLEAN_BODY);
+    // Recorded, not recomputed: "this passed" means nothing without "passed what".
+    expect(stored.voiceRulesChecked).toContain("Never use em dashes");
+  });
+
+  it("refuses to save copy that breaks a rule, and names the rule", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", {
+      ...SAVE_ARGS,
+      body: "Our new planners are here — grab yours.",
+    })) as { saved: boolean; error?: string; violations?: Array<{ rule: string }> };
+
+    expect(r.saved).toBe(false);
+    expect(r.violations?.map((v) => v.rule)).toContain("Never use em dashes");
+    expect(draftQueries.insertDraft).not.toHaveBeenCalled();
+  });
+
+  it("refuses a banned word", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", {
+      ...SAVE_ARGS,
+      body: "Real synergy in this collection.",
+    })) as { saved: boolean };
+    expect(r.saved).toBe(false);
+    expect(draftQueries.insertDraft).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The scoping, end to end. "Link in bio" is correct on Instagram and wrong in
+   * an inbox — a draft saved against the wrong channel's rules is a draft that
+   * was checked against rules nobody meant to apply.
+   */
+  it("checks against the channel the draft is for", async () => {
+    const body = "New planners just dropped. Link in bio!";
+    const asEmail = (await dispatchTool(ctx, "draft_save", {
+      ...SAVE_ARGS,
+      body,
+    })) as { saved: boolean };
+    expect(asEmail.saved).toBe(false);
+
+    const asPost = (await dispatchTool(ctx, "draft_save", {
+      type: "social_caption",
+      title: "Launch post",
+      channel: "instagram",
+      body,
+    })) as { saved: boolean };
+    expect(asPost.saved).toBe(true);
+  });
+
+  /**
+   * Fail closed. A profile with nothing to check means the check did no work,
+   * which is not the same as the copy being fine — and a row saved in that
+   * state is a row that got in before the gate, permanently.
+   */
+  it("refuses to save when the voice corpus gives it nothing to check", async () => {
+    seedVoice({ rules: [], bannedWords: [], samples: [] });
+    const r = (await dispatchTool(ctx, "draft_save", SAVE_ARGS)) as { saved?: boolean; error?: string };
+    expect(r.saved).not.toBe(true);
+    expect(draftQueries.insertDraft).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Mutation testing found this. Falling back to an empty profile instead of
+   * refusing still blocks the save — `voiceCheck` fails closed on a profile
+   * with nothing to check — so the behaviour survived and every test stayed
+   * green. But the caller is then told its copy failed the voice check, when
+   * what actually happened is that the corpus did not load. It rewrites
+   * perfectly good copy, repeatedly, against a check that cannot pass.
+   *
+   * Two conditions that need opposite responses must not share a return value.
+   */
+  it("says the corpus is empty rather than blaming the copy", async () => {
+    seedVoice({ rules: [], bannedWords: [], samples: [] });
+    const r = (await dispatchTool(ctx, "draft_save", SAVE_ARGS)) as {
+      error?: string;
+      violations?: unknown[];
+    };
+    expect(r.error).toMatch(/corpus is empty/i);
+    expect(r.error).not.toMatch(/does not pass the voice check/i);
+    expect(r.violations).toBeUndefined();
+  });
+
+  it("refuses an empty body rather than storing an unchecked blank", async () => {
+    await expect(dispatchTool(ctx, "draft_save", { ...SAVE_ARGS, body: "   " })).rejects.toBeInstanceOf(
+      McpArgumentError
+    );
+  });
+
+  it("refuses a channel that is not a voice audience", async () => {
+    await expect(
+      dispatchTool(ctx, "draft_save", { ...SAVE_ARGS, channel: "e-mail" })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("refuses a type it does not know", async () => {
+    await expect(
+      dispatchTool(ctx, "draft_save", { ...SAVE_ARGS, type: "billboard" })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  // A draft with no channel is checked against every rule, not none.
+  it("checks an unspecified channel against everything", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", {
+      type: "campaign_brief",
+      title: "Q4 brief",
+      channel: "unspecified",
+      body: "New planners just dropped. Link in bio!",
+    })) as { saved: boolean };
+    expect(r.saved).toBe(false);
+  });
+});
+
+describe("draft_record_decision: Claude records a decision, never makes one", () => {
+  const DRAFT_ROW = {
+    id: "d1",
+    type: "email",
+    title: "September planner launch",
+    channel: "email",
+    body: CLEAN_BODY,
+    voiceRulesChecked: ["Never use em dashes"],
+    author: "claude",
+    createdAt: NOW,
+  };
+
+  beforeEach(() => seedDrafts([DRAFT_ROW]));
+
+  const DECISION_ARGS = {
+    draftId: "d1",
+    decision: "rejected",
+    feedback: "too polished, it doesn't sound like me. say 'y'all' somewhere.",
+    decidedBy: "Tara",
+  };
+
+  it("records a human decision", async () => {
+    const r = (await dispatchTool(ctx, "draft_record_decision", DECISION_ARGS)) as {
+      recorded: boolean;
+    };
+    expect(r.recorded).toBe(true);
+    const [, entry] = vi.mocked(draftQueries.insertDraftDecision).mock.calls[0];
+    // Verbatim. A summarised reason loses the phrasing, and the phrasing is the
+    // point when the subject is voice.
+    expect(entry.feedback).toBe(DECISION_ARGS.feedback);
+  });
+
+  it.each(["claude", "Claude", "system", "assistant", "agent"])(
+    "refuses to attribute a decision to %o",
+    async (decidedBy) => {
+      await expect(
+        dispatchTool(ctx, "draft_record_decision", { ...DECISION_ARGS, decidedBy })
+      ).rejects.toBeInstanceOf(McpArgumentError);
+      expect(draftQueries.insertDraftDecision).not.toHaveBeenCalled();
+    }
+  );
+
+  // No default. Every other write tool defaults `author` to "claude", and that
+  // habit applied here is how a draft reaches `approved` with nobody behind it.
+  it("requires decidedBy rather than defaulting it", async () => {
+    const { decidedBy, ...anonymous } = DECISION_ARGS;
+    await expect(
+      dispatchTool(ctx, "draft_record_decision", anonymous)
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("requires a reason on a rejection", async () => {
+    await expect(
+      dispatchTool(ctx, "draft_record_decision", { ...DECISION_ARGS, feedback: "  " })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("lets an approval stand without one", async () => {
+    await expect(
+      dispatchTool(ctx, "draft_record_decision", {
+        draftId: "d1",
+        decision: "approved",
+        decidedBy: "Tara",
+      })
+    ).resolves.toBeTruthy();
+  });
+
+  it("refuses a decision on a draft that does not exist", async () => {
+    await expect(
+      dispatchTool(ctx, "draft_record_decision", { ...DECISION_ARGS, draftId: "nope" })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it.each(["draft", "published", "sent"])("refuses %o as a decision", async (decision) => {
+    await expect(
+      dispatchTool(ctx, "draft_record_decision", { ...DECISION_ARGS, decision })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+});
+
+describe("drafts_list", () => {
+  const DRAFT_ROW = {
+    id: "d1",
+    type: "email",
+    title: "September planner launch",
+    channel: "email",
+    body: CLEAN_BODY,
+    voiceRulesChecked: ["Never use em dashes"],
+    author: "claude",
+    createdAt: NOW,
+  };
+  const dec = (over: Record<string, unknown> = {}) => ({
+    id: "dec1",
+    draftId: "d1",
+    decision: "rejected",
+    feedback: "too polished",
+    decidedBy: "Tara",
+    createdAt: new Date("2026-09-03T00:00:00Z"),
+    ...over,
+  });
+
+  it("is read-only", () => {
+    expect(findTool("drafts_list")?.readOnly).toBe(true);
+  });
+
+  it("reports a draft nobody has decided on as a draft", async () => {
+    seedDrafts([DRAFT_ROW]);
+    const r = (await dispatchTool(ctx, "drafts_list", {})) as {
+      drafts: Array<{ status: string }>;
+    };
+    expect(r.drafts[0].status).toBe("draft");
+  });
+
+  it("keeps a rejection visible after a later approval", async () => {
+    seedDrafts(
+      [DRAFT_ROW],
+      [dec(), dec({ id: "dec2", decision: "approved", feedback: "much better", createdAt: new Date("2026-09-04T00:00:00Z") })]
+    );
+    const r = (await dispatchTool(ctx, "drafts_list", {})) as {
+      drafts: Array<{ status: string; feedbackHistory: string[] }>;
+    };
+    expect(r.drafts[0].status).toBe("approved");
+    expect(r.drafts[0].feedbackHistory).toEqual(["too polished", "much better"]);
+  });
+
+  it("filters by status and by channel", async () => {
+    seedDrafts([DRAFT_ROW, { ...DRAFT_ROW, id: "d2", channel: "instagram" }], [dec()]);
+    const rejected = (await dispatchTool(ctx, "drafts_list", { status: "rejected" })) as {
+      drafts: Array<{ id: string }>;
+    };
+    expect(rejected.drafts.map((d) => d.id)).toEqual(["d1"]);
+
+    const ig = (await dispatchTool(ctx, "drafts_list", { channel: "instagram" })) as {
+      drafts: Array<{ id: string }>;
+    };
+    expect(ig.drafts.map((d) => d.id)).toEqual(["d2"]);
+  });
+
+  it("reports what it returned and what matched", async () => {
+    seedDrafts([DRAFT_ROW, { ...DRAFT_ROW, id: "d2" }, { ...DRAFT_ROW, id: "d3" }]);
+    const r = (await dispatchTool(ctx, "drafts_list", { limit: 2 })) as {
+      returned: number;
+      matched: number;
+    };
+    expect(r).toMatchObject({ returned: 2, matched: 3 });
+  });
+
+  it("says an empty result is empty rather than returning a bare array", async () => {
+    seedDrafts();
+    const r = (await dispatchTool(ctx, "drafts_list", {})) as { note?: string };
+    expect(r.note).toMatch(/no drafts/i);
+  });
+
+  it("distinguishes 'none saved' from 'none matched this filter'", async () => {
+    seedDrafts([DRAFT_ROW]);
+    const filtered = (await dispatchTool(ctx, "drafts_list", { status: "shipped" })) as {
+      note?: string;
+    };
+    seedDrafts();
+    const none = (await dispatchTool(ctx, "drafts_list", {})) as { note?: string };
+    expect(filtered.note).toBeTruthy();
+    expect(filtered.note).not.toBe(none.note);
+  });
+
+  it("surfaces decisions whose draft does not exist", async () => {
+    seedDrafts([DRAFT_ROW], [dec({ id: "stray", draftId: "ghost" })]);
+    const r = (await dispatchTool(ctx, "drafts_list", {})) as {
+      orphanedDecisions: Array<{ id: string }>;
+    };
+    expect(r.orphanedDecisions.map((o) => o.id)).toEqual(["stray"]);
+  });
+
+  /**
+   * Rejections are the training signal. A list that omits them by default, or
+   * that returns the status without the reason, is the inversion #26 warns
+   * about — recording why something was approved and letting rejections
+   * quietly disappear.
+   */
+  it("returns rejection feedback alongside the draft it was about", async () => {
+    seedDrafts([DRAFT_ROW], [dec()]);
+    const r = (await dispatchTool(ctx, "drafts_list", {})) as {
+      drafts: Array<{ body: string; decisions: Array<{ feedback: string; decidedBy: string }> }>;
+    };
+    expect(r.drafts[0].body).toBe(CLEAN_BODY);
+    expect(r.drafts[0].decisions[0]).toMatchObject({ feedback: "too polished", decidedBy: "Tara" });
+  });
 });

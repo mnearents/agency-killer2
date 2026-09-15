@@ -1043,6 +1043,93 @@ export type ExperimentResultRow = typeof experimentResults.$inferSelect;
 export type NewExperimentResultRow = typeof experimentResults.$inferInsert;
 
 /**
+ * Drafts — where Claude's copy work lives.
+ *
+ * Insert-only, like everything else Claude writes. A revision is a new draft,
+ * not an edit: the body that Tara reacted to has to still be readable next to
+ * the reaction, or the feedback is attached to text nobody can see any more.
+ *
+ * `status` is NOT a column here. It is derived from `draft_decisions`, because
+ * a mutable status column would overwrite a rejection the moment a rewrite got
+ * approved — deleting the highest-signal record in the system at the exact
+ * point it became useful. See src/domain/drafts/drafts.ts.
+ *
+ * Claude writes drafts. Claude never publishes. Nothing in this system moves a
+ * draft to `shipped`, and nothing downstream reads `approved` as authorisation
+ * to send; Attentive, Meta and Shopify remain strictly read-only.
+ */
+export const drafts = pgTable(
+  "drafts",
+  {
+    id: text("id").primaryKey(),
+    /** campaign_brief | ad_copy | email | sms | social_caption | product_description | blog_post */
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    /**
+     * The voice audience this copy was written for — a channel, or
+     * 'unspecified'. Shared vocabulary with the voice rules, so a draft is
+     * checked against the rules that actually apply to it.
+     */
+    channel: text("channel").notNull(),
+    body: text("body").notNull(),
+
+    /**
+     * The voice rules this draft was checked against when it was saved.
+     * Recorded rather than recomputed: the rules change, and "this passed"
+     * means nothing without "passed what". A draft cannot be saved unless the
+     * check ran and came back clean, so an empty array here would mean a row
+     * that got in before the gate existed.
+     */
+    voiceRulesChecked: jsonb("voice_rules_checked").$type<string[]>().notNull(),
+
+    author: text("author").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("drafts_created_idx").on(table.createdAt),
+    index("drafts_type_idx").on(table.type),
+    index("drafts_channel_idx").on(table.channel),
+  ]
+);
+
+export type DraftRow = typeof drafts.$inferSelect;
+export type NewDraftRow = typeof drafts.$inferInsert;
+
+/**
+ * Human decisions about drafts. Append-only.
+ *
+ * `feedback` is the valuable column and the reason this is a log rather than a
+ * status flip. Tara is the voice being replicated, so her rejections are the
+ * highest-signal training data available — a rejected draft plus the reason
+ * marks a boundary the model crossed. Stored verbatim: a summarised reason
+ * loses the phrasing, and the phrasing is the point when the subject is voice.
+ *
+ * `decided_by` names a person. `validateDecision` refuses an agent
+ * attribution, because the realistic failure is not impersonation — it is a
+ * write tool defaulting this field the way every other one defaults `author`,
+ * and a draft reaching `approved` with no human in the loop.
+ */
+export const draftDecisions = pgTable(
+  "draft_decisions",
+  {
+    id: text("id").primaryKey(),
+    draftId: text("draft_id").notNull(),
+    /** approved | rejected | shipped. Never 'draft' — that is having no row. */
+    decision: text("decision").notNull(),
+    feedback: text("feedback").notNull().default(""),
+    decidedBy: text("decided_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("draft_decisions_draft_idx").on(table.draftId),
+    index("draft_decisions_created_idx").on(table.createdAt),
+  ]
+);
+
+export type DraftDecisionRow = typeof draftDecisions.$inferSelect;
+export type NewDraftDecisionRow = typeof draftDecisions.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

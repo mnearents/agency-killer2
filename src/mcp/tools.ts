@@ -78,6 +78,23 @@ import {
 } from "@/domain/voice/rules";
 import { selectSamples, describeSampleSelection, type VoiceProfile } from "@/domain/voice/voice";
 import { voiceCheck } from "@/domain/voice/voice-check";
+import {
+  foldDrafts,
+  validateDraft,
+  validateDecision,
+  DECISIONS,
+  DRAFT_TYPES,
+  type Decision,
+  type DraftStatus,
+  type DraftType,
+} from "@/domain/drafts/drafts";
+import {
+  getDrafts,
+  getDraftDecisions,
+  draftExists,
+  insertDraft,
+  insertDraftDecision,
+} from "@/domain/drafts/queries";
 import { runAlertChecks } from "@/domain/alerts/runner";
 import { CHECK_FAILED_TYPE } from "@/domain/alerts/checks";
 import { getPilotEntries, noteExists, appendPilotEntry } from "@/domain/pilot/queries";
@@ -909,6 +926,218 @@ const experimentsList: McpTool = {
   },
 };
 
+// ─── Drafts ───────────────────────────────────────────────────────────
+
+const DRAFT_STATUSES = [...DECISIONS, "draft", "all"] as const;
+const DRAFT_AUDIENCES = [...CHANNELS, UNSPECIFIED] as const;
+
+const draftSave: McpTool = {
+  name: "draft_save",
+  title: "Save a draft",
+  description:
+    "Save a piece of copy — campaign brief, ad copy, email, SMS, social caption, product description, blog post. " +
+    "The body is run through voice_check for the channel you name BEFORE anything is stored, and a draft that fails is not saved: the violations come back instead, so fix the copy and call again. " +
+    "Pass the channel the copy is actually for; 'unspecified' applies every rule and is right for a brief nobody publishes. " +
+    "Drafts are immutable — a revision is a new draft, so the text Tara reacted to stays readable next to her reaction. " +
+    "Saving a draft is not publishing it and not approval. Use draft_record_decision to record what a person decided.",
+  readOnly: false,
+  schema: {
+    type: { type: "enum", values: DRAFT_TYPES, required: true },
+    title: { type: "string", required: true },
+    channel: { type: "enum", values: DRAFT_AUDIENCES, required: true },
+    body: { type: "string", required: true },
+    author: { type: "string", default: "claude" },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const draft = {
+      id: `${now.toISOString()}-${randomUUID().slice(0, 8)}`,
+      type: args.type as DraftType,
+      title: args.title as string,
+      channel: args.channel as RuleAudience,
+      body: args.body as string,
+      author: args.author as string,
+      createdAt: now,
+    };
+
+    const validation = validateDraft(draft);
+    if (!validation.ok) throw new McpArgumentError(validation.error);
+
+    const profile = await readVoiceProfile(ctx);
+    if (!profile) return { saved: false, error: EMPTY_CORPUS_ERROR };
+
+    // The gate. #26 is explicit that retrofitting this onto a table already
+    // full of unchecked rows ends with those rows grandfathered, so nothing
+    // reaches the table without passing. It fails closed: an unparseable or
+    // unrunnable check blocks the save, because a check that established
+    // nothing is not a check that passed.
+    //
+    // This is the policy flip noted in #64. There, a style violation travels
+    // with the text, because nothing auto-publishes and a blocked draft leaves
+    // a human with nothing to fix. Here the draft is being *saved*, which is a
+    // commitment, so the violation blocks.
+    const check = voiceCheck(draft.body, draft.channel, profile);
+    if (!check.ok) {
+      return {
+        saved: false,
+        channel: draft.channel,
+        violations: check.violations,
+        rulesChecked: check.enforced,
+        rulesUnenforced: check.unenforced,
+        error:
+          `Not saved: this copy does not pass the voice check for ${draft.channel}. ` +
+          `Fix the copy and call again. If a rule itself is wrong, change it at /voice — ` +
+          `do not work around it here, because there is no path that stores an unchecked draft.`,
+      };
+    }
+
+    await insertDraft(ctx.db, { ...draft, voiceRulesChecked: check.enforced });
+
+    return {
+      saved: true,
+      draftId: draft.id,
+      channel: draft.channel,
+      // Recorded on the row as well: rules change, and "this passed" means
+      // nothing without "passed what".
+      rulesChecked: check.enforced,
+      rulesUnenforced: check.unenforced.length > 0 ? check.unenforced : undefined,
+      note: "Saved as a draft. This is not approval and not publication.",
+    };
+  },
+};
+
+const draftRecordDecision: McpTool = {
+  name: "draft_record_decision",
+  title: "Record a decision about a draft",
+  description:
+    "Record what a PERSON decided about a draft: approved, rejected, or shipped. This tool records a decision that was made elsewhere — it does not make one, and nothing in this system publishes anything. " +
+    "decidedBy must name the person, and an agent name is refused. " +
+    "feedback is required on a rejection and is stored verbatim: a rejected draft plus the reason is the highest-signal record here, because it marks a boundary the model crossed. Do not summarise it. " +
+    "Decisions are append-only, so a later approval sits alongside the earlier rejection rather than replacing it.",
+  readOnly: false,
+  schema: {
+    draftId: { type: "string", required: true },
+    decision: { type: "enum", values: DECISIONS, required: true },
+    decidedBy: { type: "string", required: true },
+    feedback: { type: "string", default: "" },
+  },
+  async run(ctx, args) {
+    const draftId = args.draftId as string;
+
+    if (!(await draftExists(ctx.db, draftId))) {
+      throw new McpArgumentError(
+        `No draft with id "${draftId}". Call drafts_list to see the saved ones.`
+      );
+    }
+
+    const now = ctx.now();
+    const entry = {
+      id: `${now.toISOString()}-${randomUUID().slice(0, 8)}`,
+      draftId,
+      decision: args.decision as Decision,
+      feedback: args.feedback as string,
+      decidedBy: args.decidedBy as string,
+      createdAt: now,
+    };
+
+    const validation = validateDecision(entry);
+    if (!validation.ok) throw new McpArgumentError(validation.error);
+
+    await insertDraftDecision(ctx.db, entry);
+
+    return {
+      recorded: true,
+      decisionId: entry.id,
+      draftId,
+      decision: entry.decision,
+      decidedBy: entry.decidedBy,
+    };
+  },
+};
+
+const draftsList: McpTool = {
+  name: "drafts_list",
+  title: "List drafts",
+  description:
+    "Saved drafts with their full text, the rules each was checked against, and every decision recorded about them. " +
+    "Status is derived from the decisions: 'draft' until someone decides, then whatever they decided most recently. " +
+    "Earlier decisions are kept — read feedbackHistory before writing anything new for the same channel, because a rejection and its reason are the clearest statement of what Tara does not want. " +
+    "orphanedDecisions holds decisions whose draft does not exist; that is data damage. " +
+    "Reports both returned and matched, so a capped list is never mistaken for the whole set.",
+  readOnly: true,
+  schema: {
+    status: { type: "enum", values: DRAFT_STATUSES, default: "all" },
+    channel: { type: "enum", values: DRAFT_AUDIENCES },
+    type: { type: "enum", values: DRAFT_TYPES },
+    limit: { type: "integer", min: 1, max: 200, default: 50 },
+  },
+  async run(ctx, args) {
+    const [rows, decisions] = await Promise.all([getDrafts(ctx.db), getDraftDecisions(ctx.db)]);
+    const { drafts: folded, orphanedDecisions } = foldDrafts(rows, decisions);
+
+    const status = args.status as DraftStatus | "all";
+    const channel = args.channel as RuleAudience | undefined;
+    const type = args.type as DraftType | undefined;
+
+    const matched = folded.filter(
+      (d) =>
+        (status === "all" || d.status === status) &&
+        (channel === undefined || d.channel === channel) &&
+        (type === undefined || d.type === type)
+    );
+    const page = matched.slice(0, args.limit as number);
+
+    const filters = [
+      status !== "all" ? `status "${status}"` : null,
+      channel ? `channel "${channel}"` : null,
+      type ? `type "${type}"` : null,
+    ].filter(Boolean);
+
+    const note =
+      folded.length === 0
+        ? "No drafts have been saved yet."
+        : matched.length === 0
+          ? `No draft matches ${filters.join(" and ")}, though ${folded.length} have been saved.`
+          : undefined;
+
+    return {
+      returned: page.length,
+      matched: matched.length,
+      totalSaved: folded.length,
+      ...(note ? { note } : {}),
+      drafts: page.map((d) => {
+        const stored = rows.find((r) => r.id === d.id);
+        return {
+          id: d.id,
+          type: d.type,
+          title: d.title,
+          channel: d.channel,
+          status: d.status,
+          body: d.body,
+          voiceRulesChecked: stored?.voiceRulesChecked ?? [],
+          author: d.author,
+          savedAt: d.createdAt.toISOString(),
+          feedbackHistory: d.feedbackHistory,
+          decisions: d.decisions.map((x) => ({
+            decision: x.decision,
+            feedback: x.feedback,
+            decidedBy: x.decidedBy,
+            decidedAt: x.createdAt.toISOString(),
+          })),
+        };
+      }),
+      orphanedDecisions: orphanedDecisions.map((x) => ({
+        id: x.id,
+        draftId: x.draftId,
+        decision: x.decision,
+        feedback: x.feedback,
+        decidedBy: x.decidedBy,
+        decidedAt: x.createdAt.toISOString(),
+      })),
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1176,6 +1405,9 @@ export const ALL_TOOLS: McpTool[] = [
   experimentStart,
   experimentRecordResult,
   experimentsList,
+  draftSave,
+  draftRecordDecision,
+  draftsList,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,

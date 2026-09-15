@@ -19,6 +19,8 @@ import {
   pilotNotes,
   experiments,
   experimentResults,
+  drafts,
+  draftDecisions,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -171,6 +173,8 @@ export const FRESHNESS_SOURCES = [
     // an experiment, not that a feed died.
     { source: "Experiments", table: experiments, name: "experiments", column: experiments.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     { source: "Experiment results", table: experimentResults, name: "experiment_results", column: experimentResults.createdAt, basis: "authored" as const, staleAfterHours: 0 },
+    { source: "Drafts", table: drafts, name: "drafts", column: drafts.createdAt, basis: "authored" as const, staleAfterHours: 0 },
+    { source: "Draft decisions", table: draftDecisions, name: "draft_decisions", column: draftDecisions.createdAt, basis: "authored" as const, staleAfterHours: 0 },
   ];
 
 export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshness[]> {

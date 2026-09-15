@@ -169,3 +169,19 @@ describe("experiments freshness", () => {
     expect(source?.staleAfterHours).toBe(0);
   });
 });
+
+/**
+ * Drafts are authored too. An empty drafts table means nobody wrote anything,
+ * not that a feed died.
+ */
+describe("drafts freshness", () => {
+  it.each(["drafts", "draft_decisions"])("registers %s as a source", (name) => {
+    expect(FRESHNESS_SOURCES.map((s) => s.name)).toContain(name);
+  });
+
+  it.each(["drafts", "draft_decisions"])("treats %s as authored, with no staleness window", (name) => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === name);
+    expect(source?.basis).toBe("authored");
+    expect(source?.staleAfterHours).toBe(0);
+  });
+});
