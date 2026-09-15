@@ -24,6 +24,9 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { getTableName, is } from "drizzle-orm";
+import { PgTable } from "drizzle-orm/pg-core";
+import * as schema from "@/db/schema";
 
 const MIGRATIONS_DIR = join(__dirname, "../../src/db/migrations");
 
@@ -101,5 +104,75 @@ describe("migration journal", () => {
     for (const file of sqlFiles) {
       expect(tags, `${file} is not in the journal`).toContain(file.replace(/\.sql$/, ""));
     }
+  });
+});
+
+/**
+ * ─── Snapshot drift ───────────────────────────────────────────────────
+ *
+ * Drizzle generates a migration by diffing `schema.ts` against the NEWEST
+ * snapshot in `meta/`, never against the database. A hand-written migration
+ * that does not also write a snapshot therefore leaves the snapshot describing
+ * an older schema — and the next `drizzle-kit generate` emits everything that
+ * happened in between, on top of whatever is genuinely new.
+ *
+ * That is not hypothetical. Snapshots were never written for 0016, 0017, 0018,
+ * 0020 or 0021, so generating 0022 produced `CREATE TABLE segments`, `CREATE
+ * TABLE shopify_customers`, `ADD COLUMN inventory_item_id` and three
+ * `ADD CONSTRAINT`s alongside the two new tables. Every one of those objects
+ * already exists in production; the file would have failed on its first
+ * statement, and in a less lucky shape it would have succeeded and dropped
+ * something.
+ *
+ * The invariant that catches it is that the newest snapshot has to describe the
+ * same tables `schema.ts` does. When it does, the next diff is correct.
+ */
+describe("the newest drizzle snapshot", () => {
+  const snapshotFiles = readdirSync(join(MIGRATIONS_DIR, "meta"))
+    .filter((f) => /^\d{4}_snapshot\.json$/.test(f))
+    .sort();
+
+  const newestSnapshot: { tables: Record<string, unknown> } = JSON.parse(
+    readFileSync(join(MIGRATIONS_DIR, "meta", snapshotFiles[snapshotFiles.length - 1]), "utf8")
+  );
+
+  const declaredTables = new Set(
+    Object.values(schema)
+      .filter((v) => is(v, PgTable))
+      .map((t) => getTableName(t as PgTable))
+  );
+
+  it("has snapshots at all, so the comparison below is not vacuous", () => {
+    expect(snapshotFiles.length).toBeGreaterThan(0);
+    expect(declaredTables.size).toBeGreaterThan(0);
+  });
+
+  it("belongs to the newest migration, so the next diff starts from here", () => {
+    const newestEntry = journal.entries[journal.entries.length - 1];
+    const snapshotIdx = snapshotFiles[snapshotFiles.length - 1].slice(0, 4);
+    expect(
+      Number(snapshotIdx),
+      `newest journal entry is ${newestEntry.tag} but the newest snapshot is ` +
+        `${snapshotIdx}_snapshot.json — the next generate will diff against a stale picture ` +
+        `and re-emit everything since`
+    ).toBe(newestEntry.idx);
+  });
+
+  it("describes exactly the tables schema.ts declares", () => {
+    const inSnapshot = new Set(Object.keys(newestSnapshot.tables).map((k) => k.replace(/^public\./, "")));
+
+    const missing = [...declaredTables].filter((t) => !inSnapshot.has(t));
+    const extra = [...inSnapshot].filter((t) => !declaredTables.has(t));
+
+    expect(
+      missing,
+      `schema.ts declares ${missing.join(", ")} but the newest snapshot does not — ` +
+        `the next generate will emit CREATE TABLE for them again`
+    ).toEqual([]);
+    expect(
+      extra,
+      `the newest snapshot has ${extra.join(", ")} but schema.ts does not — ` +
+        `the next generate will emit DROP TABLE for them`
+    ).toEqual([]);
   });
 });

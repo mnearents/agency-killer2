@@ -195,3 +195,60 @@ describe("resolveRange", () => {
     ).toThrow(McpArgumentError);
   });
 });
+
+/**
+ * `number` exists alongside `integer` because the metrics this system reasons
+ * about are not whole numbers. An experiment's baseline aMER is 1.62 and its
+ * result is 1.79; parsing those as integers would silently record 1 and 1, and
+ * a rounded baseline is worse than no baseline because it looks like data.
+ */
+describe("number arguments", () => {
+  const spec = { value: { type: "number" } } as const;
+
+  it("accepts a fractional value", () => {
+    expect(parseArgs({ value: 1.62 }, spec)).toEqual({ value: 1.62 });
+  });
+
+  it("accepts a whole number and a negative one", () => {
+    expect(parseArgs({ value: 3 }, spec)).toEqual({ value: 3 });
+    expect(parseArgs({ value: -0.5 }, spec)).toEqual({ value: -0.5 });
+  });
+
+  // Models emit numbers as strings often enough that refusing would be noise,
+  // but the coercion has to be exact — no NaN, no partial parse.
+  it("accepts a numeric string without coercing anything else", () => {
+    expect(parseArgs({ value: "1.62" }, spec)).toEqual({ value: 1.62 });
+  });
+
+  it.each(["", "  ", "1.62x", "abc", true, [], {}, NaN, Infinity])(
+    "refuses %o rather than storing a NaN",
+    (bad) => {
+      expect(() => parseArgs({ value: bad }, spec)).toThrow(McpArgumentError);
+    }
+  );
+
+  // `null` is "not provided" for every type here, not a value to coerce. What
+  // matters is that it does not become 0 — a defaulted zero baseline would be
+  // indistinguishable from a measured one.
+  it("treats null as absent rather than as zero", () => {
+    expect(parseArgs({ value: null }, spec)).toEqual({});
+  });
+
+  it("respects min and max", () => {
+    const bounded = { value: { type: "number", min: 0, max: 10 } } as const;
+    expect(parseArgs({ value: 0 }, bounded)).toEqual({ value: 0 });
+    expect(() => parseArgs({ value: -0.1 }, bounded)).toThrow(McpArgumentError);
+    expect(() => parseArgs({ value: 10.1 }, bounded)).toThrow(McpArgumentError);
+  });
+
+  it("is required when the spec says so", () => {
+    expect(() => parseArgs({}, { value: { type: "number", required: true } })).toThrow(
+      McpArgumentError
+    );
+  });
+
+  it("stays absent rather than becoming zero when omitted", () => {
+    // A defaulted 0 would be indistinguishable from a measured 0.
+    expect(parseArgs({}, spec)).toEqual({});
+  });
+});

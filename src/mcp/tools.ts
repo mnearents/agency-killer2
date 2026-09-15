@@ -55,6 +55,21 @@ import { computeDailyVelocity, computeDaysOfCover } from "@/domain/inventory/vel
 import { getEntriesByWeek } from "@/domain/calendar/queries";
 import { getAllSamples, getAllRules, getAllBannedWords } from "@/domain/voice/queries";
 import {
+  foldExperiments,
+  validateDeclaration,
+  validateResult,
+  OUTCOMES,
+  type ExperimentStatus,
+  type Outcome,
+} from "@/domain/experiments/experiments";
+import {
+  getExperimentDeclarations,
+  getExperimentResults,
+  experimentExists,
+  insertDeclaration,
+  insertResult,
+} from "@/domain/experiments/queries";
+import {
   CHANNELS,
   UNSPECIFIED,
   isChannel,
@@ -678,6 +693,222 @@ const voiceCheckTool: McpTool = {
   },
 };
 
+// ─── Experiments ──────────────────────────────────────────────────────
+
+/** Every status `experiments_list` can filter on, including the derived ones. */
+const EXPERIMENT_STATUSES = [...OUTCOMES, "running", "awaiting_result", "all"] as const;
+
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+
+const experimentStart: McpTool = {
+  name: "experiment_start",
+  title: "Declare an experiment",
+  description:
+    "Record an experiment BEFORE you know how it turned out. Every recommendation you make that someone acts on should get one of these. " +
+    "successCriteria is required and there is no way to change it later: recording a result writes a separate record, and this tool is the only thing that can set it. " +
+    "That is deliberate — a bar written after the result is known is not a bar. Same for baselineValue: capture it now, because a baseline computed later is computed by someone who already knows the answer. " +
+    "plannedEndDate is required too, so the window cannot be extended until the numbers look good. " +
+    "Returns experimentId, which experiment_record_result needs.",
+  readOnly: false,
+  schema: {
+    name: { type: "string", required: true },
+    hypothesis: { type: "string", required: true },
+    whatWeChanged: { type: "string", required: true },
+    successCriteria: { type: "string", required: true },
+    primaryMetric: { type: "string", required: true },
+    baselineBasis: { type: "string", required: true },
+    startDate: { type: "date", required: true },
+    plannedEndDate: { type: "date", required: true },
+    baselineValue: { type: "number" },
+    relatedNoteIds: { type: "string" },
+    author: { type: "string", default: "claude" },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const id = `${now.toISOString()}-${randomUUID().slice(0, 8)}`;
+
+    const relatedNoteIds =
+      typeof args.relatedNoteIds === "string" && args.relatedNoteIds.trim() !== ""
+        ? args.relatedNoteIds.split(",").map((n) => n.trim()).filter(Boolean)
+        : [];
+
+    const declaration = {
+      id,
+      name: args.name as string,
+      hypothesis: args.hypothesis as string,
+      whatWeChanged: args.whatWeChanged as string,
+      successCriteria: args.successCriteria as string,
+      primaryMetric: args.primaryMetric as string,
+      baselineValue: typeof args.baselineValue === "number" ? args.baselineValue : null,
+      baselineBasis: args.baselineBasis as string,
+      startDate: isoDay(args.startDate as Date),
+      plannedEndDate: isoDay(args.plannedEndDate as Date),
+      relatedNoteIds,
+      author: args.author as string,
+      createdAt: now,
+    };
+
+    const validation = validateDeclaration(declaration);
+    if (!validation.ok) throw new McpArgumentError(validation.error);
+
+    await insertDeclaration(ctx.db, declaration);
+
+    return {
+      written: true,
+      experimentId: id,
+      successCriteria: declaration.successCriteria,
+      plannedEndDate: declaration.plannedEndDate,
+      // Said back deliberately: the caller should see the bar it just committed
+      // to, because after this there is no tool that can change it.
+      note:
+        "Declared. successCriteria and baselineValue cannot be changed from here on — " +
+        "experiment_record_result writes a separate record and takes neither.",
+    };
+  },
+};
+
+const experimentRecordResult: McpTool = {
+  name: "experiment_record_result",
+  title: "Record an experiment result",
+  description:
+    "Record how a declared experiment turned out, judged against the successCriteria it was started with. " +
+    "This tool cannot modify the declaration — it takes no hypothesis, no baseline and no success criteria, and passing one is an error rather than something it ignores. " +
+    "outcome is win, loss or inconclusive; expect inconclusive to be the most common, because most tests on a business this size will not reach significance. " +
+    "learnings is required even then, and especially then: usually the finding is that the metric was wrong, the window too short, or the change too small to detect. " +
+    "A correction is another call, not an edit — the newest result decides the status and the earlier one stays visible.",
+  readOnly: false,
+  schema: {
+    experimentId: { type: "string", required: true },
+    outcome: { type: "enum", values: OUTCOMES, required: true },
+    concludedOn: { type: "date", required: true },
+    learnings: { type: "string", required: true },
+    resultValue: { type: "number" },
+    author: { type: "string", default: "claude" },
+  },
+  async run(ctx, args) {
+    const experimentId = args.experimentId as string;
+
+    // Recording against an experiment that does not exist would fold to an
+    // orphan, which is reserved for genuine data damage. A typo'd id should
+    // fail here rather than quietly create an unreachable result.
+    if (!(await experimentExists(ctx.db, experimentId))) {
+      throw new McpArgumentError(
+        `No experiment with id "${experimentId}". Call experiments_list to see the declared ones, ` +
+          `or experiment_start to declare this one — but note that starting it now means its ` +
+          `success criteria would be written after the result is known.`
+      );
+    }
+
+    const now = ctx.now();
+    const entry = {
+      id: `${now.toISOString()}-${randomUUID().slice(0, 8)}`,
+      experimentId,
+      outcome: args.outcome as Outcome,
+      resultValue: typeof args.resultValue === "number" ? args.resultValue : null,
+      concludedOn: isoDay(args.concludedOn as Date),
+      learnings: args.learnings as string,
+      author: args.author as string,
+      createdAt: now,
+    };
+
+    const validation = validateResult(entry);
+    if (!validation.ok) throw new McpArgumentError(validation.error);
+
+    await insertResult(ctx.db, entry);
+
+    return { written: true, resultId: entry.id, experimentId, outcome: entry.outcome };
+  },
+};
+
+const experimentsList: McpTool = {
+  name: "experiments_list",
+  title: "List experiments",
+  description:
+    "Every declared experiment with its success criteria, baseline and derived status. " +
+    "Status is computed, never stored: 'running' while the declared window is open, 'awaiting_result' once it has closed with nothing recorded, otherwise the recorded outcome. " +
+    "'awaiting_result' is the one to act on — an experiment nobody concluded is how a recommendation becomes folklore. " +
+    "orphanedResults holds results whose experiment was never declared; that is data damage, not an experiment. " +
+    "Reports both returned and matched, so a capped list is never mistaken for the whole set.",
+  readOnly: true,
+  schema: {
+    status: { type: "enum", values: EXPERIMENT_STATUSES, default: "all" },
+    limit: { type: "integer", min: 1, max: 500, default: 100 },
+  },
+  async run(ctx, args) {
+    const [declarations, results] = await Promise.all([
+      getExperimentDeclarations(ctx.db),
+      getExperimentResults(ctx.db),
+    ]);
+
+    const { experiments: folded, orphanedResults } = foldExperiments(
+      declarations,
+      results,
+      isoDay(ctx.now())
+    );
+
+    const status = args.status as ExperimentStatus | "all";
+    const matched = status === "all" ? folded : folded.filter((e) => e.status === status);
+    const limit = args.limit as number;
+    const page = matched.slice(0, limit);
+
+    // An empty array reads the same whether nobody has run an experiment or the
+    // filter excluded everything, and those call for opposite responses.
+    const note =
+      folded.length === 0
+        ? "No experiments have been declared. Use experiment_start before acting on a recommendation."
+        : matched.length === 0
+          ? `No experiment currently has status "${status}", though ${folded.length} have been declared.`
+          : undefined;
+
+    return {
+      returned: page.length,
+      matched: matched.length,
+      totalDeclared: folded.length,
+      ...(note ? { note } : {}),
+      experiments: page.map((e) => ({
+        id: e.id,
+        name: e.name,
+        status: e.status,
+        hypothesis: e.hypothesis,
+        whatWeChanged: e.whatWeChanged,
+        successCriteria: e.successCriteria,
+        primaryMetric: e.primaryMetric,
+        baselineValue: e.baselineValue,
+        baselineBasis: e.baselineBasis,
+        startDate: e.startDate,
+        plannedEndDate: e.plannedEndDate,
+        relatedNoteIds: e.relatedNoteIds,
+        author: e.author,
+        declaredAt: e.createdAt.toISOString(),
+        result: e.result
+          ? {
+              outcome: e.result.outcome,
+              resultValue: e.result.resultValue,
+              concludedOn: e.result.concludedOn,
+              learnings: e.result.learnings,
+              recordedAt: e.result.createdAt.toISOString(),
+            }
+          : null,
+        // Kept rather than overwritten: a reading that changed is itself data.
+        supersededResults: e.supersededResults.map((r) => ({
+          outcome: r.outcome,
+          resultValue: r.resultValue,
+          concludedOn: r.concludedOn,
+          learnings: r.learnings,
+          recordedAt: r.createdAt.toISOString(),
+        })),
+      })),
+      orphanedResults: orphanedResults.map((r) => ({
+        id: r.id,
+        experimentId: r.experimentId,
+        outcome: r.outcome,
+        learnings: r.learnings,
+        recordedAt: r.createdAt.toISOString(),
+      })),
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -942,6 +1173,9 @@ export const ALL_TOOLS: McpTool[] = [
   calendarEntriesTool,
   brandVoice,
   voiceCheckTool,
+  experimentStart,
+  experimentRecordResult,
+  experimentsList,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,
@@ -968,6 +1202,13 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
         break;
       case "enum":
         properties[key] = { type: "string", enum: [...spec.values] };
+        break;
+      case "number":
+        properties[key] = {
+          type: "number",
+          ...(spec.min !== undefined ? { minimum: spec.min } : {}),
+          ...(spec.max !== undefined ? { maximum: spec.max } : {}),
+        };
         break;
       case "integer":
         properties[key] = {

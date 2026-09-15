@@ -21,6 +21,13 @@ export class McpArgumentError extends Error {
 export type ArgSpec =
   | { type: "string"; required?: boolean; default?: string }
   | { type: "integer"; required?: boolean; default?: number; min?: number; max?: number }
+  /**
+   * A real number, not a whole one. The metrics here are fractional — an
+   * experiment's baseline aMER is 1.62 — and parsing those as integers would
+   * silently record 1, which is worse than recording nothing because it looks
+   * like data.
+   */
+  | { type: "number"; required?: boolean; default?: number; min?: number; max?: number }
   | { type: "boolean"; required?: boolean; default?: boolean }
   | { type: "enum"; values: readonly string[]; required?: boolean; default?: string }
   | { type: "date"; required?: boolean };
@@ -42,6 +49,28 @@ function parseDate(key: string, raw: unknown): Date {
     throw new McpArgumentError(`"${key}" is not a real calendar date: ${raw}`);
   }
   return parsed;
+}
+
+function inRange(key: string, value: number, spec: { min?: number; max?: number }): number {
+  if (spec.min !== undefined && value < spec.min) {
+    throw new McpArgumentError(`"${key}" must be at least ${spec.min}, got ${value}`);
+  }
+  if (spec.max !== undefined && value > spec.max) {
+    throw new McpArgumentError(`"${key}" must be at most ${spec.max}, got ${value}`);
+  }
+  return value;
+}
+
+function parseNumber(key: string, raw: unknown, spec: { min?: number; max?: number }): number {
+  // A numeric string is accepted because models emit them often enough that
+  // refusing would be noise. The coercion is exact: Number("") is 0 and
+  // Number("1.62x") is NaN, so both the blank and the partial parse are
+  // rejected rather than becoming a plausible-looking figure.
+  const value = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new McpArgumentError(`"${key}" must be a number, got: ${JSON.stringify(raw)}`);
+  }
+  return inRange(key, value, spec);
 }
 
 function parseInteger(key: string, raw: unknown, spec: { min?: number; max?: number }): number {
@@ -67,6 +96,8 @@ function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | b
       return raw;
     case "integer":
       return parseInteger(key, raw, spec);
+    case "number":
+      return parseNumber(key, raw, spec);
     case "boolean":
       if (typeof raw !== "boolean") {
         throw new McpArgumentError(`"${key}" must be true or false, got: ${JSON.stringify(raw)}`);

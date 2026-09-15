@@ -53,6 +53,13 @@ vi.mock("@/domain/voice/queries", () => ({
   getAllRules: vi.fn().mockResolvedValue([]),
   getAllBannedWords: vi.fn().mockResolvedValue([]),
 }));
+vi.mock("@/domain/experiments/queries", () => ({
+  getExperimentDeclarations: vi.fn().mockResolvedValue([]),
+  getExperimentResults: vi.fn().mockResolvedValue([]),
+  experimentExists: vi.fn().mockResolvedValue(false),
+  insertDeclaration: vi.fn().mockResolvedValue(undefined),
+  insertResult: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@/domain/alerts/runner", () => ({
   runAlertChecks: vi.fn().mockResolvedValue([]),
 }));
@@ -80,6 +87,7 @@ import { runAlertChecks } from "@/domain/alerts/runner";
 import { getDataFreshness } from "@/db/freshness";
 import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import * as pilotQueries from "@/domain/pilot/queries";
+import * as experimentQueries from "@/domain/experiments/queries";
 import type { PilotEntry } from "@/domain/pilot/notes";
 
 const NOW = new Date("2026-09-02T12:00:00Z");
@@ -101,13 +109,25 @@ describe("the tool catalogue", () => {
     }
   });
 
-  // The write surface is exactly one tool. This is the assertion that has to
-  // go red the moment anyone adds a second one — not to forbid it, but to make
-  // it a deliberate decision rather than something that slips in behind a
-  // readOnly flag nobody looked at.
-  it("exposes exactly one write-enabled tool, and it is pilot_notes_add", () => {
-    const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name);
-    expect(writers).toEqual(["pilot_notes_add"]);
+  /**
+   * The write surface, enumerated. This assertion goes red the moment anyone
+   * adds a tool that writes — not to forbid it, but to make it a deliberate
+   * decision rather than something that slips in behind a readOnly flag nobody
+   * looked at.
+   *
+   * Every entry here writes only Claude's own work product. The business
+   * systems — Shopify, Seal, Meta, Attentive — stay strictly read-only, and
+   * nothing here spends money or sends a message.
+   *
+   * Both experiment writers are append-only by construction: there is no
+   * UPDATE and no DELETE in `src/domain/experiments/queries.ts`, which is what
+   * makes a pre-declared success criterion a guarantee instead of a convention.
+   */
+  it("exposes exactly the write-enabled tools it means to", () => {
+    const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name).sort();
+    expect(writers).toEqual(
+      ["experiment_record_result", "experiment_start", "pilot_notes_add"].sort()
+    );
   });
 
   it("names tools in the snake_case MCP convention", () => {
@@ -1112,4 +1132,344 @@ describe("query", () => {
     expect(tool.description).toMatch(/analytics/);
     expect(tool.description).toMatch(/describe/);
   });
+});
+
+/**
+ * ─── Experiments (#25) ────────────────────────────────────────────────
+ *
+ * The accountability layer. The constraint that matters is not that these
+ * tools work — it is that `experiment_start` cannot succeed without a
+ * success criterion, and `experiment_record_result` cannot reach one.
+ *
+ * Both are asserted through `dispatchTool`, so argument parsing and
+ * registration are exercised: the "unknown arguments are errors" rule in
+ * args.ts is what makes the second guarantee structural rather than a habit.
+ */
+const DECLARED = {
+  id: "exp1",
+  name: "Restart Meta at $40/day",
+  hypothesis: "Paid traffic recovers sitewide revenue faster than organic alone",
+  whatWeChanged: "Turned on one Advantage+ campaign at $40/day",
+  successCriteria: "Blended aMER at or above 1.84 over 21 days, measured Shopify-side",
+  primaryMetric: "blended aMER",
+  baselineValue: 1.62,
+  baselineBasis: "30 days before the change, Shopify revenue over total ad spend",
+  startDate: "2026-08-15",
+  plannedEndDate: "2026-09-05",
+  relatedNoteIds: [],
+  author: "claude",
+  createdAt: NOW,
+};
+
+const START_ARGS = {
+  name: DECLARED.name,
+  hypothesis: DECLARED.hypothesis,
+  whatWeChanged: DECLARED.whatWeChanged,
+  successCriteria: DECLARED.successCriteria,
+  primaryMetric: DECLARED.primaryMetric,
+  baselineValue: DECLARED.baselineValue,
+  baselineBasis: DECLARED.baselineBasis,
+  startDate: "2026-08-15",
+  plannedEndDate: "2026-09-05",
+};
+
+function seedExperiments(
+  declarations: Array<typeof DECLARED> = [],
+  results: Array<Record<string, unknown>> = []
+) {
+  vi.mocked(experimentQueries.getExperimentDeclarations).mockResolvedValue(declarations as never);
+  vi.mocked(experimentQueries.getExperimentResults).mockResolvedValue(results as never);
+  vi.mocked(experimentQueries.experimentExists).mockImplementation(
+    async (_db, id) => declarations.some((d) => d.id === id)
+  );
+}
+
+describe("experiment_start: the bar is written before the answer is known", () => {
+  beforeEach(() => seedExperiments());
+
+  it("registers all three experiment tools", () => {
+    const names = ALL_TOOLS.map((t) => t.name);
+    expect(names).toContain("experiment_start");
+    expect(names).toContain("experiment_record_result");
+    expect(names).toContain("experiments_list");
+  });
+
+  it("writes the declaration and returns the id later results attach to", async () => {
+    const r = (await dispatchTool(ctx, "experiment_start", START_ARGS)) as {
+      written: boolean;
+      experimentId: string;
+    };
+    expect(r.written).toBe(true);
+    expect(r.experimentId).toBeTruthy();
+
+    const [, decl] = vi.mocked(experimentQueries.insertDeclaration).mock.calls[0];
+    expect(decl.successCriteria).toBe(DECLARED.successCriteria);
+    expect(decl.baselineValue).toBe(1.62);
+    expect(decl.createdAt).toEqual(NOW);
+  });
+
+  /**
+   * The one non-negotiable constraint on this table. Not nullable, not
+   * fill-in-later, not defaulted.
+   */
+  it("refuses to start an experiment with no success criteria", async () => {
+    const { successCriteria, ...withoutBar } = START_ARGS;
+    await expect(dispatchTool(ctx, "experiment_start", withoutBar)).rejects.toBeInstanceOf(
+      McpArgumentError
+    );
+    expect(experimentQueries.insertDeclaration).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "   "])("refuses success criteria of %o", async (successCriteria) => {
+    await expect(
+      dispatchTool(ctx, "experiment_start", { ...START_ARGS, successCriteria })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+    expect(experimentQueries.insertDeclaration).not.toHaveBeenCalled();
+  });
+
+  it.each(["name", "hypothesis", "whatWeChanged", "primaryMetric", "baselineBasis", "startDate", "plannedEndDate"] as const)(
+    "refuses to start an experiment with no %s",
+    async (field) => {
+      const args = { ...START_ARGS };
+      delete (args as Record<string, unknown>)[field];
+      await expect(dispatchTool(ctx, "experiment_start", args)).rejects.toBeInstanceOf(
+        McpArgumentError
+      );
+    }
+  );
+
+  // A baseline computed after the fact is computed by someone who already knows
+  // the answer. There is no path to add one later, so "none, and here is why"
+  // has to be expressible at declaration time.
+  it("allows no numeric baseline, but never an unstated basis", async () => {
+    const { baselineValue, ...noValue } = START_ARGS;
+    await expect(
+      dispatchTool(ctx, "experiment_start", {
+        ...noValue,
+        baselineBasis: "no prior data; this format has never run",
+      })
+    ).resolves.toBeTruthy();
+
+    const { baselineBasis, ...noBasis } = START_ARGS;
+    await expect(dispatchTool(ctx, "experiment_start", noBasis)).rejects.toBeInstanceOf(
+      McpArgumentError
+    );
+  });
+
+  it("refuses a window that ends before it starts", async () => {
+    await expect(
+      dispatchTool(ctx, "experiment_start", { ...START_ARGS, plannedEndDate: "2026-08-14" })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+});
+
+describe("experiment_record_result: the declaration is out of reach", () => {
+  beforeEach(() => seedExperiments([DECLARED]));
+
+  const RESULT_ARGS = {
+    experimentId: "exp1",
+    outcome: "inconclusive",
+    resultValue: 1.79,
+    concludedOn: "2026-09-05",
+    learnings: "21 days was too short to separate the effect from the back-to-school bump",
+  };
+
+  it("records a result against a declared experiment", async () => {
+    const r = (await dispatchTool(ctx, "experiment_record_result", RESULT_ARGS)) as {
+      written: boolean;
+    };
+    expect(r.written).toBe(true);
+    expect(experimentQueries.insertResult).toHaveBeenCalled();
+  });
+
+  /**
+   * The structural guarantee, asserted rather than trusted. `successCriteria`
+   * is not in this tool's schema, and args.ts treats an undeclared argument as
+   * an error rather than ignoring it — so there is no way to smuggle a new bar
+   * in alongside the result, and no way to believe you did.
+   */
+  it.each(["successCriteria", "hypothesis", "baselineValue", "plannedEndDate", "name"])(
+    "refuses a %s argument rather than quietly dropping it",
+    async (field) => {
+      await expect(
+        dispatchTool(ctx, "experiment_record_result", { ...RESULT_ARGS, [field]: "moved" })
+      ).rejects.toBeInstanceOf(McpArgumentError);
+      expect(experimentQueries.insertResult).not.toHaveBeenCalled();
+    }
+  );
+
+  it("refuses a result for an experiment that was never declared", async () => {
+    await expect(
+      dispatchTool(ctx, "experiment_record_result", { ...RESULT_ARGS, experimentId: "nope" })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+    expect(experimentQueries.insertResult).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "   "])("refuses a result whose learnings are %o", async (learnings) => {
+    await expect(
+      dispatchTool(ctx, "experiment_record_result", { ...RESULT_ARGS, learnings })
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("requires learnings at all", async () => {
+    const { learnings, ...withoutLearnings } = RESULT_ARGS;
+    await expect(
+      dispatchTool(ctx, "experiment_record_result", withoutLearnings)
+    ).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  // `running` and `awaiting_result` are the absence of a result. Recording one
+  // would be writing a row that says there is no row.
+  it.each(["running", "awaiting_result", "Win", "maybe"])(
+    "refuses %o as an outcome",
+    async (outcome) => {
+      await expect(
+        dispatchTool(ctx, "experiment_record_result", { ...RESULT_ARGS, outcome })
+      ).rejects.toBeInstanceOf(McpArgumentError);
+    }
+  );
+});
+
+describe("experiments_list", () => {
+  const result = (over: Record<string, unknown> = {}) => ({
+    id: "res1",
+    experimentId: "exp1",
+    outcome: "win",
+    resultValue: 2.1,
+    concludedOn: "2026-09-05",
+    learnings: "held up across both weeks",
+    author: "claude",
+    createdAt: new Date("2026-09-06T00:00:00Z"),
+    ...over,
+  });
+
+  it("is read-only", () => {
+    expect(findTool("experiments_list")?.readOnly).toBe(true);
+  });
+
+  it("derives status from the clock rather than reading a stored column", async () => {
+    // ctx.now() is 2026-09-02; the declared window closes on 2026-09-05.
+    seedExperiments([DECLARED]);
+    const r = (await dispatchTool(ctx, "experiments_list", {})) as {
+      experiments: Array<{ status: string }>;
+    };
+    expect(r.experiments[0].status).toBe("running");
+  });
+
+  it("flags an experiment whose window closed with no result recorded", async () => {
+    seedExperiments([{ ...DECLARED, plannedEndDate: "2026-08-20" }]);
+    const r = (await dispatchTool(ctx, "experiments_list", {})) as {
+      experiments: Array<{ status: string }>;
+    };
+    expect(r.experiments[0].status).toBe("awaiting_result");
+  });
+
+  it("takes its status from a recorded result once there is one", async () => {
+    seedExperiments([DECLARED], [result()]);
+    const r = (await dispatchTool(ctx, "experiments_list", {})) as {
+      experiments: Array<{ status: string }>;
+    };
+    expect(r.experiments[0].status).toBe("win");
+  });
+
+  it("filters by status", async () => {
+    seedExperiments([DECLARED, { ...DECLARED, id: "exp2", plannedEndDate: "2026-08-20" }]);
+    const r = (await dispatchTool(ctx, "experiments_list", { status: "awaiting_result" })) as {
+      experiments: Array<{ id: string }>;
+      returned: number;
+      matched: number;
+    };
+    expect(r.experiments.map((e) => e.id)).toEqual(["exp2"]);
+  });
+
+  // A capped list has to report both, or a sample reads as the whole set.
+  it("reports what it returned and what matched", async () => {
+    seedExperiments([DECLARED, { ...DECLARED, id: "exp2" }, { ...DECLARED, id: "exp3" }]);
+    const r = (await dispatchTool(ctx, "experiments_list", { limit: 2 })) as {
+      returned: number;
+      matched: number;
+    };
+    expect(r).toMatchObject({ returned: 2, matched: 3 });
+  });
+
+  /**
+   * "Zero is UNKNOWN until something proves it means zero." An empty array
+   * could mean nobody has run an experiment or that the filter excluded
+   * everything, and those call for opposite responses.
+   */
+  it("says an empty result is empty, rather than returning a bare array", async () => {
+    seedExperiments();
+    const r = (await dispatchTool(ctx, "experiments_list", {})) as { note?: string };
+    expect(r.note).toMatch(/no experiments/i);
+  });
+
+  it("distinguishes 'none recorded' from 'none matched this filter'", async () => {
+    seedExperiments([DECLARED]);
+    const filtered = (await dispatchTool(ctx, "experiments_list", { status: "win" })) as {
+      note?: string;
+    };
+    seedExperiments();
+    const none = (await dispatchTool(ctx, "experiments_list", {})) as { note?: string };
+    expect(filtered.note).toBeTruthy();
+    expect(filtered.note).not.toBe(none.note);
+  });
+
+  // A result whose experiment was never declared is data damage. Dropping it
+  // would hide a write that happened.
+  it("surfaces results that belong to no declared experiment", async () => {
+    seedExperiments([DECLARED], [result({ id: "stray", experimentId: "ghost" })]);
+    const r = (await dispatchTool(ctx, "experiments_list", {})) as {
+      orphanedResults: Array<{ id: string }>;
+    };
+    expect(r.orphanedResults.map((o) => o.id)).toEqual(["stray"]);
+  });
+});
+
+/**
+ * What the model is told is required, not just what the code rejects.
+ *
+ * Mutation testing found this gap. Dropping `required: true` from
+ * `successCriteria` left every behavioural test green, because
+ * `validateDeclaration` rejects a missing bar independently — the guarantee
+ * survives, but the JSON schema the model reads no longer says the field is
+ * mandatory. The model then omits it and gets a validation error instead of
+ * never omitting it at all, which is a worse tool and an easier one to
+ * "fix" by relaxing the validator.
+ *
+ * Same for `learnings`. Two independent guards is the right design; a test that
+ * cannot tell which one is holding is not.
+ */
+describe("the required-argument contract the model actually sees", () => {
+  const requiredOf = (tool: string) => toJsonSchema(findTool(tool)!.schema).required;
+
+  it("tells the model every field experiment_start will not proceed without", () => {
+    expect(requiredOf("experiment_start").sort()).toEqual(
+      [
+        "baselineBasis",
+        "hypothesis",
+        "name",
+        "plannedEndDate",
+        "primaryMetric",
+        "startDate",
+        "successCriteria",
+        "whatWeChanged",
+      ].sort()
+    );
+  });
+
+  it("tells the model learnings is required even for an inconclusive result", () => {
+    expect(requiredOf("experiment_record_result").sort()).toEqual(
+      ["concludedOn", "experimentId", "learnings", "outcome"].sort()
+    );
+  });
+
+  // The declaration is unreachable from here, so these must never appear.
+  it.each(["successCriteria", "hypothesis", "baselineValue", "plannedEndDate", "name"])(
+    "does not advertise %s on experiment_record_result",
+    (field) => {
+      expect(Object.keys(toJsonSchema(findTool("experiment_record_result")!.schema).properties)).not.toContain(
+        field
+      );
+    }
+  );
 });

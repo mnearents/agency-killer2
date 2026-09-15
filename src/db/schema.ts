@@ -12,6 +12,7 @@ import {
   pgTable,
   text,
   timestamp,
+  date,
   integer,
   bigint,
   real,
@@ -929,6 +930,117 @@ export const pilotNotes = pgTable(
 
 export type PilotNoteEntry = typeof pilotNotes.$inferSelect;
 export type NewPilotNoteEntry = typeof pilotNotes.$inferInsert;
+
+/**
+ * Experiments — the accountability layer.
+ *
+ * Two tables, both insert-only, and that split is the whole design. The
+ * declaration is written before the answer is known; results are written after.
+ * Keeping them apart means **there is no code path that can edit success
+ * criteria once a result exists**, because recording a result writes a
+ * different table. A convention saying "don't move the bar" is a wish; not
+ * having an UPDATE is a guarantee.
+ *
+ * Same reasoning as `pilot_notes` being a log of entries rather than a table
+ * with a mutable status, and it applies here with more force: the entire value
+ * of the record is that one field was written before the outcome was known.
+ *
+ * There is deliberately no `outcome` column. Status is derived in
+ * `src/domain/experiments/experiments.ts` from the declared window and the
+ * results, so a stored `running` cannot sit there going stale — and the fold
+ * can tell an experiment that is genuinely in flight from one whose window
+ * closed and that nobody ever concluded.
+ *
+ * Calendar dates are DATE, not timestamptz. A declared window is a calendar
+ * thing; storing it as an instant invites the off-by-one-day that comes with
+ * every timezone conversion.
+ */
+export const experiments = pgTable(
+  "experiments",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    hypothesis: text("hypothesis").notNull(),
+    whatWeChanged: text("what_we_changed").notNull(),
+
+    /**
+     * NOT NULL, and required by `experiment_start`. The one non-negotiable
+     * constraint on this table: the moment it can be deferred it will be
+     * deferred on exactly the experiments whose outcome is least certain,
+     * which are the ones where it matters most.
+     */
+    successCriteria: text("success_criteria").notNull(),
+
+    primaryMetric: text("primary_metric").notNull(),
+
+    /** Nullable: some experiments genuinely have no prior number. */
+    baselineValue: real("baseline_value"),
+    /**
+     * Never nullable. How the baseline was computed, or why there isn't one.
+     * A silent null cannot be told apart from an oversight, and there is no
+     * path to fill either in later.
+     */
+    baselineBasis: text("baseline_basis").notNull(),
+
+    startDate: date("start_date", { mode: "string" }).notNull(),
+    /** Declared up front, so the window cannot be extended until it looks good. */
+    plannedEndDate: date("planned_end_date", { mode: "string" }).notNull(),
+
+    /** Pilot notes this experiment came out of. */
+    relatedNoteIds: jsonb("related_note_ids").$type<string[]>().notNull().default([]),
+
+    author: text("author").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("experiments_created_idx").on(table.createdAt),
+    index("experiments_planned_end_idx").on(table.plannedEndDate),
+  ]
+);
+
+export type Experiment = typeof experiments.$inferSelect;
+export type NewExperiment = typeof experiments.$inferInsert;
+
+/**
+ * Recorded results. Append-only: a correction is a new row, not an edit.
+ *
+ * The newest row decides the experiment's status and the earlier ones stay
+ * visible, because a reading that changed is itself the interesting part —
+ * overwriting it would erase the fact that it changed.
+ *
+ * Carries nothing from the declaration. That is what makes the pre-declaration
+ * real rather than decorative.
+ */
+export const experimentResults = pgTable(
+  "experiment_results",
+  {
+    id: text("id").primaryKey(),
+    experimentId: text("experiment_id").notNull(),
+
+    /** win | loss | inconclusive. Never "running" — that is the absence of a row. */
+    outcome: text("outcome").notNull(),
+    resultValue: real("result_value"),
+    concludedOn: date("concluded_on", { mode: "string" }).notNull(),
+
+    /**
+     * NOT NULL. Inconclusive is expected to be the most common outcome on a
+     * business this size, and this is where it earns its keep — usually the
+     * finding is that the metric was wrong, the window too short, or the
+     * change too small to detect.
+     */
+    learnings: text("learnings").notNull(),
+
+    author: text("author").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("experiment_results_experiment_idx").on(table.experimentId),
+    index("experiment_results_created_idx").on(table.createdAt),
+  ]
+);
+
+export type ExperimentResultRow = typeof experimentResults.$inferSelect;
+export type NewExperimentResultRow = typeof experimentResults.$inferInsert;
 
 /**
  * Tier changes read out of Seal's log, materialised.
