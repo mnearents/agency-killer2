@@ -69,7 +69,7 @@ describe("email design: routing", () => {
 
 describe("email design: full flow", () => {
   it("parses → routes → fetches products → builds prompt → generates → formats", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, "email");
 
     const deps: EmailDesignDeps = {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
@@ -109,7 +109,7 @@ describe("email design: full flow", () => {
   });
 
   it("includes discount info when provided", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, "email");
 
     const deps: EmailDesignDeps = {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
@@ -133,7 +133,7 @@ describe("email design: full flow", () => {
   });
 
   it("returns error when orchestrator blocks (e.g. invalid JSON from model)", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, "email");
 
     const deps: EmailDesignDeps = {
       getProducts: vi.fn().mockResolvedValue(MOCK_PRODUCTS),
@@ -159,7 +159,7 @@ describe("email design: full flow", () => {
 
 describe("guardrail config cross-check: ads vs email", () => {
   it("ads report uses fabricated-stats OFF, email uses ON", async () => {
-    const voice = assembleVoicePrompt(VOICE_PROFILE);
+    const voice = assembleVoicePrompt(VOICE_PROFILE, "email");
 
     // Capture what each handler sends to the orchestrator
     const adsCalls: unknown[] = [];

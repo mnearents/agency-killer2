@@ -4,11 +4,25 @@
  * POST /api/generate
  * Body: { prompt: string, channel?: Channel }
  * Headers: Authorization: Bearer <VOICE_API_KEY>
- * Returns: { generatedText, samplesUsed, model, channel, rulesEnforced,
- *            rulesUnenforced?, violations?, warning? }
+ * Returns: { generatedText, samplesUsed, corpusSize, sampleSource, model,
+ *            channel, rulesPrompted, rulesEnforced, rulesUnenforced?,
+ *            violations?, warning? }
  *
- * Loads voice profile from DB, assembles the prompt with samples + rules +
- * banned words, calls Claude, then runs the output through `voiceCheck`.
+ * Loads voice profile from DB, assembles the prompt with the channel's samples +
+ * the rules that apply to that channel + banned words, calls Claude, then runs
+ * the output through `voiceCheck` for the same channel.
+ *
+ * `rulesPrompted` and `rulesEnforced ∪ rulesUnenforced` describe the same set,
+ * and that is the point. They did not before #27's task 3: the check was scoped
+ * per channel and the prompt was not, so an Instagram generation was told to
+ * avoid "comments get" and "link in bio" — conventions that appear in five of
+ * Tara's own captions — and then graded by a checker that correctly excused
+ * both.
+ *
+ * `samplesUsed` is how many examples went into the prompt, not how many exist.
+ * `sampleSource` says why those ones: the channel's own, or the whole corpus
+ * standing in because no sample carries that channel's tag. All 84 samples are
+ * `channel:instagram`, so the fallback is the normal path for the other four.
  *
  * `channel` is optional and defaults to `unspecified`, which is excused from no
  * rule. A channel that *is* sent and is not recognised is a 400 — see the guard
@@ -24,9 +38,9 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
-import { assembleVoicePrompt } from "@/domain/voice/voice";
+import { assembleVoicePrompt, describeSampleSelection } from "@/domain/voice/voice";
 import { voiceCheck } from "@/domain/voice/voice-check";
-import { isChannel, CHANNELS, UNSPECIFIED } from "@/domain/voice/rules";
+import { isChannel, CHANNELS, UNSPECIFIED, type RuleAudience } from "@/domain/voice/rules";
 import Anthropic from "@anthropic-ai/sdk";
 
 const corsHeaders = {
@@ -92,13 +106,14 @@ export async function POST(request: Request) {
   // is writing gets the strictest rule set rather than a convenient guess. A
   // channel that *was* sent and is not recognised stays an error: a typo'd
   // "e-mail" quietly widened to "check everything" would hide the typo.
-  const channel = body.channel ?? UNSPECIFIED;
-  if (body.channel !== undefined && !isChannel(body.channel)) {
+  const requested = body.channel;
+  if (requested !== undefined && !isChannel(requested)) {
     return jsonResponse(
-      { error: `Unknown channel "${body.channel}". Expected one of: ${CHANNELS.join(", ")}` },
+      { error: `Unknown channel "${requested}". Expected one of: ${CHANNELS.join(", ")}` },
       400
     );
   }
+  const channel: RuleAudience = requested ?? UNSPECIFIED;
 
   try {
     // Load voice profile from DB
@@ -112,8 +127,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // Assemble the voice prompt
-    const voice = assembleVoicePrompt(profile);
+    // The same `channel` the check uses. Before #27's task 3 this call took no
+    // audience, so the model was told every rule — including the two Instagram
+    // is excused from — and then graded against the scoped set. Steered by one
+    // rule set, checked by another.
+    const voice = assembleVoicePrompt(profile, channel);
 
     // Call Claude
     const anthropic = new Anthropic({ apiKey: anthropicKey });
@@ -136,9 +154,18 @@ export async function POST(request: Request) {
 
     return jsonResponse({
       generatedText,
-      samplesUsed: profile.samples.length,
+      // How many examples actually went into the prompt, and why those ones.
+      // This used to report the size of the whole corpus, which is the same
+      // number whether the channel was filtered on or ignored.
+      samplesUsed: voice.samples.samples.length,
+      corpusSize: voice.samples.corpusSize,
+      sampleSource: describeSampleSelection(voice.samples),
       model: "claude-sonnet-4-5-20250929",
       channel,
+      // What the model was told. Alongside `rulesEnforced` this makes the
+      // steer/grade asymmetry visible in the response rather than only in a
+      // test: the two lists have to describe the same set.
+      rulesPrompted: voice.rules.map((r) => r.text),
       // Which rules actually ran. A caller that sees no violations and no
       // enforced list cannot tell a clean check from one that did nothing.
       rulesEnforced: check.enforced,

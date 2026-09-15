@@ -107,7 +107,7 @@ describe("formatProductBlock: product data for prompts", () => {
 // ─── Full request assembly ────────────────────────────────────────────
 
 describe("buildEmailCreativeRequest: ties everything together", () => {
-  const voice = assembleVoicePrompt(VOICE_PROFILE);
+  const voice = assembleVoicePrompt(VOICE_PROFILE, "email");
 
   it("includes the voice system prompt", () => {
     const req = buildEmailCreativeRequest(BASIC_BRIEF, voice);

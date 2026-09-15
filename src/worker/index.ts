@@ -61,7 +61,8 @@ import { getAllSamples, addSample } from "@/domain/voice/queries";
 
 // AI orchestration
 import { createOrchestrator } from "@/ai/orchestrator";
-import { assembleVoicePrompt } from "@/domain/voice/voice";
+import { assembleVoicePrompt, describeSampleSelection } from "@/domain/voice/voice";
+import { UNSPECIFIED, type RuleAudience } from "@/domain/voice/rules";
 import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
 import { syncVoiceCorpus } from "@/domain/voice/corpus-sync";
 
@@ -206,10 +207,36 @@ async function main() {
   console.log(
     `[worker] Loaded voice profile from ${voiceProfile.source}: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`
   );
-  const voice = assembleVoicePrompt(voiceProfile);
+  /**
+   * One prompt per audience, built where the generation happens.
+   *
+   * There used to be a single `voice` assembled here and handed to all five
+   * generators, which meant there was nowhere for a channel to live — the
+   * prompt was flat, so an email generation was steered by the Instagram-scoped
+   * rules and a caption was steered by the rules Instagram is excused from.
+   * Naming the audience at the call site is the smallest change that makes the
+   * question "which channel is this copy for?" answerable at all.
+   *
+   * The line is printed here rather than inside the loader for the reason #54
+   * exists: a count on its own reads the same whether the channel was filtered
+   * on or stood in for. All 84 samples are `channel:instagram` today, so every
+   * non-Instagram audience takes the corpus fallback, and it says so.
+   */
+  function voiceFor(audience: RuleAudience) {
+    const assembled = assembleVoicePrompt(voiceProfile, audience);
+    console.log(
+      `[voice] Prompt for ${audience}: ${describeSampleSelection(assembled.samples)}, ` +
+        `${assembled.rules.length} of ${voiceProfile.rules.length} rules apply`
+    );
+    return assembled;
+  }
+
+  // Guardrail options (banned words, PII, fabricated stats) do not vary by
+  // audience — only the prompt's rules and samples do.
+  const baseGuardrails = assembleVoicePrompt(voiceProfile, UNSPECIFIED).guardrailOptions;
 
   const orchestrator = anthropicClient
-    ? createOrchestrator({ client: anthropicClient, defaultGuardrails: voice.guardrailOptions })
+    ? createOrchestrator({ client: anthropicClient, defaultGuardrails: baseGuardrails })
     : null;
 
   // ─── Register task handlers ─────────────────────────────────────────
@@ -411,7 +438,7 @@ async function main() {
       const result = await analyzeAdPerformance(
         {
           db,
-          voice,
+          voice: voiceFor(UNSPECIFIED),
           runOrchestrator: (req) => orchestrator.run(req),
           getKbContext: embeddingClient
             ? () => retrieveContext({ db, embeddingClient }, "ad performance strategy creative recommendations")
@@ -452,7 +479,7 @@ async function main() {
       console.log("[report:weekly] Generating Monday morning report...");
       const result = await generateWeeklyReport({
         db,
-        voice,
+        voice: voiceFor(UNSPECIFIED),
         runOrchestrator: (req) => orchestrator.run(req),
         getKbContext: embeddingClient
           ? () => retrieveContext({ db, embeddingClient }, "marketing strategy goals priorities calendar")
@@ -536,7 +563,7 @@ async function main() {
       const result = await analyzeAdPerformance(
         {
           db,
-          voice,
+          voice: voiceFor(UNSPECIFIED),
           runOrchestrator: (req) => orchestrator.run(req),
           getKbContext: embeddingClient
             ? () => retrieveContext({ db, embeddingClient }, "ad performance strategy creative recommendations")
@@ -562,7 +589,7 @@ async function main() {
         return { text: "Please provide a brief: `!email design <brief>`\nExample: `!email design summer sale promo`", isError: true };
       }
       const result = await generateEmailCreative(
-        { db, voice, runOrchestrator: (req) => orchestrator.run(req) },
+        { db, voice: voiceFor("email"), runOrchestrator: (req) => orchestrator.run(req) },
         args
       );
       return { text: result.text, isError: !result.ok };
@@ -622,7 +649,7 @@ async function main() {
       const result = await analyzeSocialPerformance(
         {
           db,
-          voice,
+          voice: voiceFor(UNSPECIFIED),
           runOrchestrator: (req) => orchestrator.run(req),
           igClient: igClient ?? undefined,
           igUserId: igUserId ?? undefined,
@@ -799,7 +826,7 @@ async function main() {
       }
       const result = await generateWeeklyReport({
         db,
-        voice,
+        voice: voiceFor(UNSPECIFIED),
         runOrchestrator: (req) => orchestrator.run(req),
         getKbContext: embeddingClient
           ? () => retrieveContext({ db, embeddingClient }, "marketing strategy goals priorities calendar")

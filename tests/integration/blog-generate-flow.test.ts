@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { parseMessage, routeCommand, type ParsedCommand } from "@/worker/slack/router";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 import { handleBlogGenerate, type BlogGenerateDeps } from "@/worker/slack/handlers/blog-generate";
 import { AI_WRITING_BANNED_WORDS } from "@/domain/blog/ai-writing-rules";
 import type { OrchestratorResult } from "@/ai/orchestrator";
@@ -140,7 +141,7 @@ describe("guardrail config three-way cross-check", () => {
       rules: [],
       bannedWords: ["shenanigans"],
     };
-    const voice = assembleVoicePrompt(voiceProfile);
+    const voice = assembleVoicePrompt(voiceProfile, UNSPECIFIED);
 
     const captureCalls = () => {
       const calls: Record<string, unknown>[] = [];

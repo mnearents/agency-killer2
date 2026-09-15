@@ -47,13 +47,13 @@ describe("/api/generate voice check wiring", () => {
    * exists to stop.
    */
   it("does not default a missing channel to instagram", () => {
-    const fallback = route.match(/body\.channel\s*\?\?\s*([A-Za-z_"'.]+)/);
-    expect(fallback, "no `body.channel ??` default found").not.toBeNull();
+    const fallback = route.match(/requested\s*\?\?\s*([A-Za-z_"'.]+)/);
+    expect(fallback, "no `requested ??` default found").not.toBeNull();
     expect(fallback![1]).not.toMatch(/instagram/);
   });
 
   it("falls back to the audience that applies every rule", () => {
-    expect(route).toMatch(/body\.channel\s*\?\?\s*UNSPECIFIED/);
+    expect(route).toMatch(/requested\s*\?\?\s*UNSPECIFIED/);
   });
 
   // Without this the caller cannot tell a clean check from an empty one.

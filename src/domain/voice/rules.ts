@@ -178,3 +178,37 @@ export function rulesForChannel(rules: string[], audience: RuleAudience): Scoped
 
   return applicable;
 }
+
+/**
+ * Samples carry their channel as a namespaced tag — `channel:instagram` — in the
+ * `tags` array, because that is the shape the corpus was authored in (#58) and
+ * a `channel` column would need a migration plus a second authoring surface.
+ *
+ * The prefix and the parser live here, next to `CHANNELS`, for the same reason
+ * `corpus.test.ts` imports that vocabulary rather than redeclaring it: a second
+ * copy of the tag format drifts from the one selection actually filters on, and
+ * the failure is a smaller result set, not an error.
+ */
+export const CHANNEL_TAG_PREFIX = "channel:";
+
+export function channelTag(channel: Channel): string {
+  return `${CHANNEL_TAG_PREFIX}${channel}`;
+}
+
+/**
+ * The channel a sample is tagged for, or `null` when it carries no recognised
+ * one — untagged, typo'd, or tagged for a channel this code does not know.
+ *
+ * `null` means "belongs to no channel", which is why an untagged sample is
+ * reachable through the whole-corpus paths but is never selected *for* a
+ * channel. A sample silently promoted into a channel it was not tagged for
+ * would teach that channel's voice from the wrong examples.
+ */
+export function channelOfSample(tags: readonly string[] | undefined | null): Channel | null {
+  for (const tag of tags ?? []) {
+    if (!tag.startsWith(CHANNEL_TAG_PREFIX)) continue;
+    const value = tag.slice(CHANNEL_TAG_PREFIX.length);
+    if (isChannel(value)) return value;
+  }
+  return null;
+}

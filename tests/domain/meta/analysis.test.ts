@@ -11,6 +11,7 @@ import {
 import type { DerivedMetrics } from "@/domain/meta/metrics";
 import type { GuardrailOptions } from "@/ai/guardrails";
 import { assembleVoicePrompt, type VoiceProfile } from "@/domain/voice/voice";
+import { UNSPECIFIED } from "@/domain/voice/rules";
 
 const VOICE_PROFILE: VoiceProfile = {
   samples: [
@@ -145,7 +146,7 @@ describe("formatMetricsBlock: deterministic text from metrics", () => {
 // ─── Full request assembly ────────────────────────────────────────────
 
 describe("buildAnalysisRequest: ties everything together", () => {
-  const voice = assembleVoicePrompt(VOICE_PROFILE);
+  const voice = assembleVoicePrompt(VOICE_PROFILE, UNSPECIFIED);
 
   it("uses creative strategist system prompt for analysis", () => {
     const req = buildAnalysisRequest({
