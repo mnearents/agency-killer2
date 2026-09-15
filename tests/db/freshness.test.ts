@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyFreshness, type RawFreshness } from "@/db/freshness";
+import { classifyFreshness, FRESHNESS_SOURCES, type RawFreshness } from "@/db/freshness";
 
 const NOW = new Date("2026-09-02T12:00:00Z");
 
@@ -148,5 +148,24 @@ describe("classifyFreshness with last-run outcomes", () => {
     const [result] = classifyFreshness([raw()], NOW);
     expect(result.stale).toBe(false);
     expect(result.lastRun).toBeNull();
+  });
+});
+
+/**
+ * Experiments are authored, not synced. An empty experiments table means nobody
+ * ran an experiment, not that a feed died — reporting it as stale would light
+ * up `anyStale` permanently and teach everyone to ignore the one field meant to
+ * say a real feed broke.
+ */
+describe("experiments freshness", () => {
+  it("is listed as a source, or nothing reports on it at all", () => {
+    const names = FRESHNESS_SOURCES.map((s) => s.name);
+    expect(names).toContain("experiments");
+  });
+
+  it("is authored, with no staleness window", () => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === "experiments");
+    expect(source?.basis).toBe("authored");
+    expect(source?.staleAfterHours).toBe(0);
   });
 });

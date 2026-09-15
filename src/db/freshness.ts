@@ -17,6 +17,8 @@ import {
   sealSubscriptions,
   syncRuns,
   pilotNotes,
+  experiments,
+  experimentResults,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -149,8 +151,15 @@ async function lastRunFor(db: Db, task: string): Promise<LastRun | null> {
   };
 }
 
-export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshness[]> {
-  const sources = [
+/**
+ * Every source `data_freshness` reports on.
+ *
+ * Exported so a test can assert a source is registered. A source defined and
+ * never added to this list reports exactly like one that was never written —
+ * it simply does not appear, and an absent row looks like nothing rather than
+ * like a gap.
+ */
+export const FRESHNESS_SOURCES = [
     { source: "Meta ads", table: metaInsights, name: "meta_insights", column: metaInsights.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: SYNC_TASK },
     { source: "Shopify orders", table: shopifyOrders, name: "shopify_orders", column: shopifyOrders.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Shopify inventory", table: shopifyInventory, name: "shopify_inventory", column: shopifyInventory.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
@@ -158,7 +167,14 @@ export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshne
     { source: "Instagram/Facebook posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS },
     { source: "Pilot notes", table: pilotNotes, name: "pilot_notes", column: pilotNotes.createdAt, basis: "authored" as const, staleAfterHours: 0 },
+    // Authored, like pilot notes: an empty experiments table means nobody ran
+    // an experiment, not that a feed died.
+    { source: "Experiments", table: experiments, name: "experiments", column: experiments.createdAt, basis: "authored" as const, staleAfterHours: 0 },
+    { source: "Experiment results", table: experimentResults, name: "experiment_results", column: experimentResults.createdAt, basis: "authored" as const, staleAfterHours: 0 },
   ];
+
+export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshness[]> {
+  const sources = FRESHNESS_SOURCES;
 
   const raw: RawFreshness[] = [];
   for (const s of sources) {
