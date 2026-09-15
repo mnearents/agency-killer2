@@ -10,6 +10,10 @@
  * Loads voice profile from DB, assembles the prompt with samples + rules +
  * banned words, calls Claude, then runs the output through `voiceCheck`.
  *
+ * `channel` is optional and defaults to `unspecified`, which is excused from no
+ * rule. A channel that *is* sent and is not recognised is a 400 — see the guard
+ * below for why those two absences are not the same thing.
+ *
  * `rulesEnforced` is in the response deliberately. This endpoint used to check
  * banned words with a local regex loop and nothing else, so a response with no
  * violations meant "no banned words" while reading as "passed the voice rules".
@@ -22,7 +26,7 @@ import { db } from "@/lib/db";
 import { loadVoiceProfileWithDb } from "@/domain/voice/loader";
 import { assembleVoicePrompt } from "@/domain/voice/voice";
 import { voiceCheck } from "@/domain/voice/voice-check";
-import { isChannel, CHANNELS } from "@/domain/voice/rules";
+import { isChannel, CHANNELS, UNSPECIFIED } from "@/domain/voice/rules";
 import Anthropic from "@anthropic-ai/sdk";
 
 const corsHeaders = {
@@ -78,15 +82,20 @@ export async function POST(request: Request) {
     return jsonResponse({ error: "Prompt is required" }, 400);
   }
 
-  // The Figma plugin predates channels and sends none. Instagram is the only
-  // channel the corpus has samples for, and it is the plugin's use case, so it
-  // is the default — but a channel that was *sent* and is not recognised is an
-  // error, not something to quietly fall back from. A typo'd "e-mail" silently
-  // treated as instagram would skip every rule email exists to enforce.
-  const channel = body.channel ?? "instagram";
-  if (!isChannel(channel)) {
+  // The Figma plugin predates channels and sends none. It is Matt's main copy
+  // tool and he uses it mostly for EMAIL, so defaulting to instagram — which an
+  // earlier version did — would have applied Instagram's *exclusions* to email
+  // copy and permitted "link in bio" and comment-to-DM CTAs in an inbox. That is
+  // the leakage the scoping exists to stop, shipped as a default.
+  //
+  // `UNSPECIFIED` is excused from nothing, so a caller that cannot say what it
+  // is writing gets the strictest rule set rather than a convenient guess. A
+  // channel that *was* sent and is not recognised stays an error: a typo'd
+  // "e-mail" quietly widened to "check everything" would hide the typo.
+  const channel = body.channel ?? UNSPECIFIED;
+  if (body.channel !== undefined && !isChannel(body.channel)) {
     return jsonResponse(
-      { error: `Unknown channel "${channel}". Expected one of: ${CHANNELS.join(", ")}` },
+      { error: `Unknown channel "${body.channel}". Expected one of: ${CHANNELS.join(", ")}` },
       400
     );
   }

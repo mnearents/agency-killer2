@@ -49,6 +49,35 @@ export function isChannel(value: unknown): value is Channel {
 }
 
 /**
+ * The audience for copy whose channel is not known.
+ *
+ * Every rule here is a prohibition and every scope is an exclusion, so the
+ * strictest possible audience is the one excused from nothing. `unspecified`
+ * resolves to exactly that: all global rules, plus every channel-scoped rule
+ * that some channel would be excused from.
+ *
+ * The alternative is a default channel, and `/api/generate` shipped one — it
+ * defaulted to `instagram` on the reasoning that the Figma plugin is an
+ * Instagram tool. Matt uses that plugin mostly for **email**, so the default
+ * applied Instagram's *exclusions* to email copy and would have permitted "link
+ * in bio" and comment-to-DM CTAs in an inbox. That is the leakage the scoping
+ * exists to stop, shipped as a default and invisible because the output still
+ * looked checked.
+ *
+ * `unspecified` is not a channel. It cannot tag a sample, `isChannel` rejects
+ * it, and it never appears in `exceptIn` — same reasoning as `exceptIn` over
+ * `appliesTo`: an unknown audience is wrong in the direction someone notices.
+ */
+export const UNSPECIFIED = "unspecified" as const;
+
+/** A real channel, or the deliberate absence of one. */
+export type RuleAudience = Channel | typeof UNSPECIFIED;
+
+export function isRuleAudience(value: unknown): value is RuleAudience {
+  return value === UNSPECIFIED || isChannel(value);
+}
+
+/**
  * How a rule is checked.
  *
  * `unenforced` is a first-class state, not an error. The alternative — dropping
@@ -111,15 +140,18 @@ export const RULE_REGISTRY: Record<string, RuleScope> = {
 };
 
 /**
- * The rules that apply on `channel`, each carrying how (or whether) it is
+ * The rules that apply for `audience`, each carrying how (or whether) it is
  * enforced.
  *
  * A rule with no registry entry — one typed into the `/voice` dashboard, or one
  * whose wording drifted — is kept and applied on every channel, and marked
  * unenforced. Dropping it would silently discard brand guidance; scoping it
  * narrowly would be a guess.
+ *
+ * `UNSPECIFIED` is excused from nothing, so it is never more permissive than any
+ * real channel.
  */
-export function rulesForChannel(rules: string[], channel: Channel): ScopedRule[] {
+export function rulesForChannel(rules: string[], audience: RuleAudience): ScopedRule[] {
   const applicable: ScopedRule[] = [];
 
   for (const text of rules) {
@@ -136,7 +168,10 @@ export function rulesForChannel(rules: string[], channel: Channel): ScopedRule[]
       continue;
     }
 
-    if (scope.exceptIn.includes(channel)) continue;
+    // `UNSPECIFIED` is never in `exceptIn` — it is not a channel — but the
+    // check is explicit rather than incidental, so widening the type later
+    // cannot quietly make the strictest audience a permissive one.
+    if (audience !== UNSPECIFIED && scope.exceptIn.includes(audience)) continue;
 
     applicable.push({ text, enforcement: scope.enforcement });
   }

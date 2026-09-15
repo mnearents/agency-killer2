@@ -21,18 +21,20 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   CHANNELS,
+  UNSPECIFIED,
   isChannel,
+  isRuleAudience,
   rulesForChannel,
   RULE_REGISTRY,
-  type Channel,
+  type RuleAudience,
 } from "@/domain/voice/rules";
 
 const seed = JSON.parse(
   readFileSync("src/domain/voice/voice-profile-seed.json", "utf8")
 ) as { rules: string[] };
 
-const textsFor = (rules: string[], channel: Channel) =>
-  rulesForChannel(rules, channel).map((r) => r.text);
+const textsFor = (rules: string[], audience: RuleAudience) =>
+  rulesForChannel(rules, audience).map((r) => r.text);
 
 describe("isChannel", () => {
   it("accepts every channel the corpus can be tagged with", () => {
@@ -92,6 +94,47 @@ describe("rulesForChannel", () => {
   it("carries a pattern for the rules it can actually enforce", () => {
     const got = rulesForChannel(["Never use em dashes"], "email");
     expect(got[0].enforcement.kind).toBe("forbids");
+  });
+});
+
+/**
+ * A caller that has not said what it is writing gets every rule, including the
+ * ones some channel is excused from.
+ *
+ * The first version of `/api/generate` defaulted a missing channel to
+ * `instagram`, which applied Instagram's *exclusions* — so the Figma plugin,
+ * which Matt uses mainly for email, would have been told "link in bio" and
+ * comment-to-DM CTAs were fine. That is precisely the leakage the scoping exists
+ * to stop, shipped as a default.
+ *
+ * `unspecified` is not a channel. It is the absence of one, and it resolves to
+ * the strictest possible rule set rather than a convenient guess.
+ */
+describe("rulesForChannel with an unspecified audience", () => {
+  const COMMENTS = 'Don\'t say "comments get" as if you\'re writing an instagram post.';
+
+  it("applies every rule, including ones a channel would be excused from", () => {
+    const got = textsFor(seed.rules, UNSPECIFIED);
+    for (const rule of seed.rules) expect(got, rule).toContain(rule);
+  });
+
+  it("applies scoped rules that instagram is excused from", () => {
+    expect(textsFor(seed.rules, UNSPECIFIED)).toContain(COMMENTS);
+    expect(textsFor(seed.rules, "instagram")).not.toContain(COMMENTS);
+  });
+
+  // It must not be usable as a corpus tag or a real channel.
+  it("is not a channel", () => {
+    expect(isChannel(UNSPECIFIED)).toBe(false);
+    expect(CHANNELS).not.toContain(UNSPECIFIED as never);
+  });
+
+  it("is accepted as an audience, while a typo still is not", () => {
+    expect(isRuleAudience(UNSPECIFIED)).toBe(true);
+    expect(isRuleAudience("instagram")).toBe(true);
+    for (const bad of ["insta", "unspecifed", "", "none"]) {
+      expect(isRuleAudience(bad), bad).toBe(false);
+    }
   });
 });
 
