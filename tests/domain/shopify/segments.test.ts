@@ -5,7 +5,10 @@ import {
   assertSafePredicate,
   evaluateSegments,
   seedSegments,
+  prepareAndEvaluateSegments,
 } from "@/domain/shopify/segments";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Db } from "@/db/client";
 
 const NOW = new Date("2026-09-07T12:00:00Z");
@@ -393,5 +396,148 @@ describe("evaluateSegments transaction SQL", () => {
     expect(update).toBeGreaterThan(commit);
     expect(result.failed).toBe(0);
     expect(result.sizes).toEqual({ teachers: 7 });
+  });
+});
+
+/**
+ * ─── #50: seedSegments was never called ───────────────────────────────
+ *
+ * `seedSegments` was defined, fully tested, and had no caller anywhere in
+ * `src/`. The table has been empty in production since it shipped, so
+ * `evaluateSegments` looped over nothing and the worker logged
+ *
+ *     [sync:customers] Segments: 0 evaluated, 0 failed
+ *
+ * every day. That is also exactly what a healthy run prints on a day when
+ * nothing went wrong, which is why it survived for weeks — there is no
+ * threshold, alert or non-zero exit separating them.
+ *
+ * Two things are needed and neither is sufficient alone: the seed has to
+ * actually run, and an empty table has to stop being indistinguishable from a
+ * clean one. `prepareAndEvaluateSegments` does both in one call, so the worker
+ * has a single call site and the seed-then-evaluate ordering is a property a
+ * unit test can assert rather than an order two lines happen to be written in.
+ */
+describe("prepareAndEvaluateSegments", () => {
+  function createDb(definitionsAfterSeed: Array<{ id: string; definition: string }>) {
+    const calls: string[] = [];
+    const db = {
+      _calls: calls,
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: () => {
+            calls.push("seed");
+            return Promise.resolve();
+          },
+        }),
+      }),
+      select: () => ({
+        from: () => {
+          calls.push("read-definitions");
+          return Promise.resolve(definitionsAfterSeed);
+        },
+      }),
+      transaction: async (cb: (tx: unknown) => unknown) => {
+        calls.push("count");
+        return cb({ execute: async () => [{ count: 7 }] });
+      },
+      update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+    };
+    return db as unknown as Db & { _calls: string[] };
+  }
+
+  /**
+   * Both halves, and the first one matters more.
+   *
+   * Mutation testing caught this: replacing the seed with
+   * `false ? await seedSegments(db) : SEED_SEGMENTS.length` left the ordering
+   * assertion green, because `indexOf` returns -1 when the call never
+   * happened and -1 is less than every real index. The test for "seeds before
+   * it evaluates" passed on a version that never seeded at all — which is
+   * precisely the bug #50 is about, surviving its own regression test.
+   */
+  it("actually seeds", async () => {
+    const db = createDb([{ id: "teachers", definition: "is_subscriber = 1" }]);
+    await prepareAndEvaluateSegments(db, NOW);
+    expect(db._calls).toContain("seed");
+  });
+
+  it("seeds before it reads the definitions, not after", async () => {
+    const db = createDb([{ id: "teachers", definition: "is_subscriber = 1" }]);
+    await prepareAndEvaluateSegments(db, NOW);
+    const seedAt = db._calls.indexOf("seed");
+    const readAt = db._calls.indexOf("read-definitions");
+    // -1 is less than every index, so the ordering check is meaningless until
+    // both calls are known to have happened.
+    expect(seedAt).toBeGreaterThanOrEqual(0);
+    expect(readAt).toBeGreaterThanOrEqual(0);
+    expect(seedAt).toBeLessThan(readAt);
+  });
+
+  it("evaluates what it seeded and reports both", async () => {
+    const db = createDb([
+      { id: "teachers", definition: "is_subscriber = 1" },
+      { id: "high_value", definition: "lifetime_orders > 3" },
+    ]);
+    const r = await prepareAndEvaluateSegments(db, NOW);
+    expect(r.seeded).toBe(SEED_SEGMENTS.length);
+    expect(r.defined).toBe(2);
+    expect(r.evaluated).toBe(2);
+    expect(r.problem).toBeNull();
+  });
+
+  /**
+   * The assertion this issue exists for. A count of nothing over a table that
+   * should hold rows is an unrun check, not a clean one — so it comes back as a
+   * value the caller has to handle, not a zero it can read past.
+   */
+  it("reports an empty table as a problem, not as a clean run", async () => {
+    const db = createDb([]);
+    const r = await prepareAndEvaluateSegments(db, NOW);
+    expect(r.defined).toBe(0);
+    expect(r.evaluated).toBe(0);
+    expect(r.problem).toBeTruthy();
+    expect(r.problem).toMatch(/no segment/i);
+  });
+
+  it("distinguishes an empty table from one whose evaluations all failed", async () => {
+    const empty = await prepareAndEvaluateSegments(createDb([]), NOW);
+    const broken = await prepareAndEvaluateSegments(
+      createDb([{ id: "bad", definition: "1=1; DROP TABLE shopify_customers" }]),
+      NOW
+    );
+    expect(broken.defined).toBe(1);
+    expect(broken.failed).toBe(1);
+    expect(broken.problem).toBeTruthy();
+    // Both are problems. They are not the same problem and call for different fixes.
+    expect(broken.problem).not.toBe(empty.problem);
+  });
+});
+
+/**
+ * The call site. A function defined and tested with no caller passes forever —
+ * that is the whole of #50, and asserting `seedSegments` in isolation is what
+ * let it happen.
+ */
+describe("worker segment wiring", () => {
+  const workerSource = readFileSync(join(process.cwd(), "src/worker/index.ts"), "utf-8");
+
+  it("calls prepareAndEvaluateSegments", () => {
+    expect(workerSource).toMatch(/prepareAndEvaluateSegments\s*\(\s*db\b/);
+  });
+
+  // Calling the bare evaluator again would reintroduce the unseeded path.
+  it("no longer calls the evaluator without seeding first", () => {
+    expect(workerSource).not.toMatch(/\bevaluateSegments\s*\(/);
+  });
+
+  // A problem logged through the same channel as the success reads as routine.
+  it("routes the empty-table case through console.error", () => {
+    // Anchored on the call, not the import — the import line matches the name
+    // too, and a test that passes by matching an import proves nothing.
+    const block = workerSource.match(/prepareAndEvaluateSegments\s*\(\s*db\b[\s\S]{0,700}/);
+    expect(block).not.toBeNull();
+    expect(block![0]).toMatch(/\.problem/);
+    expect(block![0]).toMatch(/console\.error/);
   });
 });

@@ -437,3 +437,62 @@ export async function evaluateSegments(
 
   return { evaluated, failed, sizes };
 }
+
+export interface SegmentPreparationResult extends SegmentEvaluationResult {
+  /** How many definitions the seed offers. */
+  seeded: number;
+  /** How many were actually in the table when evaluation ran. */
+  defined: number;
+  /**
+   * Set when the run established less than it appears to have. `null` means a
+   * genuinely clean evaluation over a non-empty table.
+   *
+   * This exists because `0 evaluated, 0 failed` is what a healthy run prints on
+   * a quiet day AND what a run over an empty table prints — and the table was
+   * empty in production for weeks while that line looked fine every morning.
+   * Returning a value the caller has to handle is the only thing that separates
+   * them; a count it can read past is not.
+   */
+  problem: string | null;
+}
+
+/**
+ * Seed the segment definitions, then recount them.
+ *
+ * One function rather than two calls at the call site, because the ordering
+ * matters and an ordering that lives in the order two lines happen to be
+ * written in is not an ordering anything can test. Here "seeds before it
+ * evaluates" is a property of this function, asserted directly.
+ *
+ * #50: `seedSegments` shipped defined, tested, and called from nowhere. The
+ * table stayed empty, `evaluateSegments` looped over zero rows, and the worker
+ * logged `Segments: 0 evaluated, 0 failed` every day — which is also what a
+ * perfectly healthy run logs. Definition plus tests plus no caller is the whole
+ * failure, and it takes one grep to find.
+ */
+export async function prepareAndEvaluateSegments(
+  db: Db,
+  now: Date
+): Promise<SegmentPreparationResult> {
+  const seeded = await seedSegments(db);
+  const evaluation = await evaluateSegments(db, now);
+  const defined = evaluation.evaluated + evaluation.failed;
+
+  // Three distinct states, three distinct messages. "Nothing is defined" and
+  // "everything defined is broken" need opposite responses — one is a wiring
+  // fault, the other is a predicate fault — so they must not share a value.
+  const problem =
+    defined === 0
+      ? `No segment definitions are in the table, so no segment was evaluated. ` +
+        `${seeded} were offered by the seed, which means the insert did not take — ` +
+        `this is a wiring fault, not an empty business.`
+      : evaluation.failed === defined
+        ? `All ${defined} segment definitions failed to evaluate. Every member count ` +
+          `on the table is now from a previous run.`
+        : evaluation.failed > 0
+          ? `${evaluation.failed} of ${defined} segment definitions failed to evaluate; ` +
+            `their member counts are from a previous run.`
+          : null;
+
+  return { ...evaluation, seeded, defined, problem };
+}

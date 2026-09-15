@@ -28,7 +28,7 @@ import { syncIncremental, recordUnconfiguredSync } from "@/domain/meta/sync";
 import { analyzeAdPerformance } from "@/domain/meta/analyze";
 import { syncOrders } from "@/domain/shopify/sync";
 import { syncCustomers } from "@/domain/shopify/customer-sync";
-import { evaluateSegments } from "@/domain/shopify/segments";
+import { prepareAndEvaluateSegments } from "@/domain/shopify/segments";
 import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
 import { getInventoryItems } from "@/domain/inventory/queries";
@@ -322,11 +322,20 @@ async function main() {
           `[sync:customers] Rollup: ${result.rollup.updated} updated, ` +
             `${result.rollup.withOrders} with orders, ${result.rollup.subscribers} subscribers`
         );
-        const segmentResult = await evaluateSegments(db, new Date());
+        // Seeds first. `seedSegments` was defined, tested and called from
+        // nowhere (#50), so the table was empty and this line read
+        // `0 evaluated, 0 failed` every day — which is also what a healthy run
+        // prints. The count alone cannot tell those apart, so `problem` does.
+        const segmentResult = await prepareAndEvaluateSegments(db, new Date());
         console.log(
-          `[sync:customers] Segments: ${segmentResult.evaluated} evaluated, ` +
-            `${segmentResult.failed} failed`
+          `[sync:customers] Segments: ${segmentResult.evaluated} of ` +
+            `${segmentResult.defined} defined evaluated, ${segmentResult.failed} failed`
         );
+        if (segmentResult.problem) {
+          // A different channel, deliberately. A fault logged the way a success
+          // is logged reads as routine.
+          console.error(`[sync:customers] Segments PROBLEM — ${segmentResult.problem}`);
+        }
       } else {
         // Segments are counted over the derived columns, so sizing them against
         // a rollup that did not run produces numbers describing the previous run.
