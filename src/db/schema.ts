@@ -1220,6 +1220,60 @@ export const segmentPushMembers = pgTable(
 export type SegmentPushMemberRow = typeof segmentPushMembers.$inferSelect;
 
 /**
+ * Google Search Console, the only source that answers "did anyone arrive".
+ *
+ * Every other feed answers what happened after they did, which is how a 62%
+ * year-over-year traffic collapse stayed invisible to this system until a human
+ * exported a CSV by hand.
+ *
+ * ## One table, not five
+ *
+ * Storing the cross-product of query × page × device × country × date would
+ * explode and answer questions nobody asks. Search Console itself aggregates
+ * each dimension separately, so this mirrors that: one row per day per
+ * dimension per value, with `dimension = 'total'` carrying the daily headline.
+ *
+ * Measured against the live property: ~327 rows/day across all dimensions,
+ * so the full 12-month backfill is ~119,000 rows.
+ *
+ * ## The retention clock
+ *
+ * The available window runs from 2025-09-14 and advances one day every day.
+ * Anything that rolls off is gone at any price, by anyone, permanently — which
+ * is why the backfill runs before the daily sync rather than after it.
+ *
+ * Data lags two to three days: on 2026-09-15 the latest available date was
+ * 2026-09-13. An absent recent day is normal, not a broken sync.
+ */
+export const gscDaily = pgTable(
+  "gsc_daily",
+  {
+    date: date("date", { mode: "string" }).notNull(),
+    /** total | query | page | device | country */
+    dimension: text("dimension").notNull(),
+    /** The query text, URL, device or country code. Empty string for `total`. */
+    value: text("value").notNull(),
+
+    clicks: integer("clicks").notNull(),
+    impressions: integer("impressions").notNull(),
+    /** Stored as Search Console reports it — a rate, not a percentage. */
+    ctr: real("ctr").notNull(),
+    /** Average position. Lower is better; 1.0 is the top organic result. */
+    position: real("position").notNull(),
+
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("gsc_daily_unique").on(table.date, table.dimension, table.value),
+    index("gsc_daily_date_idx").on(table.date),
+    index("gsc_daily_dimension_idx").on(table.dimension),
+  ]
+);
+
+export type GscDailyRow = typeof gscDaily.$inferSelect;
+export type NewGscDailyRow = typeof gscDaily.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

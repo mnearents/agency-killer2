@@ -60,6 +60,18 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "gsc-sync",
+      name: "Search Console Sync",
+      // Search Console lags two to three days, so the hour is arbitrary — what
+      // matters is that it runs every day. The window it asks for is derived
+      // from what is already stored, so a missed run self-heals rather than
+      // leaving a hole: see plannedGscDays. The first run backfills the whole
+      // retained year, which is the part with a deadline — anything that rolls
+      // off the 16-month window is gone permanently.
+      schedule: { type: "daily", hour: 13, minute: 35 },
+      enabled: true,
+    },
+    {
       id: "inventory-sync",
       name: "Shopify Inventory Sync",
       // After shopify-sync — velocity is computed from freshly synced line items.
@@ -112,6 +124,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "seal-sync": "sync:seal",
     "customers-sync": "sync:customers",
     "social-sync": "sync:social",
+    "gsc-sync": "sync:gsc",
     "inventory-sync": "sync:inventory",
     "attentive-sync": "sync:attentive",
     "kb-sync": "sync:knowledge-base",

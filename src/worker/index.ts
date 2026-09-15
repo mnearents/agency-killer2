@@ -31,6 +31,8 @@ import { syncCustomers } from "@/domain/shopify/customer-sync";
 import { prepareAndEvaluateSegments } from "@/domain/shopify/segments";
 import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
+import { createSearchConsoleClient } from "@/integrations/search-console";
+import { syncSearchConsole, plannedGscDays, getLatestGscDate } from "@/domain/seo/gsc-sync";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
@@ -103,6 +105,17 @@ async function main() {
   const metaClient = getEnvOptional("META_ACCESS_TOKEN")
     ? createMetaApiClient(getEnv("META_ACCESS_TOKEN"))
     : null;
+
+  // Absent is a supported state and it is reported, not skipped silently.
+  // GSC_SITE_URL must match the property's form exactly — a Domain property is
+  // "sc-domain:example.com" — because the wrong one returns no rows rather
+  // than an error.
+  const gscCredentials = getEnvOptional("GOOGLE_SERVICE_ACCOUNT_JSON");
+  const gscSiteUrl = getEnvOptional("GSC_SITE_URL");
+  const searchConsoleClient =
+    gscCredentials && gscSiteUrl
+      ? createSearchConsoleClient({ credentialsJson: gscCredentials, siteUrl: gscSiteUrl })
+      : null;
 
   const shopifyClient =
     getEnvOptional("SHOPIFY_ACCESS_TOKEN") && getEnvOptional("SHOPIFY_STORE_DOMAIN")
@@ -263,6 +276,41 @@ async function main() {
       );
       if (result.errors.length > 0) {
         console.error("[sync:meta] Errors:", result.errors);
+      }
+    },
+
+    "sync:gsc": async () => {
+      if (!searchConsoleClient) {
+        const missing = !gscCredentials ? "GOOGLE_SERVICE_ACCOUNT_JSON" : "GSC_SITE_URL";
+        console.error(`[sync:gsc] NOT CONFIGURED — ${missing} is not set. No search data is being collected.`);
+        return;
+      }
+
+      const now = new Date();
+      const latest = await getLatestGscDate(db);
+      const days = plannedGscDays(latest, now);
+
+      const result = await syncSearchConsole({ client: searchConsoleClient, db, now, days });
+
+      if (!result.ok) {
+        // Search Console retains a rolling window and loses a day every day, so
+        // a failed run has a cost that a failed Shopify sync does not.
+        console.error(
+          `[sync:gsc] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
+        );
+        return;
+      }
+
+      console.log(
+        `[sync:gsc] ${result.window.startDate}..${result.window.endDate} ` +
+          `(${days} days, previously held through ${latest ?? "nothing"}): ` +
+          `${result.rows} rows — ` +
+          Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
+          (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
+      );
+
+      if (result.problem) {
+        console.error(`[sync:gsc] PROBLEM — ${result.problem}`);
       }
     },
 
