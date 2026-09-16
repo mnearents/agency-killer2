@@ -176,3 +176,42 @@ describe("the newest drizzle snapshot", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * ─── The security boundary is defined by migrations (#36) ─────────────
+ *
+ * 0015 created `claude_readonly` as NOLOGIN, which was right when the role
+ * only existed to own grants. The `query` tool arrived later, the role was
+ * granted LOGIN by hand, and the migration was never updated — so the file
+ * that defines the boundary described a role nothing could connect to.
+ *
+ * Production was fine. Any environment rebuilt from migrations was not.
+ */
+describe("claude_readonly is declared the way production has it", () => {
+  const sqlFiles = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+
+  const combined = sqlFiles
+    .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8"))
+    .join("\n");
+
+  it("grants the role LOGIN somewhere in the migration history", () => {
+    expect(combined).toMatch(/claude_readonly\s+LOGIN|ALTER ROLE claude_readonly LOGIN/);
+  });
+
+  /**
+   * The last word wins when migrations run in order, so what matters is that
+   * no file AFTER the one granting LOGIN takes it away again.
+   */
+  it("does not revoke it afterwards", () => {
+    const grantIdx = combined.search(/ALTER ROLE claude_readonly LOGIN/);
+    expect(grantIdx).toBeGreaterThan(-1);
+    expect(combined.slice(grantIdx)).not.toMatch(/ALTER ROLE claude_readonly\s+NOLOGIN/);
+  });
+
+  // A password in a migration is a password in the repository.
+  it("sets no password for it anywhere", () => {
+    expect(combined).not.toMatch(/claude_readonly[\s\S]{0,80}PASSWORD\s+'[^']/i);
+  });
+});
