@@ -144,12 +144,36 @@ export function buildCustomerOrderAggregateQuery(db: Db) {
       firstOrderAt: sql<Date>`MIN(${shopifyOrders.orderCreatedAt})`.as("first_order_at"),
       lastOrderAt: sql<Date>`MAX(${shopifyOrders.orderCreatedAt})`.as("last_order_at"),
       lifetimeOrders: sql<number>`COUNT(*)`.as("lifetime_orders"),
+      // Scoped on the product bought, exactly as the proxy dates below are, and
+      // for a stronger reason than consistency (#49).
+      //
+      // This used to split on `is_recurring`. That flag is unreliable before
+      // 2026-06-01 — 0018_orders_view_recurring_utm.sql says so outright — and
+      // order history begins 2025-07-22, so roughly ten of fourteen months
+      // booked every renewal as one-off revenue. In production an average
+      // "one-off" order was worth $7.56-$19.78 before June and $31.59-$54.29
+      // after: real purchases did not quadruple overnight, the earlier months
+      // were diluted with thousands of small renewals.
+      //
+      // Measured over June onward, where the flag IS reliable, the product
+      // scope agrees with it on 13,643 of 13,738 orders. The 91 disagreements
+      // are mostly subscription SIGNUPS — Shopify flags renewals, not the
+      // initial purchase — and 51 of them were followed by renewals from the
+      // same customer. So this is not a fallback for the broken window; it is
+      // more accurate than the flag even where the flag works.
+      //
+      // Whole-order attribution, which is what keeps these two columns summing
+      // to the order total (verified at $512,551.49 against shopify_orders).
+      // 239 of 54,253 orders mix a subscription with something else, worth
+      // $11,604, and count wholly as subscription revenue. Splitting per line
+      // item would be more precise and would leave shipping, tax and discounts
+      // unallocated, breaking the sum.
       subscriptionRevenueCents:
-        sql<number>`COALESCE(SUM(CASE WHEN ${shopifyOrders.isRecurring} = 1 THEN ${shopifyOrders.totalPriceCents} ELSE 0 END), 0)`.as(
+        sql<number>`COALESCE(SUM(CASE WHEN ${boughtSubscriptionProduct} THEN ${shopifyOrders.totalPriceCents} ELSE 0 END), 0)`.as(
           "subscription_revenue_cents"
         ),
       oneOffRevenueCents:
-        sql<number>`COALESCE(SUM(CASE WHEN ${shopifyOrders.isRecurring} = 1 THEN 0 ELSE ${shopifyOrders.totalPriceCents} END), 0)`.as(
+        sql<number>`COALESCE(SUM(CASE WHEN ${boughtSubscriptionProduct} THEN 0 ELSE ${shopifyOrders.totalPriceCents} END), 0)`.as(
           "one_off_revenue_cents"
         ),
       // MIN/MAX over the subscription orders only. FILTER leaves these NULL

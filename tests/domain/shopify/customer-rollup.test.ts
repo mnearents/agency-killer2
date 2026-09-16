@@ -233,10 +233,57 @@ describe("buildCustomerOrderAggregateQuery", () => {
 
   // One lifetime_revenue number averages a $25.79 one-off buyer and a
   // $60-180/yr subscriber into something that describes neither.
-  it("splits revenue on is_recurring rather than totalling it", () => {
-    expect(sql).toContain("is_recurring");
+  it("splits revenue rather than totalling it", () => {
     expect(sql).toMatch(/subscription_revenue_cents/);
     expect(sql).toMatch(/one_off_revenue_cents/);
+  });
+
+  /**
+   * ─── #49 ─────────────────────────────────────────────────────────────
+   *
+   * This used to assert `is_recurring` appeared in the split. That flag is
+   * unreliable before 2026-06-01 — `0018_orders_view_recurring_utm.sql` says
+   * so outright — and order history begins 2025-07-22, so about ten of
+   * fourteen months booked every renewal as one-off revenue.
+   *
+   * The tell in production: an average "one-off" order was worth $7.56–$19.78
+   * before June and $31.59–$54.29 after. Real purchases did not quadruple
+   * overnight; the earlier months are diluted with thousands of small renewals.
+   *
+   * Measured over June onward, where the flag IS reliable, scoping on the
+   * product bought agrees with it on 13,643 of 13,738 orders — and the 91
+   * disagreements are mostly subscription SIGNUPS, which `is_recurring` misses
+   * because Shopify flags renewals and not the initial purchase. 51 of those
+   * 91 were followed by renewals from the same customer.
+   *
+   * So the product scope is not merely a fallback for the broken window. It is
+   * more accurate than the flag even where the flag works.
+   *
+   * The same file already reached this conclusion twenty lines earlier for the
+   * proxy dates. The revenue split simply did not inherit it.
+   */
+  it("scopes the revenue split on the product bought, not on is_recurring", () => {
+    const revenueClauses = sql
+      .split(/,(?![^(]*\))/)
+      .filter((f) => /subscription_revenue_cents|one_off_revenue_cents/.test(f));
+
+    expect(revenueClauses.length).toBeGreaterThan(0);
+    for (const clause of revenueClauses) {
+      expect(clause, "revenue split must not depend on is_recurring").not.toContain("is_recurring");
+    }
+  });
+
+  it("identifies a subscription order by its line items", () => {
+    expect(sql).toMatch(/product_type/);
+  });
+
+  // The two columns have to keep summing to the order total — verified in
+  // production at $512,551.49 against shopify_orders. Attributing a whole
+  // order is what preserves that; 239 of 54,253 orders mix a subscription with
+  // something else ($11,604) and are counted wholly as subscription revenue.
+  it("attributes whole orders, so the two columns still sum to the total", () => {
+    expect(sql).toMatch(/SUM\(CASE WHEN/i);
+    expect(sql).not.toMatch(/li\.total_price|line_item.*price.*SUM/i);
   });
 
   it("groups by the order's customer id", () => {
