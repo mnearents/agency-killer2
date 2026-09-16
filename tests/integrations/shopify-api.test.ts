@@ -110,3 +110,77 @@ describe("ORDERS_QUERY line item selection", () => {
     expect(query).toContain("variant { id sku title }");
   });
 });
+
+/**
+ * ─── Unit cost, the input every COD figure rests on (#34) ─────────────
+ *
+ * Shopify's "Cost per item" holds landed product cost — China invoice plus
+ * freight plus duty — which is exactly what a cost of delivery needs. Nothing
+ * synced it, so no margin could be computed at all.
+ *
+ * Measured against the live store before building: 82.4% of active PHYSICAL
+ * variants carry a cost (42 of 51; the gaps are 3 planners, 5 stationery, 1
+ * bag). The other 181 active variants are digital, gift cards, subscriptions
+ * and classes, which correctly have none.
+ *
+ * The distinction matters more than the number. "18% coverage" across all 232
+ * active variants is the figure a naive count produces, and it describes a
+ * catalogue that is mostly zero-COGS by design rather than a data gap.
+ */
+describe("getInventory: unit cost", () => {
+  const variantNode = (over: Record<string, unknown> = {}) => ({
+    id: "gid://shopify/ProductVariant/1",
+    title: "Default",
+    sku: "SKU1",
+    inventoryQuantity: 5,
+    price: "45.00",
+    inventoryItem: { id: "gid://shopify/InventoryItem/1", tracked: true, unitCost: { amount: "12.50" } },
+    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
+    ...over,
+  });
+
+  const variantsPage = (nodes: unknown[]) =>
+    new Response(
+      JSON.stringify({
+        data: { productVariants: { pageInfo: { hasNextPage: false, endCursor: "" }, nodes } },
+        extensions: { cost: { throttleStatus: { currentlyAvailable: 1000, restoreRate: 50 } } },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  it("asks Shopify for the cost field", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(variantsPage([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await createShopifyApiClient("shop.myshopify.com", "tok").getInventory();
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.query).toMatch(/unitCost/);
+  });
+
+  it("returns the cost when Shopify has one", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(variantsPage([variantNode()])));
+    const [v] = await createShopifyApiClient("shop.myshopify.com", "tok").getInventory();
+    expect(v.inventoryItem?.unitCost).toBe("12.50");
+  });
+
+  /**
+   * A variant with no cost recorded and a variant that genuinely costs nothing
+   * are different facts. Digital products are legitimately 0.00; a planner
+   * with no cost entered is a gap. Collapsing them to 0 would make every COD
+   * figure quietly optimistic and there would be nothing to notice.
+   */
+  it("distinguishes no cost recorded from a cost of zero", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(variantsPage([
+      variantNode({ inventoryItem: { id: "i1", tracked: true, unitCost: null } }),
+      variantNode({ inventoryItem: { id: "i2", tracked: true, unitCost: { amount: "0.0" } } }),
+    ])));
+    const [missing, free] = await createShopifyApiClient("shop.myshopify.com", "tok").getInventory();
+    expect(missing.inventoryItem?.unitCost).toBeNull();
+    expect(free.inventoryItem?.unitCost).toBe("0.0");
+  });
+
+  it("survives a variant with no inventory item at all", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(variantsPage([variantNode({ inventoryItem: null })])));
+    const [v] = await createShopifyApiClient("shop.myshopify.com", "tok").getInventory();
+    expect(v.inventoryItem).toBeNull();
+  });
+});

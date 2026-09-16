@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { transformVariant } from "@/domain/inventory/sync-transform";
+import { transformVariant , parseUnitCostCents } from "@/domain/inventory/sync-transform";
 import type { ShopifyApiVariant } from "@/integrations/shopify-api";
 
 const syncedAt = new Date("2026-09-01T13:15:00Z");
@@ -11,7 +11,7 @@ function raw(overrides: Partial<ShopifyApiVariant> = {}): ShopifyApiVariant {
     sku: "RAD-001",
     inventoryQuantity: 42,
     price: "29.99",
-    inventoryItem: { id: "gid://shopify/InventoryItem/222", tracked: true },
+    inventoryItem: { id: "gid://shopify/InventoryItem/222", tracked: true, unitCost: null },
     product: {
       id: "gid://shopify/Product/999",
       title: "Really Awesome Doodles",
@@ -42,7 +42,7 @@ describe("transformVariant", () => {
   });
 
   it("stores tracked as 1/0 to match the schema's integer boolean convention", () => {
-    const item = (tracked: boolean) => ({ id: "gid://shopify/InventoryItem/222", tracked });
+    const item = (tracked: boolean) => ({ id: "gid://shopify/InventoryItem/222", tracked, unitCost: null });
     expect(transformVariant(raw({ inventoryItem: item(true) }), syncedAt).tracked).toBe(1);
     expect(transformVariant(raw({ inventoryItem: item(false) }), syncedAt).tracked).toBe(0);
   });
@@ -72,7 +72,7 @@ describe("transformVariant", () => {
    */
   it("records the inventory item id, which identifies the shared stock pool", () => {
     const row = transformVariant(
-      raw({ inventoryItem: { id: "gid://shopify/InventoryItem/555", tracked: true } }),
+      raw({ inventoryItem: { id: "gid://shopify/InventoryItem/555", tracked: true, unitCost: null } }),
       syncedAt
     );
     expect(row.inventoryItemId).toBe("gid://shopify/InventoryItem/555");
@@ -80,5 +80,70 @@ describe("transformVariant", () => {
 
   it("leaves the inventory item id null when Shopify returns no inventoryItem", () => {
     expect(transformVariant(raw({ inventoryItem: null }), syncedAt).inventoryItemId).toBeNull();
+  });
+});
+
+/**
+ * ─── Cost per item (#34) ──────────────────────────────────────────────
+ *
+ * The input every cost-of-delivery figure rests on. Nothing synced it, so no
+ * margin could be computed at all.
+ *
+ * The one rule that matters: a missing cost stays missing. A planner with
+ * nothing entered and a printable that genuinely costs nothing are different
+ * facts, and defaulting the first to 0 makes every margin over it quietly
+ * optimistic with nothing to notice.
+ */
+describe("parseUnitCostCents", () => {
+  it("converts a decimal string to cents", () => {
+    expect(parseUnitCostCents("12.50")).toBe(1250);
+    expect(parseUnitCostCents("7")).toBe(700);
+  });
+
+  it("rounds rather than truncating a third decimal", () => {
+    expect(parseUnitCostCents("1.005")).toBe(101);
+    expect(parseUnitCostCents("1.004")).toBe(100);
+  });
+
+  it("keeps a genuine zero as zero", () => {
+    expect(parseUnitCostCents("0.0")).toBe(0);
+    expect(parseUnitCostCents("0")).toBe(0);
+  });
+
+  // The distinction the whole column exists to preserve.
+  it("keeps a missing cost missing rather than defaulting it to zero", () => {
+    expect(parseUnitCostCents(null)).toBeNull();
+    expect(parseUnitCostCents("")).toBeNull();
+    expect(parseUnitCostCents("   ")).toBeNull();
+  });
+
+  it("refuses an unparseable amount rather than recording NaN", () => {
+    expect(parseUnitCostCents("twelve fifty")).toBeNull();
+    expect(parseUnitCostCents("12.50 USD")).toBeNull();
+  });
+});
+
+describe("transformVariant: cost", () => {
+  const variant = (unitCost: string | null) => ({
+    id: "gid://shopify/ProductVariant/1",
+    title: "Default",
+    sku: "SKU1",
+    inventoryQuantity: 3,
+    price: "45.00",
+    inventoryItem: { id: "gid://shopify/InventoryItem/1", tracked: true, unitCost },
+    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
+  });
+
+  it("carries the cost through to the row", () => {
+    expect(transformVariant(variant("12.50"), syncedAt).unitCostCents).toBe(1250);
+  });
+
+  it("records no cost as null", () => {
+    expect(transformVariant(variant(null), syncedAt).unitCostCents).toBeNull();
+  });
+
+  it("records null for a variant with no inventory item at all", () => {
+    const v = { ...variant(null), inventoryItem: null };
+    expect(transformVariant(v, syncedAt).unitCostCents).toBeNull();
   });
 });

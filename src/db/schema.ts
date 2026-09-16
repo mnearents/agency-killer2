@@ -475,6 +475,19 @@ export const shopifyInventory = pgTable(
      * without an inventoryItem.
      */
     inventoryItemId: text("inventory_item_id"),
+    /**
+     * Shopify's "Cost per item" in cents — landed product cost, meaning
+     * invoice plus freight plus duty. The input every cost-of-delivery figure
+     * rests on (#34).
+     *
+     * NULL means no cost is recorded; 0 means it genuinely costs nothing.
+     * Digital products, gift cards and subscriptions are legitimately 0 and
+     * make up 181 of 232 active variants, so a naive "how many have a cost"
+     * count reports ~18% and describes a catalogue that is mostly zero-COGS by
+     * design rather than a data gap. Among physical variants the figure is
+     * 82.4% (42 of 51). Always say which population a coverage number is over.
+     */
+    unitCostCents: integer("unit_cost_cents"),
     productStatus: text("product_status").notNull(), // ACTIVE, DRAFT, ARCHIVED
     productType: text("product_type"),
     priceCents: bigint("price_cents", { mode: "number" }).notNull(),

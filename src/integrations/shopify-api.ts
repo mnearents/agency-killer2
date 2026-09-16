@@ -83,7 +83,21 @@ export interface ShopifyApiVariant {
    * `id` identifies the stock pool: two variants sharing one sell the same
    * physical units, which is the condition #9 exists to detect.
    */
-  inventoryItem: { id: string; tracked: boolean } | null;
+  inventoryItem: {
+    id: string;
+    tracked: boolean;
+    /**
+     * Shopify's "Cost per item" as a decimal string, or null when none is
+     * recorded. Landed product cost — invoice, freight, duty — which is the
+     * input every cost-of-delivery figure rests on (#34).
+     *
+     * `null` and `"0.0"` are deliberately different. Digital products, gift
+     * cards and subscriptions legitimately cost nothing; a planner with
+     * nothing entered is a gap. Collapsing them would make every margin
+     * quietly optimistic with nothing to notice.
+     */
+    unitCost: string | null;
+  } | null;
   product: {
     id: string;
     title: string;
@@ -193,7 +207,7 @@ const INVENTORY_QUERY = `
         sku
         inventoryQuantity
         price
-        inventoryItem { id tracked }
+        inventoryItem { id tracked unitCost { amount } }
         product { id title status productType }
       }
     }
@@ -390,10 +404,23 @@ export function createShopifyApiClient(
       const allVariants: ShopifyApiVariant[] = [];
       let after: string | null = null;
 
+      /**
+       * Shopify nests the cost as `unitCost { amount }`. The variant type
+       * flattens it to a string, so the raw shape is declared separately
+       * rather than pretending the API returns what we want.
+       */
+      interface RawVariant extends Omit<ShopifyApiVariant, "inventoryItem"> {
+        inventoryItem: {
+          id: string;
+          tracked: boolean;
+          unitCost: { amount: string } | null;
+        } | null;
+      }
+
       interface InventoryResponse {
         productVariants: {
           pageInfo: { hasNextPage: boolean; endCursor: string };
-          nodes: ShopifyApiVariant[];
+          nodes: RawVariant[];
         };
       }
 
@@ -403,7 +430,20 @@ export function createShopifyApiClient(
           { first: limit, after }
         );
 
-        allVariants.push(...data.productVariants.nodes);
+        allVariants.push(
+          ...data.productVariants.nodes.map((n) => ({
+            ...n,
+            inventoryItem: n.inventoryItem
+              ? {
+                  id: n.inventoryItem.id,
+                  tracked: n.inventoryItem.tracked,
+                  // `?? null`, never `?? "0"`. A variant with no cost recorded
+                  // and one that genuinely costs nothing are different facts.
+                  unitCost: n.inventoryItem.unitCost?.amount ?? null,
+                }
+              : null,
+          }))
+        );
         after = data.productVariants.pageInfo.hasNextPage
           ? data.productVariants.pageInfo.endCursor
           : null;

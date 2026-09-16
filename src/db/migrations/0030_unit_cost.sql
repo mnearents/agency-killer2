@@ -1,0 +1,1 @@
+ALTER TABLE "shopify_inventory" ADD COLUMN "unit_cost_cents" integer;
