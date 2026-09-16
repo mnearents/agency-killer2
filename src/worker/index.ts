@@ -397,6 +397,30 @@ async function main() {
       }
       const result = await syncInventory({ client: shopifyClient, db });
       console.log(`[sync:inventory] Done: ${result.variants} variants, ${result.pruned} pruned`);
+
+      // Both populations, never one blended percentage. 18% across everything
+      // and 82% across physical goods are the same catalogue described two
+      // ways, and only the second is a data-quality signal (#34).
+      const { cost } = result;
+      console.log(
+        `[sync:inventory] Landed cost recorded on ${cost.physicalWithCost}/${cost.physicalTotal} ` +
+          `physical variants` +
+          (cost.physicalTotal > 0
+            ? ` (${Math.round((100 * cost.physicalWithCost) / cost.physicalTotal)}%)`
+            : "") +
+          `, ${cost.withCost}/${cost.total} overall — the rest are digital, gift cards, ` +
+          `subscriptions and classes, which correctly have none.`
+      );
+      if (cost.physicalTotal > 0 && cost.physicalWithCost < cost.physicalTotal) {
+        // Not an error: partial coverage is the normal state and a margin can
+        // still be computed for what is covered. But a COD over the uncovered
+        // ones is a guess, and that has to be visible before it is quoted.
+        console.error(
+          `[sync:inventory] ${cost.physicalTotal - cost.physicalWithCost} physical variant(s) have ` +
+            `no landed cost. Any cost-of-delivery figure covering them is a guess until ` +
+            `"Cost per item" is filled in on Shopify.`
+        );
+      }
       if (result.errors.length > 0) {
         console.error("[sync:inventory] Errors:", result.errors);
       }
