@@ -24,6 +24,7 @@ export function cleanVoiceVerdict(
     ok: true,
     channel: UNSPECIFIED,
     violations: [],
+    advisories: [],
     enforced: ["Never use em dashes"],
     unenforced: [],
     ...overrides,

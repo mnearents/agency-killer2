@@ -28,7 +28,15 @@ export const AI_UNAVAILABLE = "ai-unavailable";
  * (which word), so that one is quoted and the `banned-word` sentinel dropped.
  */
 export function formatVoiceNote(voice: VoiceCheckResult): string {
-  if (voice.ok || voice.violations.length === 0) return "";
+  const advisories = voice.advisories ?? [];
+
+  // A preference is worth mentioning and not worth a warning. Presenting both
+  // in the same register is what made "delight" read like a failure (#60).
+  if (voice.ok || voice.violations.length === 0) {
+    if (advisories.length === 0) return "";
+    const words = advisories.map((a) => `"${a.word}"`).join(", ");
+    return `\n\n_Worth a look: uses ${words}, which Tara tends to avoid. Fine to leave if it reads well._`;
+  }
 
   const reasons = voice.violations.map((v) =>
     v.rule === "banned-word"
@@ -44,7 +52,9 @@ export function formatVoiceNote(voice: VoiceCheckResult): string {
 
   // No em dash in the note itself. A message about not using em dashes that
   // uses one is not a message anyone takes seriously.
-  return `\n\n*Voice check:* ${heading}${list}\nWorth a quick edit before this goes out.`;
+  const note = `\n\n*Voice check:* ${heading}${list}\nWorth a quick edit before this goes out.`;
+  if (advisories.length === 0) return note;
+  return `${note}\nAlso uses ${advisories.map((a) => `"${a.word}"`).join(", ")}, which Tara tends to avoid.`;
 }
 
 export interface SlackResponse {

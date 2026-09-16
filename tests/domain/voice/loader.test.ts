@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { loadVoiceProfileFromSeedFile, loadVoiceProfileWithDb } from "@/domain/voice/loader";
 import { readVoiceProfileFromDb } from "@/domain/voice/queries";
+import { voiceBannedWords } from "@/db/schema";
 import { validateVoiceProfile } from "@/domain/voice/voice";
 import type { Db } from "@/db/client";
 
@@ -59,10 +60,25 @@ describe("loadVoiceProfileFromSeedFile", () => {
     expect(profile.rules).toContain("Never use em dashes");
   });
 
-  it("loads banned words", () => {
+  /**
+   * Tara's word list is preferences, not prohibitions (#60). Every entry loads
+   * as `discouragedWords`, and `bannedWords` — the list that actually refuses
+   * copy — is empty because nothing in it is unpublishable.
+   *
+   * The one genuinely unpublishable category, vulgarity, is a rule with its
+   * own regex rather than a word-list entry.
+   */
+  it("loads the word list as preferences, not as hard blocks", () => {
     const profile = loadVoiceProfileFromSeedFile();
-    expect(profile.bannedWords.length).toBeGreaterThan(0);
-    expect(profile.bannedWords).toContain("synergy");
+    expect(profile.discouragedWords ?? []).toContain("synergy");
+    expect(profile.discouragedWords ?? []).toContain("delight");
+    expect((profile.discouragedWords ?? []).length).toBeGreaterThan(0);
+  });
+
+  // The assertion that would go red if a preference were promoted to a block
+  // without anyone deciding to.
+  it("has no hard-blocking word, because none of them is unpublishable", () => {
+    expect(loadVoiceProfileFromSeedFile().bannedWords).toEqual([]);
   });
 
   it("produces a valid voice profile", () => {
@@ -184,5 +200,70 @@ describe("loadVoiceProfileWithDb source", () => {
     expect(unreachable.source).not.toBe(empty.source);
     expect(unreachable.source).toMatch(/unreachable/);
     vi.restoreAllMocks();
+  });
+});
+
+/**
+ * Severity has to survive the database read.
+ *
+ * Mutation testing found this gap: making the reader treat every word as a
+ * hard block left every test green, because nothing exercised this path with
+ * mixed severities — and this is the path the *worker* uses for every
+ * scheduled generation. A preference promoted back to a prohibition here would
+ * put #60 straight back.
+ */
+describe("readVoiceProfileFromDb: word severity", () => {
+  const dbWithWords = (words: Array<{ word: string; severity: string }>) =>
+    ({
+      select: () => ({
+        from: (table: unknown) => ({
+          orderBy: () =>
+            Promise.resolve(
+              table === voiceBannedWords
+                ? words.map((w, i) => ({ id: `w${i}`, ...w }))
+                : [{ id: "1", title: "IG1", content: "hi", tags: [], rule: "Never use em dashes" }]
+            ),
+        }),
+      }),
+    }) as unknown as Db;
+
+  it("puts 'avoid' words in discouragedWords, not bannedWords", async () => {
+    const read = await readVoiceProfileFromDb(
+      dbWithWords([{ word: "delight", severity: "avoid" }])
+    );
+    if (read.status !== "loaded") throw new Error("expected loaded");
+    expect(read.profile.bannedWords).toEqual([]);
+    expect(read.profile.discouragedWords).toEqual(["delight"]);
+  });
+
+  it("keeps 'block' words blocking", async () => {
+    const read = await readVoiceProfileFromDb(
+      dbWithWords([{ word: "synergy", severity: "block" }])
+    );
+    if (read.status !== "loaded") throw new Error("expected loaded");
+    expect(read.profile.bannedWords).toEqual(["synergy"]);
+    expect(read.profile.discouragedWords).toEqual([]);
+  });
+
+  it("separates them when both are present", async () => {
+    const read = await readVoiceProfileFromDb(
+      dbWithWords([
+        { word: "synergy", severity: "block" },
+        { word: "delight", severity: "avoid" },
+      ])
+    );
+    if (read.status !== "loaded") throw new Error("expected loaded");
+    expect(read.profile.bannedWords).toEqual(["synergy"]);
+    expect(read.profile.discouragedWords).toEqual(["delight"]);
+  });
+
+  // An unrecognised severity must not become a block by accident.
+  it("treats an unknown severity as a preference rather than a prohibition", async () => {
+    const read = await readVoiceProfileFromDb(
+      dbWithWords([{ word: "mystery", severity: "something-else" }])
+    );
+    if (read.status !== "loaded") throw new Error("expected loaded");
+    expect(read.profile.bannedWords).toEqual([]);
+    expect(read.profile.discouragedWords).toEqual(["mystery"]);
   });
 });

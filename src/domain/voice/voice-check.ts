@@ -32,6 +32,17 @@
 import { isRuleAudience, rulesForChannel, type RuleAudience } from "./rules";
 import type { VoiceProfile } from "./voice";
 
+/**
+ * A discouraged word that appeared. Never affects `ok`.
+ *
+ * Tara would rather not see these, but finished copy is not worth discarding
+ * over one — see #60. They are surfaced so the copy can be reworded.
+ */
+export interface VoiceAdvisory {
+  word: string;
+  detail: string;
+}
+
 export interface VoiceViolation {
   /** The rule text, or a sentinel like `unknown-channel` for structural failures. */
   rule: string;
@@ -46,6 +57,8 @@ export interface VoiceCheckResult {
    */
   channel: RuleAudience | null;
   violations: VoiceViolation[];
+  /** Discouraged words that appeared. Advisory only — `ok` ignores these. */
+  advisories: VoiceAdvisory[];
   /** Rules that applied to this channel and were actually evaluated. */
   enforced: string[];
   /** Rules that applied but that nothing mechanically checks. */
@@ -61,7 +74,7 @@ export function voiceCheck(
   channel: unknown,
   profile: VoiceProfile
 ): VoiceCheckResult {
-  const empty = { channel: null, enforced: [], unenforced: [] };
+  const empty = { channel: null, enforced: [], unenforced: [], advisories: [] };
 
   // `UNSPECIFIED` passes here and resolves to every rule. A *typo* does not:
   // "unspecifed" and "insta" are still refused, because an audience nobody
@@ -114,8 +127,10 @@ export function voiceCheck(
     }
   }
 
+  const matches = (word: string) => new RegExp(`\\b${escapeRegex(word)}\\b`, "i").test(text);
+
   for (const word of profile.bannedWords) {
-    if (new RegExp(`\\b${escapeRegex(word)}\\b`, "i").test(text)) {
+    if (matches(word)) {
       violations.push({
         rule: "banned-word",
         detail: `Text contains the banned word "${word}".`,
@@ -123,14 +138,30 @@ export function voiceCheck(
     }
   }
 
+  // Advisory. Deliberately not pushed into `violations`, because `ok` is what
+  // decides whether a draft is saved and a preference must not decide that.
+  const advisories: VoiceAdvisory[] = [];
+  const discouraged = profile.discouragedWords ?? [];
+  for (const word of discouraged) {
+    if (matches(word)) {
+      advisories.push({
+        word,
+        detail: `Contains "${word}", which Tara would rather avoid. Not a blocker — reword if there is a natural alternative.`,
+      });
+    }
+  }
+
   // A check that evaluated nothing has established nothing. Reporting it as a
   // pass makes an unconfigured profile indistinguishable from clean copy.
+  // A profile carrying only advisories has evaluated something, but nothing
+  // that could ever fail — which is not a check in the sense `ok: true` implies.
   if (enforced.length === 0 && profile.bannedWords.length === 0) {
     return {
       channel,
       ok: false,
       enforced,
       unenforced,
+      advisories,
       violations: [
         ...violations,
         {
@@ -143,5 +174,5 @@ export function voiceCheck(
     };
   }
 
-  return { channel, ok: violations.length === 0, violations, enforced, unenforced };
+  return { channel, ok: violations.length === 0, violations, advisories, enforced, unenforced };
 }

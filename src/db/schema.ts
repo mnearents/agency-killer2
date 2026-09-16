@@ -705,6 +705,21 @@ export const voiceBannedWords = pgTable("voice_banned_words", {
   /** The word, when seed-authored. NULL for words a person added. */
   sourceKey: text("source_key").unique(),
   word: text("word").notNull(),
+  /**
+   * `block` — do not publish this; copy containing it is refused.
+   * `avoid`  — a preference; flagged, never blocking.
+   *
+   * Defaults to `avoid` because every word Tara listed is a style preference,
+   * and treating one as a prohibition meant a finished draft containing
+   * "delight" could not be saved at all (#60). Her words: "Delight shouldn't
+   * be a hard ban, I just would rather not use that word. But it shouldn't
+   * cause an entire response to fail."
+   *
+   * Nothing is `block` today. The one genuinely unpublishable category,
+   * vulgarity, is a rule with its own regex rather than a word-list entry — so
+   * `block` exists for a case that has not arisen rather than for these.
+   */
+  severity: text("severity").notNull().default("avoid"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

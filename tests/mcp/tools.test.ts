@@ -646,6 +646,7 @@ const BIO_ONLY = 'Don\'t say "link in bio" outside instagram.';
 function seedVoice(opts: {
   rules?: string[];
   bannedWords?: string[];
+  discouragedWords?: string[];
   samples?: Array<{ id: string; title: string; content: string; tags: string[] }>;
 } = {}) {
   vi.mocked(voiceQueries.getAllRules).mockResolvedValue(
@@ -655,9 +656,10 @@ function seedVoice(opts: {
       createdAt: NOW,
     })) as never
   );
-  vi.mocked(voiceQueries.getAllBannedWords).mockResolvedValue(
-    (opts.bannedWords ?? ["synergy"]).map((word, i) => ({ id: `b${i}`, word, createdAt: NOW })) as never
-  );
+  vi.mocked(voiceQueries.getAllBannedWords).mockResolvedValue([
+    ...(opts.bannedWords ?? ["synergy"]).map((word, i) => ({ id: `b${i}`, word, severity: "block", createdAt: NOW })),
+    ...(opts.discouragedWords ?? []).map((word, i) => ({ id: `d${i}`, word, severity: "avoid", createdAt: NOW })),
+  ] as never);
   vi.mocked(voiceQueries.getAllSamples).mockResolvedValue(
     (opts.samples ?? [
       { id: "ig1", title: "IG1", content: "ig copy one", tags: ["channel:instagram", "intent:story"] },
@@ -1879,5 +1881,78 @@ describe("drafts_list", () => {
     };
     expect(r.drafts[0].body).toBe(CLEAN_BODY);
     expect(r.drafts[0].decisions[0]).toMatchObject({ feedback: "too polished", decidedBy: "Tara" });
+  });
+});
+
+/**
+ * ─── A preference must not discard finished copy (#60) ────────────────
+ *
+ * "Delight shouldn't be a hard ban, I just would rather not use that word.
+ * But it shouldn't cause an entire response to fail."
+ *
+ * Before this, every word in the list refused a draft outright, so a finished
+ * email containing "delight" could not be saved at all. The words are
+ * preferences; the check now says so.
+ */
+describe("discouraged words are flagged, not enforced", () => {
+  const SAVE = {
+    type: "email",
+    title: "September planner launch",
+    channel: "email",
+    body: "These planners are a delight and we are so dang proud of them.",
+  };
+
+  beforeEach(() => {
+    seedDrafts();
+    seedVoice({
+      rules: ["Never use em dashes", "No vulgarity"],
+      bannedWords: [],
+      discouragedWords: ["delight"],
+    });
+  });
+
+  it("saves a draft containing a discouraged word", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", SAVE)) as {
+      saved: boolean;
+      advisories?: Array<{ word: string }>;
+    };
+    expect(r.saved).toBe(true);
+    expect(draftQueries.insertDraft).toHaveBeenCalled();
+  });
+
+  it("still says the word is there, so it can be reworded", async () => {
+    const r = (await dispatchTool(ctx, "draft_save", SAVE)) as {
+      advisories?: Array<{ word: string }>;
+    };
+    expect(r.advisories?.map((a) => a.word)).toEqual(["delight"]);
+  });
+
+  it("keeps blocking a word that is a genuine block", async () => {
+    seedVoice({ rules: ["Never use em dashes"], bannedWords: ["synergy"], discouragedWords: ["delight"] });
+    const r = (await dispatchTool(ctx, "draft_save", {
+      ...SAVE,
+      body: "Real synergy in this collection.",
+    })) as { saved: boolean };
+    expect(r.saved).toBe(false);
+    expect(draftQueries.insertDraft).not.toHaveBeenCalled();
+  });
+
+  it("reports advisories from voice_check without failing it", async () => {
+    const r = (await dispatchTool(ctx, "voice_check", {
+      text: "What a delight these planners are.",
+      channel: "email",
+    })) as { ok: boolean; advisories: Array<{ word: string }> };
+    expect(r.ok).toBe(true);
+    expect(r.advisories.map((a) => a.word)).toEqual(["delight"]);
+  });
+
+  // The model has to be able to tell them apart, or it will treat both as bans.
+  it("brand_voice returns the two lists separately", async () => {
+    const r = (await dispatchTool(ctx, "brand_voice", {})) as {
+      bannedWords: string[];
+      discouragedWords: string[];
+    };
+    expect(r.bannedWords).toEqual([]);
+    expect(r.discouragedWords).toEqual(["delight"]);
   });
 });

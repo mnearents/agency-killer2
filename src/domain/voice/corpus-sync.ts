@@ -175,7 +175,7 @@ export async function syncVoiceCorpus(
   }
 
   await syncRules(db, profile.rules);
-  await syncBannedWords(db, profile.bannedWords);
+  await syncBannedWords(db, profile.bannedWords, profile.discouragedWords ?? []);
 
   return {
     inserted: plan.insert.length,
@@ -217,24 +217,58 @@ async function syncRules(db: Db, rules: string[]): Promise<void> {
   }
 }
 
-async function syncBannedWords(db: Db, words: string[]): Promise<void> {
-  if (words.length === 0) return;
+/**
+ * Reconcile both word lists, carrying severity.
+ *
+ * Two lists rather than one because a preference must not block copy (#60):
+ * `banned` refuses, `discouraged` only flags. A word that moves between them
+ * in the seed file has to move in the database too, or the file would silently
+ * stop being the authoring surface for the distinction that matters most.
+ */
+async function syncBannedWords(
+  db: Db,
+  banned: string[],
+  discouraged: string[]
+): Promise<void> {
+  // Both empty means the seed file failed to parse or was emptied by mistake.
+  // Deleting every seed-owned word on that basis is not a reconciliation.
+  if (banned.length === 0 && discouraged.length === 0) return;
+
+  const wantedSeverity = new Map<string, string>([
+    ...discouraged.map((w) => [w, "avoid"] as const),
+    // Listed second so an entry in both lists resolves to the stricter one.
+    ...banned.map((w) => [w, "block"] as const),
+  ]);
 
   const existing = await db
-    .select({ id: voiceBannedWords.id, sourceKey: voiceBannedWords.sourceKey })
+    .select({
+      id: voiceBannedWords.id,
+      sourceKey: voiceBannedWords.sourceKey,
+      severity: voiceBannedWords.severity,
+    })
     .from(voiceBannedWords)
     .where(isNotNull(voiceBannedWords.sourceKey));
 
-  const wanted = new Set(words);
-  const have = new Set(existing.map((r) => r.sourceKey!));
+  const have = new Map(existing.map((r) => [r.sourceKey!, r]));
 
-  const toAdd = words.filter((w) => !have.has(w));
-  const toRemove = existing.filter((r) => !wanted.has(r.sourceKey!)).map((r) => r.id);
+  const toAdd = [...wantedSeverity.keys()].filter((w) => !have.has(w));
+  const toRemove = existing.filter((r) => !wantedSeverity.has(r.sourceKey!)).map((r) => r.id);
+  const toRetier = existing.filter(
+    (r) => wantedSeverity.has(r.sourceKey!) && r.severity !== wantedSeverity.get(r.sourceKey!)
+  );
 
   if (toAdd.length > 0) {
-    await db.insert(voiceBannedWords).values(toAdd.map((word) => ({ word, sourceKey: word })));
+    await db.insert(voiceBannedWords).values(
+      toAdd.map((word) => ({ word, sourceKey: word, severity: wantedSeverity.get(word)! }))
+    );
   }
   if (toRemove.length > 0) {
     await db.delete(voiceBannedWords).where(inArray(voiceBannedWords.id, toRemove));
+  }
+  for (const row of toRetier) {
+    await db
+      .update(voiceBannedWords)
+      .set({ severity: wantedSeverity.get(row.sourceKey!)! })
+      .where(eq(voiceBannedWords.id, row.id));
   }
 }
