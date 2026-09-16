@@ -136,3 +136,77 @@ describe("scope check", () => {
     await expect(client.assertReportsAccess()).resolves.toContain("read_reports");
   });
 });
+
+/**
+ * ShopifyQL has its own cost budget, separate from the Admin API's. A 37-month
+ * backfill exhausts it: the first real run stopped at 2026-05 with
+ * "Rate limited. Please retry later." after 49,538 rows.
+ *
+ * Retrying is the seam's job, as it is in seal-api.ts. What matters is that
+ * only a rate limit is retried — retrying a parse error would loop on a query
+ * that will never succeed.
+ */
+describe("rate limiting", () => {
+  const limited = () => gql({ errors: [{ message: "Rate limited. Please retry later." }] });
+
+  it("retries a rate limit and returns the eventual result", async () => {
+    fetchMock
+      .mockResolvedValueOnce(limited())
+      .mockResolvedValueOnce(table(["sessions"], [{ sessions: "5" }]));
+    const client = createShopifyAnalyticsClient({
+      storeDomain: "x.myshopify.com", accessToken: "t",
+      fetchFn: fetchMock as unknown as typeof fetch,
+      sleepFn: async () => {},
+    });
+    await expect(client.query("q")).resolves.toEqual([{ sessions: 5 }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after a bounded number of attempts rather than looping", async () => {
+    fetchMock.mockResolvedValue(limited());
+    const client = createShopifyAnalyticsClient({
+      storeDomain: "x.myshopify.com", accessToken: "t",
+      fetchFn: fetchMock as unknown as typeof fetch,
+      sleepFn: async () => {}, maxRetries: 3,
+    });
+    await expect(client.query("q")).rejects.toThrow(/Rate limited/);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("waits longer after each attempt", async () => {
+    const waits: number[] = [];
+    fetchMock.mockResolvedValue(limited());
+    const client = createShopifyAnalyticsClient({
+      storeDomain: "x.myshopify.com", accessToken: "t",
+      fetchFn: fetchMock as unknown as typeof fetch,
+      sleepFn: async (ms: number) => { waits.push(ms); }, maxRetries: 3,
+    });
+    await client.query("q").catch(() => {});
+    expect(waits).toHaveLength(3);
+    expect(waits[1]).toBeGreaterThan(waits[0]);
+    expect(waits[2]).toBeGreaterThan(waits[1]);
+  });
+
+  // Retrying a query that can never succeed would loop until the cap for no reason.
+  it("does not retry a parse error", async () => {
+    fetchMock.mockResolvedValue(
+      gql({ data: { shopifyqlQuery: { tableData: null, parseErrors: ["Column Not Found"] } } })
+    );
+    const client = createShopifyAnalyticsClient({
+      storeDomain: "x.myshopify.com", accessToken: "t",
+      fetchFn: fetchMock as unknown as typeof fetch, sleepFn: async () => {},
+    });
+    await expect(client.query("q")).rejects.toThrow(/Column Not Found/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry an access denial", async () => {
+    fetchMock.mockResolvedValue(gql({ errors: [{ message: "Access denied for shopifyqlQuery field" }] }));
+    const client = createShopifyAnalyticsClient({
+      storeDomain: "x.myshopify.com", accessToken: "t",
+      fetchFn: fetchMock as unknown as typeof fetch, sleepFn: async () => {},
+    });
+    await expect(client.query("q")).rejects.toThrow(/Access denied/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

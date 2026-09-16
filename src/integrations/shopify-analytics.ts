@@ -29,6 +29,21 @@
 
 const API_VERSION = "2025-01";
 
+/**
+ * ShopifyQL carries its own cost budget, separate from the Admin API's, and a
+ * 37-month backfill exhausts it: the first real run stopped mid-2026-05 after
+ * 49,538 rows with "Rate limited. Please retry later."
+ *
+ * Only a rate limit is retried. Retrying a parse error or an access denial
+ * would loop on a query that can never succeed.
+ */
+const DEFAULT_MAX_RETRIES = 5;
+const INITIAL_RETRY_DELAY_MS = 20_000;
+
+function isRateLimit(message: string): boolean {
+  return /rate limit|throttl/i.test(message);
+}
+
 export interface ShopifyAnalyticsRow {
   [column: string]: string | number;
 }
@@ -44,6 +59,9 @@ export interface ShopifyAnalyticsConfig {
   storeDomain: string;
   accessToken: string;
   fetchFn?: typeof fetch;
+  /** Injected so retry tests do not actually wait. */
+  sleepFn?: (ms: number) => Promise<void>;
+  maxRetries?: number;
 }
 
 /**
@@ -64,9 +82,11 @@ export function createShopifyAnalyticsClient(
   config: ShopifyAnalyticsConfig
 ): ShopifyAnalyticsClient {
   const doFetch = config.fetchFn ?? fetch;
+  const sleep = config.sleepFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
   const endpoint = `https://${config.storeDomain}/admin/api/${API_VERSION}/graphql.json`;
 
-  async function graphql(query: string): Promise<Record<string, unknown>> {
+  async function attempt(query: string): Promise<Record<string, unknown>> {
     const res = await doFetch(endpoint, {
       method: "POST",
       headers: {
@@ -88,6 +108,25 @@ export function createShopifyAnalyticsClient(
       throw new Error(`Shopify GraphQL error: ${body.errors.map((e) => e.message).join("; ")}`);
     }
     return body.data ?? {};
+  }
+
+  async function graphql(query: string): Promise<Record<string, unknown>> {
+    let lastError: unknown;
+
+    for (let tries = 0; tries <= maxRetries; tries++) {
+      try {
+        return await attempt(query);
+      } catch (err) {
+        lastError = err;
+        const message = err instanceof Error ? err.message : String(err);
+        // Anything else is a query that will never succeed; retrying it would
+        // burn the budget and delay the real failure.
+        if (!isRateLimit(message) || tries === maxRetries) throw err;
+        await sleep(INITIAL_RETRY_DELAY_MS * Math.pow(2, tries));
+      }
+    }
+
+    throw lastError;
   }
 
   return {

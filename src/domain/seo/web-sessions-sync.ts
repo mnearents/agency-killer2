@@ -187,13 +187,39 @@ export async function syncWebSessions(
   return { ok: true, window, rows, byDimension, skipped, error: null, problem };
 }
 
-/** The most recent day held for a source, or null when there is none. */
+/**
+ * The resume point, given each dimension's high-water mark.
+ *
+ * The OLDEST of them, not the newest, and null when any dimension has none.
+ *
+ * Production found the reason. A rate limit stopped the backfill mid-month:
+ * `total` and `referrer_source` were complete through 2026-05-31 while
+ * `referrer_name` and `landing_page` had only reached 2026-04-30. Resuming
+ * from the newest mark would have restarted after the gap and left two
+ * dimensions three weeks short — permanently, while every later run reported
+ * success over it.
+ *
+ * A dimension with no rows at all is the furthest behind, not up to date.
+ */
+export function resumeFrom(latestByDimension: Record<string, string>): string | null {
+  const marks: string[] = [];
+  for (const dim of WEB_SESSION_DIMENSIONS) {
+    const mark = latestByDimension[dim.name];
+    if (!mark) return null;
+    marks.push(mark);
+  }
+  return marks.length === 0 ? null : marks.sort()[0];
+}
+
+/** Each dimension's most recent day, so a partial chunk is re-read in full. */
 export async function getLatestSessionDate(db: Db, source = WEB_SESSIONS_SOURCE): Promise<string | null> {
-  const [row] = (await db
-    .select({ latest: sql<string | null>`MAX(${webSessions.date})` })
+  const rows = (await db
+    .select({ dimension: webSessions.dimension, latest: sql<string>`MAX(${webSessions.date})` })
     .from(webSessions)
-    .where(sql`${webSessions.source} = ${source}`)) as Array<{ latest: string | null }>;
-  return row?.latest ?? null;
+    .where(sql`${webSessions.source} = ${source}`)
+    .groupBy(webSessions.dimension)) as Array<{ dimension: string; latest: string }>;
+
+  return resumeFrom(Object.fromEntries(rows.map((r) => [r.dimension, r.latest])));
 }
 
 /** Shopify's sessions history begins here; verified against the live store. */

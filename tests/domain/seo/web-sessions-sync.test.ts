@@ -19,6 +19,7 @@ import {
   syncWebSessions,
   monthChunks,
   WEB_SESSION_DIMENSIONS,
+  resumeFrom,
 } from "@/domain/seo/web-sessions-sync";
 import type { ShopifyAnalyticsClient } from "@/integrations/shopify-analytics";
 
@@ -196,5 +197,45 @@ describe("worker wiring", () => {
     const handler = worker.match(/"sync:sessions":[\s\S]{0,1400}/);
     expect(handler![0]).toMatch(/console\.error/);
     expect(handler![0]).toMatch(/result\.problem|result\.error/);
+  });
+});
+
+/**
+ * Resuming after a partial failure.
+ *
+ * Production found this. A rate limit stopped the backfill mid-month, leaving
+ * `total` and `referrer_source` complete through 2026-05-31 while
+ * `referrer_name` and `landing_page` only reached 2026-04-30.
+ *
+ * Resuming from `MAX(date)` across all rows would have restarted at the later
+ * of those and left two dimensions with a three-week hole — permanently, while
+ * every subsequent run reported success over it. That is the exact shape this
+ * codebase keeps producing.
+ *
+ * So the resume point is the OLDEST of the per-dimension high-water marks: a
+ * chunk that only partly landed is re-read in full.
+ */
+describe("resumeFrom", () => {
+  it("takes the oldest dimension's high-water mark, not the newest", () => {
+    expect(
+      resumeFrom({ total: "2026-05-31", referrer_source: "2026-05-31", referrer_name: "2026-04-30", landing_page: "2026-04-30" })
+    ).toBe("2026-04-30");
+  });
+
+  it("is null when nothing has been stored at all", () => {
+    expect(resumeFrom({})).toBeNull();
+  });
+
+  /**
+   * A dimension with no rows at all is not "up to date" — it is the furthest
+   * behind. Ignoring it would skip straight past everything it is missing.
+   */
+  it("treats a dimension that has never been written as the furthest behind", () => {
+    expect(resumeFrom({ total: "2026-05-31", referrer_source: "2026-05-31" })).toBeNull();
+  });
+
+  it("returns the common mark when every dimension agrees", () => {
+    const all = Object.fromEntries(WEB_SESSION_DIMENSIONS.map((d) => [d.name, "2026-09-10"]));
+    expect(resumeFrom(all)).toBe("2026-09-10");
   });
 });
