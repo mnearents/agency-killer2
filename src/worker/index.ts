@@ -33,6 +33,12 @@ import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
 import { createSearchConsoleClient } from "@/integrations/search-console";
 import { syncSearchConsole, plannedGscDays, getLatestGscDate } from "@/domain/seo/gsc-sync";
+import { createShopifyAnalyticsClient } from "@/integrations/shopify-analytics";
+import {
+  syncWebSessions,
+  plannedSessionsStart,
+  getLatestSessionDate,
+} from "@/domain/seo/web-sessions-sync";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
@@ -276,6 +282,45 @@ async function main() {
       );
       if (result.errors.length > 0) {
         console.error("[sync:meta] Errors:", result.errors);
+      }
+    },
+
+    "sync:sessions": async () => {
+      if (!shopifyClient) {
+        console.error(
+          "[sync:sessions] NOT CONFIGURED — SHOPIFY_ACCESS_TOKEN is not set. " +
+            "No session data is being collected, which is the one feed that answers whether anyone arrived."
+        );
+        return;
+      }
+
+      const analytics = createShopifyAnalyticsClient({
+        storeDomain: getEnv("SHOPIFY_STORE_DOMAIN"),
+        accessToken: getEnv("SHOPIFY_ACCESS_TOKEN"),
+      });
+
+      const now = new Date();
+      const latest = await getLatestSessionDate(db);
+      const startDate = plannedSessionsStart(latest, now);
+
+      const result = await syncWebSessions({ client: analytics, db, now, startDate });
+
+      if (!result.ok) {
+        console.error(
+          `[sync:sessions] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
+        );
+        return;
+      }
+
+      console.log(
+        `[sync:sessions] ${result.window.startDate}..${result.window.endDate} ` +
+          `(previously held through ${latest ?? "nothing"}): ${result.rows} rows — ` +
+          Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
+          (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
+      );
+
+      if (result.problem) {
+        console.error(`[sync:sessions] PROBLEM — ${result.problem}`);
       }
     },
 

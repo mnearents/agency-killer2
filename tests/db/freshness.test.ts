@@ -202,3 +202,11 @@ describe("search console freshness", () => {
     expect(source?.staleAfterHours).toBeGreaterThan(0);
   });
 });
+
+describe("web sessions freshness", () => {
+  it("is registered as a synced source", () => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === "web_sessions");
+    expect(source?.basis).toBe("synced");
+    expect(source?.staleAfterHours).toBeGreaterThan(0);
+  });
+});

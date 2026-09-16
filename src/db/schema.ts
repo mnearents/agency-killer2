@@ -1274,6 +1274,51 @@ export type GscDailyRow = typeof gscDaily.$inferSelect;
 export type NewGscDailyRow = typeof gscDaily.$inferInsert;
 
 /**
+ * Web sessions — "did anyone arrive", which no other feed answers.
+ *
+ * ## Why `source` is part of the key
+ *
+ * Shopify Analytics and GA4 disagree, and not slightly. Over the same 28 days:
+ * Shopify reports 7,469 sessions with 70% direct; GA4 reports 4,614 with 42%
+ * direct. Different session definitions, different consent handling, different
+ * channel logic — the cause is not settled.
+ *
+ * Blending them would produce a number nobody can defend and would hide the
+ * disagreement. Keeping `source` in the primary key means both are stored,
+ * both are queryable, and the gap stays visible until someone explains it.
+ *
+ * Shopify is the historical source: 37 months back to September 2023, where
+ * GA4's property was only created 2026-08-24 and cannot answer a
+ * year-over-year question at all.
+ */
+export const webSessions = pgTable(
+  "web_sessions",
+  {
+    date: date("date", { mode: "string" }).notNull(),
+    /** shopify | ga4 — never blended, see above. */
+    source: text("source").notNull(),
+    /** total | referrer_source | referrer_name | landing_page */
+    dimension: text("dimension").notNull(),
+    /** The channel, referrer or path. Empty string for `total`. */
+    value: text("value").notNull(),
+
+    sessions: integer("sessions").notNull(),
+    /** A rate as reported, not a percentage. Null where the source omits it. */
+    conversionRate: real("conversion_rate"),
+
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("web_sessions_unique").on(table.date, table.source, table.dimension, table.value),
+    index("web_sessions_date_idx").on(table.date),
+    index("web_sessions_dimension_idx").on(table.source, table.dimension),
+  ]
+);
+
+export type WebSessionRow = typeof webSessions.$inferSelect;
+export type NewWebSessionRow = typeof webSessions.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

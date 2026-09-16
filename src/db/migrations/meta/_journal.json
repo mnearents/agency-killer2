@@ -183,6 +183,13 @@
       "when": 1789512130622,
       "tag": "0025_gsc_daily",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789530754984,
+      "tag": "0026_web_sessions",
+      "breakpoints": true
     }
   ]
 }
