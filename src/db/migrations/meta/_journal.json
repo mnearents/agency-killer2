@@ -218,6 +218,13 @@
       "when": 1789576703204,
       "tag": "0030_unit_cost",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1789596666195,
+      "tag": "0031_rate_settings",
+      "breakpoints": true
     }
   ]
 }
