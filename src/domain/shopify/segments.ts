@@ -291,28 +291,62 @@ export const SEED_SEGMENTS: NewSegment[] = [
   },
   {
     id: "high_value",
-    name: "High value (top decile)",
-    definition:
-      "(COALESCE(c.subscription_revenue_cents, 0) + COALESCE(c.one_off_revenue_cents, 0)) >= " +
-      "(SELECT percentile_cont(0.9) WITHIN GROUP (ORDER BY " +
-      "COALESCE(subscription_revenue_cents, 0) + COALESCE(one_off_revenue_cents, 0)) " +
-      "FROM analytics.customers)",
+    name: "High value (over $250 lifetime)",
+    definition: "c.shopify_total_spent_cents >= 25000",
     notes:
-      "Top decile by combined lifetime revenue. The threshold is recomputed on " +
-      "every evaluation, so membership moves as the base moves — this is a rank, " +
-      "not a spend level, and two evaluations are not comparable as counts.",
+      "Spent $250 or more with us, ever. About 3,726 customers, against 41,937 " +
+      "who have bought at all. " +
+      "A level, not a rank: it means the same thing every time it is evaluated, " +
+      "so two counts are comparable and growth in the segment is real growth. " +
+      "A percentile would always return about a tenth of the base by construction " +
+      "and could never tell you that. " +
+      "Ranks on shopify_total_spent_cents, which is Shopify's own lifetime total. " +
+      "NOT subscription_revenue_cents + one_off_revenue_cents: those are derived " +
+      "from shopify_orders, which begins 2025-07-22, so they cover fourteen months " +
+      "of a three-year history — $512k against a real $3.7m, and a top customer of " +
+      "$463 against a real $6,885. This segment previously ranked on them AND took " +
+      "a percentile across all 99,292 customer rows, 91% of which have never " +
+      "bought; the 90th percentile was therefore $0 and the segment matched " +
+      "everybody. See #76.",
   },
 ];
 
 /**
- * Insert the seed definitions, leaving any that already exist alone.
+ * Insert the seed definitions, refreshing any that already exist.
  *
- * A definition someone has edited is the one they meant. Overwriting on every
- * deploy would revert an argued-over predicate to the shipped guess without
- * anyone seeing it happen, which defeats the point of storing the definition.
+ * This used to leave existing rows alone, on the reasoning that "a definition
+ * someone has edited is the one they meant". **Nothing can edit one.** The only
+ * writes to this table anywhere are `member_count`, `last_evaluated_at` and
+ * `last_evaluation_error`; `definition` has exactly one author, which is the
+ * array above.
+ *
+ * So the protection guarded nothing and cost everything. Correcting
+ * `high_value` in code left the database evaluating the old predicate forever:
+ * the evaluator reported 99,292 from the stored row while `segment_push_dry_run`
+ * computed 3,552 from `SEED_SEGMENTS` — one segment, two answers, and the
+ * pushable one quietly right while the reported one stayed wrong (#76).
+ *
+ * Evaluation results are deliberately NOT in the update set. Overwriting them
+ * would make every deploy look like the evaluator had never run.
+ *
+ * If a segment ever becomes editable in-app, this needs the `source_key`
+ * treatment the voice corpus uses: seed-owned rows refresh, hand-authored rows
+ * are left alone. Until such a path exists, that would be machinery for a case
+ * that cannot occur.
  */
 export async function seedSegments(db: Db): Promise<number> {
-  await db.insert(segments).values(SEED_SEGMENTS).onConflictDoNothing();
+  await db
+    .insert(segments)
+    .values(SEED_SEGMENTS)
+    .onConflictDoUpdate({
+      target: segments.id,
+      set: {
+        name: sql`excluded.name`,
+        definition: sql`excluded.definition`,
+        notes: sql`excluded.notes`,
+        updatedAt: sql`now()`,
+      },
+    });
   return SEED_SEGMENTS.length;
 }
 

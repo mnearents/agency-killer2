@@ -152,12 +152,17 @@ describe("seedSegments", () => {
     expect(inserted).toBe(SEED_SEGMENTS.length);
   });
 
-  // A definition someone edited is the one they want. Overwriting it on every
-  // deploy would silently revert an argued-over predicate to the shipped guess.
-  it("does not overwrite a definition that already exists", async () => {
+  /**
+   * This used to assert the opposite — that an existing definition is left
+   * alone, protecting "a definition someone edited". Nothing can edit one, so
+   * it protected nothing and prevented `high_value` from ever being corrected
+   * in the database (#76). See "seedSegments keeps stored definitions in step
+   * with the code" below for what replaced it.
+   */
+  it("refreshes an existing definition rather than leaving it stale", async () => {
     const db = createSeedDb();
     await seedSegments(db);
-    expect(db._conflictActions).toEqual(["nothing"]);
+    expect(db._conflictActions).toEqual(["update"]);
   });
 });
 
@@ -429,6 +434,10 @@ describe("prepareAndEvaluateSegments", () => {
             calls.push("seed");
             return Promise.resolve();
           },
+          onConflictDoUpdate: () => {
+            calls.push("seed");
+            return Promise.resolve();
+          },
         }),
       }),
       select: () => ({
@@ -539,5 +548,140 @@ describe("worker segment wiring", () => {
     expect(block).not.toBeNull();
     expect(block![0]).toMatch(/\.problem/);
     expect(block![0]).toMatch(/console\.error/);
+  });
+});
+
+/**
+ * ─── Lifetime spend is a different column (#76) ───────────────────────
+ *
+ * `high_value` ranked on `subscription_revenue_cents + one_off_revenue_cents`,
+ * which the customer rollup derives from `shopify_orders` — and that table
+ * begins 2025-07-22. So it ranked fourteen months of a three-year history.
+ *
+ * The consequences, measured against production:
+ *
+ *   buyers with a figure      8,483  vs  41,937 in shopify_total_spent_cents
+ *   total revenue          $512,551  vs  $3,699,920
+ *   largest customer           $463  vs  $6,885
+ *
+ * On top of that the percentile was computed over all 99,292 rows, 91% of
+ * which have never bought — so the 90th percentile was £0 and the segment
+ * matched every customer in the database. It was a valid `segmentId` for
+ * `segment_push`, which made it a loaded gun next to a live send channel.
+ *
+ * Shopify's own lifetime total was synced and sitting unused the whole time.
+ */
+describe("high_value ranks on real lifetime spend", () => {
+  const highValue = SEED_SEGMENTS.find((s) => s.id === "high_value")!;
+
+  it("uses Shopify's lifetime total, not the order-window rollup", () => {
+    expect(highValue.definition).toContain("shopify_total_spent_cents");
+    expect(highValue.definition).not.toContain("subscription_revenue_cents");
+    expect(highValue.definition).not.toContain("one_off_revenue_cents");
+  });
+
+  /**
+   * A level, not a rank. Matt's call: "3,726 customers over $250, up from
+   * 3,400" is a fact you can act on; "4,195 customers, being 10%" is 10% every
+   * year by construction and says nothing.
+   */
+  it("is a fixed spending level rather than a percentile", () => {
+    expect(highValue.definition).toContain("25000");
+    expect(highValue.definition).not.toMatch(/percentile_cont/);
+  });
+
+  // The old name promised a decile and delivered the whole database.
+  it("does not describe itself as a decile", () => {
+    expect(highValue.name.toLowerCase()).not.toContain("decile");
+  });
+
+  it("says what the threshold is, so the number is arguable rather than magic", () => {
+    expect(highValue.notes).toMatch(/250/);
+  });
+
+  /**
+   * The guard for the rest of the sweep. The derived revenue columns are the
+   * right ones for the subscription/one-off split — that is what they exist
+   * for — but they are not lifetime totals, and a segment is exactly where
+   * that gets forgotten.
+   */
+  it("uses no order-window revenue column in any segment definition", () => {
+    for (const s of SEED_SEGMENTS) {
+      expect(s.definition, `${s.id} ranks on a column that only covers orders since 2025-07-22`)
+        .not.toMatch(/subscription_revenue_cents|one_off_revenue_cents/);
+    }
+  });
+});
+
+/**
+ * ─── The seed has to be able to correct itself ────────────────────────
+ *
+ * `seedSegments` used `onConflictDoNothing`, justified as "a definition someone
+ * has edited is the one they meant". Nothing can edit one. The only writes to
+ * this table anywhere are `member_count`, `last_evaluated_at` and
+ * `last_evaluation_error` — the definition column has exactly one author, this
+ * file.
+ *
+ * So the protection guarded nothing and cost everything: fixing `high_value`
+ * in code left the database evaluating the old definition forever. The
+ * evaluator read 99,292 from the stored row while `segment_push_dry_run` read
+ * 3,552 from `SEED_SEGMENTS` — the same segment, two answers, and the pushable
+ * one silently correct while the reported one stayed wrong.
+ *
+ * A docstring claiming a capability that does not exist is the thing CLAUDE.md
+ * warns about; this is what it costs.
+ */
+describe("seedSegments keeps stored definitions in step with the code", () => {
+  function createSeedDb() {
+    const conflictActions: string[] = [];
+    const updated: unknown[] = [];
+    const db = {
+      _conflictActions: conflictActions,
+      _updated: updated,
+      insert: () => ({
+        values: () => ({
+          onConflictDoNothing: () => {
+            conflictActions.push("nothing");
+            return Promise.resolve();
+          },
+          onConflictDoUpdate: (arg: unknown) => {
+            conflictActions.push("update");
+            updated.push(arg);
+            return Promise.resolve();
+          },
+        }),
+      }),
+    };
+    return db as unknown as Db & { _conflictActions: string[]; _updated: unknown[] };
+  }
+
+  it("updates an existing row rather than leaving it stale", async () => {
+    const db = createSeedDb();
+    await seedSegments(db);
+    expect(db._conflictActions).toEqual(["update"]);
+  });
+
+  // Inspecting the keys rather than serialising: drizzle column objects hold a
+  // circular table reference and JSON.stringify throws on them.
+  const updatedFields = (db: { _updated: unknown[] }) =>
+    Object.keys((db._updated[0] as { set: Record<string, unknown> }).set);
+
+  it("refreshes the definition, which is the field that was going stale", async () => {
+    const db = createSeedDb();
+    await seedSegments(db);
+    expect(updatedFields(db)).toContain("definition");
+  });
+
+  /**
+   * Evaluation results are NOT part of the seed, so re-seeding must not wipe
+   * them — that would make every deploy look like the evaluator had never run.
+   */
+  it("does not overwrite evaluation results", async () => {
+    const db = createSeedDb();
+    await seedSegments(db);
+    const fields = updatedFields(db);
+    expect(fields).not.toContain("memberCount");
+    expect(fields).not.toContain("lastEvaluatedAt");
+    expect(fields).not.toContain("lastEvaluationError");
   });
 });
