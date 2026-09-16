@@ -170,6 +170,9 @@ export async function POST(request: Request) {
       // enforced list cannot tell a clean check from one that did nothing.
       rulesEnforced: check.enforced,
       rulesUnenforced: check.unenforced.length > 0 ? check.unenforced : undefined,
+      // Preferences, not failures. Never folded into `violations`, because a
+      // caller that treats them the same discards good copy over a word.
+      advisories: check.advisories.length > 0 ? check.advisories.map((a) => a.detail) : undefined,
       violations: violations.length > 0 ? violations : undefined,
       warning: violations.length > 0
         ? `Generated text failed the voice check for ${channel}: ${violations.join("; ")}`

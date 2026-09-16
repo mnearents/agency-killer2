@@ -40,7 +40,24 @@ export interface WritingSample {
 export interface VoiceProfile {
   samples: WritingSample[];
   rules: string[];
+  /**
+   * Words that must not appear. A hard block — copy containing one is not
+   * saved and not proposed.
+   *
+   * Deliberately empty in practice. The one genuinely unpublishable category,
+   * vulgarity, is a *rule* with its own regex; every word Tara listed is a
+   * style preference and lives in `discouragedWords` instead. See #60.
+   */
   bannedWords: string[];
+  /**
+   * Words to avoid where there is a better option. Flagged, never blocking.
+   *
+   * "Delight shouldn't be a hard ban, I just would rather not use that word.
+   * But it shouldn't cause an entire response to fail." Treating a preference
+   * as a prohibition is how a guardrail that blocks correct copy gets turned
+   * off — and this one was one word away from doing that.
+   */
+  discouragedWords?: string[];
   promptTemplate?: string;
 }
 
@@ -101,7 +118,11 @@ const DEFAULT_TEMPLATE = `You are a voice and tone generator for the Rad & Happy
 
 ## Banned Words — NEVER use these words or phrases
 
-{{BANNED_WORDS}}`;
+{{BANNED_WORDS}}
+
+## Words to avoid — prefer an alternative, but not a hard rule
+
+{{DISCOURAGED_WORDS}}`;
 
 function assertAudience(audience: unknown): asserts audience is RuleAudience {
   if (!isRuleAudience(audience)) {
@@ -199,10 +220,17 @@ export function assembleVoicePrompt(
       ? profile.bannedWords.join(", ")
       : "None specified.";
 
+  const discouraged = profile.discouragedWords ?? [];
+  const discouragedBlock =
+    discouraged.length > 0
+      ? discouraged.join(", ")
+      : "None specified.";
+
   const systemPrompt = template
     .replace("{{SAMPLES}}", samplesBlock)
     .replace("{{RULES}}", rulesBlock)
-    .replace("{{BANNED_WORDS}}", bannedBlock);
+    .replace("{{BANNED_WORDS}}", bannedBlock)
+    .replace("{{DISCOURAGED_WORDS}}", discouragedBlock);
 
   const guardrailOptions: GuardrailOptions = {
     bannedWords: profile.bannedWords,

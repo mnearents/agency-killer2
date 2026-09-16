@@ -39,6 +39,7 @@ interface SeedData {
   }>;
   rules: string[];
   bannedWords: string[];
+  discouragedWords?: string[];
   promptTemplate?: string;
 }
 
@@ -63,7 +64,8 @@ function loadSeedFile(): VoiceProfile {
     return {
       samples: [],
       rules: [],
-      bannedWords: ["synergy", "delve", "leverage"],
+      bannedWords: [],
+      discouragedWords: ["synergy", "delve", "leverage"],
     };
   }
 
@@ -77,7 +79,8 @@ function loadSeedFile(): VoiceProfile {
       tags: s.tags,
     })),
     rules: seed.rules,
-    bannedWords: seed.bannedWords,
+    bannedWords: seed.bannedWords ?? [],
+    discouragedWords: seed.discouragedWords ?? [],
     promptTemplate: seed.promptTemplate,
   };
 }
@@ -106,7 +109,8 @@ export async function loadVoiceProfileWithDb(db: Db): Promise<LoadedVoiceProfile
   if (read.status === "loaded") {
     const p = read.profile;
     console.log(
-      `[voice] Loaded from DB: ${p.samples.length} samples, ${p.rules.length} rules, ${p.bannedWords.length} banned words`
+      `[voice] Loaded from DB: ${p.samples.length} samples, ${p.rules.length} rules, ` +
+        `${p.bannedWords.length} banned words, ${(p.discouragedWords ?? []).length} discouraged`
     );
     return { ...p, source: "database" };
   }

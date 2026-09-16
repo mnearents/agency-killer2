@@ -623,7 +623,10 @@ async function readVoiceProfile(ctx: McpToolContext): Promise<VoiceProfile | nul
       tags: (s.tags as string[] | null) ?? [],
     })),
     rules: rules.map((r) => r.rule),
-    bannedWords: bannedWords.map((b) => b.word),
+    // Split by severity, as the DB loader does. Reading every word as a block
+    // here would put the MCP surface back where #60 started.
+    bannedWords: bannedWords.filter((b) => b.severity === "block").map((b) => b.word),
+    discouragedWords: bannedWords.filter((b) => b.severity !== "block").map((b) => b.word),
   };
 }
 
@@ -637,7 +640,8 @@ const brandVoice: McpTool = {
   name: "brand_voice",
   title: "Brand voice rules",
   description:
-    "Tara's voice rules, banned words and writing samples for a given channel, which all marketing copy must respect. " +
+    "Tara's voice rules, word preferences and writing samples for a given channel. " +
+    "bannedWords must never appear — copy containing one is refused. discouragedWords are preferences: worth avoiding where there is a natural alternative, never worth discarding finished copy over. " +
     "Pass the channel you are writing for: rules are scoped, and a rule that is correct on Instagram (\"comments get a link\") is wrong in an inbox. " +
     "Omitting the channel applies every rule, which is the strictest set, not the laxest. " +
     "Each rule says whether anything mechanically enforces it — an unenforced rule is guidance that voice_check will not catch. " +
@@ -670,6 +674,10 @@ const brandVoice: McpTool = {
       // the caller is deciding whether a convention is safe to use here.
       excusedOnThisChannel: profile.rules.filter((r) => !applicableText.has(r)),
       bannedWords: profile.bannedWords,
+      // Separate lists, because they mean different things. A word here will
+      // be flagged, never refused — telling the model both are prohibitions
+      // is what made "delight" unpublishable (#60).
+      discouragedWords: profile.discouragedWords ?? [],
       samples: {
         source: selection.source.kind,
         explanation: describeSampleSelection(selection),
@@ -701,6 +709,7 @@ const voiceCheckTool: McpTool = {
     "Checks a piece of copy against Tara's voice rules and banned words for a channel, and returns the violations. " +
     "Run anything you wrote through this before proposing it. Pass the same channel you passed to brand_voice. " +
     "Fails closed: empty text, or a profile with nothing to check, comes back ok:false rather than clean — a check that evaluated nothing has established nothing. " +
+    "`advisories` lists discouraged words that appeared; they never affect `ok`. Reword if it is easy, but do not throw away good copy over one. " +
     "Read `enforced` and `unenforced` alongside `ok`: a clean result over three uncheckable rules is not a clean result over three checked ones.",
   readOnly: true,
   schema: {
@@ -720,6 +729,7 @@ const voiceCheckTool: McpTool = {
       // `unspecified` is not a channel.
       audience: result.channel,
       violations: result.violations,
+      advisories: result.advisories,
       enforced: result.enforced,
       unenforced: result.unenforced,
     };
@@ -1013,6 +1023,10 @@ const draftSave: McpTool = {
       saved: true,
       draftId: draft.id,
       channel: draft.channel,
+      // Words Tara would rather avoid. Present on a SAVED draft deliberately:
+      // they are a preference, not a gate, and discarding finished copy over
+      // one is how a guardrail that blocks correct copy gets turned off (#60).
+      advisories: check.advisories.length > 0 ? check.advisories : undefined,
       // Recorded on the row as well: rules change, and "this passed" means
       // nothing without "passed what".
       rulesChecked: check.enforced,

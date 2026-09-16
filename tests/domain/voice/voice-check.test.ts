@@ -25,6 +25,7 @@ const profile = (over: Partial<VoiceProfile> = {}): VoiceProfile => ({
   samples: [],
   rules: [],
   bannedWords: [],
+  discouragedWords: [],
   ...over,
 });
 
@@ -236,5 +237,89 @@ describe("voiceCheck reports what it could and could not check", () => {
       rules: ["Never use em dashes", "No vulgarity"],
     }));
     expect(r.violations).toHaveLength(2);
+  });
+});
+
+/**
+ * ─── Discouraged words are not banned words (#60) ─────────────────────
+ *
+ * Every entry in the word list was treated as a hard block, so a draft
+ * containing "delight" could not be saved at all. Tara's actual position:
+ * *"Delight shouldn't be a hard ban, I just would rather not use that word.
+ * But it shouldn't cause an entire response to fail."*
+ *
+ * That is a distinction the model did not have. The list conflates two things:
+ *
+ * - **block** — do not publish this. Nothing currently qualifies; the one
+ *   genuinely unpublishable category, vulgarity, is a *rule* with its own
+ *   regex, not a word-list entry.
+ * - **avoid** — a preference. Worth flagging so it can be reworded, never
+ *   worth discarding finished copy over.
+ *
+ * Every existing word is a style preference — synergy, delight, shenanigans,
+ * alrighty, "let's do this", "these babies", brighter — so `avoid` is the
+ * default and `block` has to be asked for.
+ *
+ * Advisories never touch `ok`. A guardrail that blocks correct copy gets
+ * turned off, and this one was one word away from doing that.
+ */
+describe("voiceCheck: discouraged words advise, they do not block", () => {
+  const withWords = (over: { bannedWords?: string[]; discouragedWords?: string[] }) =>
+    profile({ rules: ["Never use em dashes"], bannedWords: [], discouragedWords: [], ...over });
+
+  it("reports a discouraged word without failing the check", () => {
+    const r = voiceCheck("What a delight this is", "email", withWords({ discouragedWords: ["delight"] }));
+    expect(r.ok).toBe(true);
+    expect(r.advisories.map((a) => a.word)).toEqual(["delight"]);
+    expect(r.violations).toEqual([]);
+  });
+
+  it("still blocks a word marked as a hard block", () => {
+    const r = voiceCheck("Pure synergy", "email", withWords({ bannedWords: ["synergy"] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("banned-word");
+  });
+
+  it("keeps the two apart when both appear", () => {
+    const r = voiceCheck(
+      "Pure synergy and what a delight",
+      "email",
+      withWords({ bannedWords: ["synergy"], discouragedWords: ["delight"] })
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toEqual(["banned-word"]);
+    expect(r.advisories.map((a) => a.word)).toEqual(["delight"]);
+  });
+
+  it("matches a discouraged word on a word boundary, like a banned one", () => {
+    const p = withWords({ discouragedWords: ["delight"] });
+    expect(voiceCheck("delightful is a different word", "email", p).advisories).toEqual([]);
+    expect(voiceCheck("What a DELIGHT", "email", p).advisories).toHaveLength(1);
+  });
+
+  it("names the word so the copy can be reworded rather than rewritten", () => {
+    const r = voiceCheck("what a delight", "email", withWords({ discouragedWords: ["delight"] }));
+    expect(r.advisories[0].detail).toMatch(/delight/);
+  });
+
+  it("returns no advisories for clean copy", () => {
+    expect(voiceCheck("Our planners are here", "email", withWords({ discouragedWords: ["delight"] })).advisories)
+      .toEqual([]);
+  });
+
+  /**
+   * A profile carrying only advisories has evaluated something, but nothing
+   * that could ever fail — so it is not a check in the sense `ok: true` implies.
+   */
+  it("still refuses when nothing that could fail was evaluated", () => {
+    const r = voiceCheck("anything", "email", profile({ rules: [], bannedWords: [], discouragedWords: [] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("nothing-checked");
+  });
+
+  it("treats a profile with only discouraged words as having checked nothing blocking", () => {
+    const r = voiceCheck("clean copy", "email", profile({ rules: [], bannedWords: [], discouragedWords: ["delight"] }));
+    expect(r.ok).toBe(false);
+    expect(r.violations.map((v) => v.rule)).toContain("nothing-checked");
   });
 });

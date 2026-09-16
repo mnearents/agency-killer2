@@ -113,7 +113,10 @@ export async function readVoiceProfileFromDb(db: Db): Promise<VoiceProfileRead> 
         tags: (s.tags as string[]) ?? [],
       })),
       rules: rules.map((r) => r.rule),
-      bannedWords: bannedWords.map((b) => b.word),
+      // Split by severity. A preference that blocks is a guardrail that gets
+      // turned off — see #60 and the `severity` column's comment.
+      bannedWords: bannedWords.filter((b) => b.severity === "block").map((b) => b.word),
+      discouragedWords: bannedWords.filter((b) => b.severity !== "block").map((b) => b.word),
     },
   };
 }
@@ -139,7 +142,12 @@ export async function seedVoiceProfileToDb(db: Db, profile: VoiceProfile): Promi
   }
 
   for (const word of profile.bannedWords) {
-    await db.insert(voiceBannedWords).values({ word });
+    await db.insert(voiceBannedWords).values({ word, severity: "block" });
+    count++;
+  }
+
+  for (const word of profile.discouragedWords ?? []) {
+    await db.insert(voiceBannedWords).values({ word, severity: "avoid" });
     count++;
   }
 

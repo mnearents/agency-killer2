@@ -13,6 +13,7 @@ const CLEAN: VoiceCheckResult = {
   ok: true,
   channel: "unspecified",
   violations: [],
+  advisories: [],
   enforced: ["Never use em dashes"],
   unenforced: [],
 };
@@ -130,6 +131,7 @@ describe("formatOrchestratorResult: voice violations are visible, not logged", (
     ok: true,
     channel: "email",
     violations: [],
+    advisories: [],
     enforced: ["Never use em dashes"],
     unenforced: [],
     ...over,
@@ -262,6 +264,7 @@ describe("formatVoiceNote: the note obeys the rules it is reporting", () => {
         { rule: "Never use em dashes", detail: "d1" },
         { rule: "No vulgarity", detail: "d2" },
       ],
+      advisories: [],
       enforced: [],
       unenforced: [],
     });
@@ -270,7 +273,7 @@ describe("formatVoiceNote: the note obeys the rules it is reporting", () => {
 
   it("returns nothing at all for a clean verdict, so nothing is appended", () => {
     expect(
-      formatVoiceNote({ ok: true, channel: "email", violations: [], enforced: ["r"], unenforced: [] })
+      formatVoiceNote({ ok: true, channel: "email", violations: [], advisories: [], enforced: ["r"], unenforced: [] })
     ).toBe("");
   });
 });
