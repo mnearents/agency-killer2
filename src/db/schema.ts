@@ -1347,6 +1347,45 @@ export type WebSessionRow = typeof webSessions.$inferSelect;
 export type NewWebSessionRow = typeof webSessions.$inferInsert;
 
 /**
+ * Effective-dated constants for the unit economics engine (#34).
+ *
+ * Dated rather than overwritten because a margin computed for March has to use
+ * March's rates. Editing in place would silently restate history — the same
+ * reason `recurring_costs` closes a row and opens a new one rather than
+ * updating.
+ *
+ * Payment processing is modelled per transaction as `(amount x pct) + fixed`,
+ * never as a flat percentage. The fixed fee dominates at low price points and
+ * this business bills ~50,000 subscription orders averaging $6.56, so the
+ * fixed half is larger than the percentage half on a product with otherwise
+ * no COGS.
+ */
+export const rateSettings = pgTable(
+  "rate_settings",
+  {
+    id: text("id").primaryKey(),
+    /** payment_pct | payment_fixed_cents | free_shipping_threshold_cents */
+    name: text("name").notNull(),
+    /**
+     * Stored as text so a rate (0.027) and a cent amount (30) share a column
+     * without one being coerced into the other's units. The reader parses it
+     * knowing which it asked for.
+     */
+    value: text("value").notNull(),
+    effectiveFrom: date("effective_from", { mode: "string" }).notNull(),
+    /** Null while current. Closing a row is how a rate changes. */
+    effectiveTo: date("effective_to", { mode: "string" }),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("rate_settings_name_idx").on(table.name, table.effectiveFrom),
+  ]
+);
+
+export type RateSettingRow = typeof rateSettings.$inferSelect;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

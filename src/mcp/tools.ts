@@ -98,6 +98,12 @@ import {
 } from "@/domain/segments/queries";
 import { SEED_SEGMENTS } from "@/domain/shopify/segments";
 import { isAgentAttribution } from "@/domain/drafts/drafts";
+import { computeUnitEconomics } from "@/domain/economics/unit-economics";
+import {
+  getRateSettings,
+  getOrdersForEconomics,
+  BUSINESS_LINES,
+} from "@/domain/economics/queries";
 import {
   getDrafts,
   getDraftDecisions,
@@ -1437,6 +1443,89 @@ const segmentPushHistory: McpTool = {
   },
 };
 
+// ─── Unit economics ───────────────────────────────────────────────────
+
+const dollarsFrom = (cents: number) => Math.round(cents) / 100;
+
+const unitEconomics: McpTool = {
+  name: "unit_economics",
+  title: "Cost of delivery and contribution margin",
+  description:
+    "Cost of delivery, contribution margin and break-even aMER, split by business line and never blended — a single COD across a subscription at ~8% and physical goods at 50-65% is true of neither. " +
+    "Revenue EXCLUDES tax; payment fees are charged on the full captured amount including it, and are computed per transaction as (amount x pct) + fixed rather than as a flat rate. That distinction matters here: the 30c fixed fee is the larger half on ~50,000 subscription orders averaging $6.56. " +
+    "Read `complete` and `missing` before quoting any figure. Fulfilment costs are not in the database yet, so every COD below is a FLOOR — the real one is higher. " +
+    "`cogsCoveragePct` is the share of revenue whose landed product cost is actually recorded; a COD over uncosted orders is a guess.",
+  readOnly: true,
+  schema: {
+    businessLine: { type: "enum", values: BUSINESS_LINES },
+    days: { type: "integer", min: 1, max: 730, default: 90 },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const end = new Date(now);
+    const start = new Date(now);
+    start.setUTCDate(start.getUTCDate() - (args.days as number));
+    const startDate = start.toISOString().slice(0, 10);
+    const endDate = end.toISOString().slice(0, 10);
+
+    // No default rate. A missing one means the seed did not run, and
+    // substituting 0.027 would produce a margin that looks computed and is
+    // assumed.
+    const rates = await getRateSettings(ctx.db, endDate);
+    if (!rates) {
+      return {
+        error:
+          "No payment rates are in effect for this date, so nothing was computed. " +
+          "rate_settings should hold payment_pct and payment_fixed_cents — see migration 0031.",
+      };
+    }
+
+    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+    const wanted = args.businessLine as string | undefined;
+
+    const lines = byLine
+      .filter((l) => wanted === undefined || l.line === wanted)
+      .map(({ line, orders }) => {
+        const r = computeUnitEconomics(orders, rates);
+        return {
+          businessLine: line,
+          orders: r.orders,
+          revenue: dollarsFrom(r.revenueCents),
+          aov: dollarsFrom(r.aovCents),
+          costOfDelivery: dollarsFrom(r.codCents),
+          codPct: r.codPct === null ? null : Number((100 * r.codPct).toFixed(2)),
+          contributionMargin: dollarsFrom(r.contributionMarginCents),
+          breakEvenAmer: r.breakEvenAmer === null ? null : Number(r.breakEvenAmer.toFixed(3)),
+          components: r.components.map((c) => ({
+            label: c.label,
+            amount: dollarsFrom(c.cents),
+            basis: c.basis,
+          })),
+          // Split because the fixed half is the non-obvious cost in this business.
+          paymentFees: {
+            percentage: dollarsFrom(r.paymentFees.percentageCents),
+            fixed: dollarsFrom(r.paymentFees.fixedCents),
+          },
+          cogsCoveragePct: Number((100 * r.cogsCoveragePct).toFixed(1)),
+          complete: r.complete,
+          missing: r.missing,
+          ...(r.note ? { note: r.note } : {}),
+        };
+      });
+
+    return {
+      window: { startDate, endDate, days: args.days },
+      rates: { paymentPct: rates.paymentPctRate, paymentFixedCents: rates.paymentFixedCents },
+      lines,
+      // Repeated at the top level so a caller reading only the summary still
+      // sees it. A COD missing a whole cost category is not a COD.
+      caveat:
+        "Fulfilment (3PL labels, pick/pack, storage) is not yet in the database. " +
+        "Every cost of delivery here is a floor and every contribution margin a ceiling.",
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1710,6 +1799,7 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPushDryRun,
   segmentPush,
   segmentPushHistory,
+  unitEconomics,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,
