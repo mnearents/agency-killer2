@@ -22,6 +22,16 @@ export interface BlogGenerateResult {
   ok: boolean;
   text: string;
   topicTitle: string | null;
+  /**
+   * Whether an article was actually produced.
+   *
+   * Separate from `ok` because finding no pending topics is not a failure —
+   * `ok: false` would be a lie in the other direction — but it is also not a
+   * run that did anything. The weekly cron logged "Done: no topic" every
+   * Tuesday over an empty queue, which is the same line a real generation
+   * prints. A caller cannot report a status honestly without this.
+   */
+  generated: boolean;
 }
 
 /**
@@ -66,6 +76,7 @@ export async function generateBlogArticle(
         ok: false,
         text: "Failed to fetch blog topics from the database.",
         topicTitle: null,
+        generated: false,
       };
     }
   }
@@ -75,6 +86,7 @@ export async function generateBlogArticle(
       ok: true,
       text: "No pending blog topics. Add one with `!blog create <topic>`.",
       topicTitle: null,
+      generated: false,
     };
   }
 
@@ -124,6 +136,7 @@ export async function generateBlogArticle(
       ok: false,
       text: `Blog article was blocked by guardrails: ${violations}`,
       topicTitle: topic.title,
+      generated: false,
     };
   }
 
@@ -149,5 +162,6 @@ export async function generateBlogArticle(
     ok: true,
     text: result.text,
     topicTitle: topic.title,
+    generated: true,
   };
 }
