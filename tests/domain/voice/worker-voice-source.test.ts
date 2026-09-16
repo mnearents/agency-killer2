@@ -80,7 +80,10 @@ describe("worker voice corpus sync", () => {
   // words` after two failed database calls, because the summary never said where
   // the profile came from. A degraded boot has to be readable as one.
   it("names the profile's source in the line it logs about loading it", () => {
-    const summary = workerSource.match(/console\.log\(\s*[\s\S]{0,200}?Loaded voice profile[\s\S]{0,200}?\)/);
+    // Widened: the line is now a multi-part template that also reports the
+    // blocking/discouraged word split (#60). The assertion is unchanged — the
+    // source must appear in the line that reports the load.
+    const summary = workerSource.match(/console\.log\(\s*[\s\S]{0,300}?Loaded voice profile[\s\S]{0,400}?\);/);
     expect(summary, "no `Loaded voice profile` log line found in the worker").not.toBeNull();
     expect(summary![0]).toMatch(/voiceProfile\.source/);
   });

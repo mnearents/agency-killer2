@@ -215,3 +215,26 @@ describe("claude_readonly is declared the way production has it", () => {
     expect(combined).not.toMatch(/claude_readonly[\s\S]{0,80}PASSWORD\s+'[^']/i);
   });
 });
+
+/**
+ * ─── A documented switch that switches nothing (#38) ──────────────────
+ *
+ * `BLOG_AUTOMATION_ENABLED=false` sat in `.env.example`, was read by no code,
+ * and told anyone who looked that blog automation was off. It ran every
+ * Tuesday. The real switch is `enabled` on the task in the registry.
+ *
+ * This is the mirror image of the usual failure here: not a feature silently
+ * off while looking fine, but a feature silently ON while its documented flag
+ * says off.
+ */
+describe(".env.example documents only variables something reads", () => {
+  const envExample = readFileSync(join(MIGRATIONS_DIR, "../../../.env.example"), "utf8");
+
+  it("no longer declares the dead blog switch", () => {
+    expect(envExample).not.toMatch(/^BLOG_AUTOMATION_ENABLED=/m);
+  });
+
+  it("says where blog automation is actually controlled", () => {
+    expect(envExample).toMatch(/registry\.ts/);
+  });
+});

@@ -224,7 +224,9 @@ async function main() {
   // the corpus had been reached or not, so a worker permanently serving the
   // seed file was indistinguishable from a healthy one — see #54.
   console.log(
-    `[worker] Loaded voice profile from ${voiceProfile.source}: ${voiceProfile.samples.length} samples, ${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} banned words`
+    `[worker] Loaded voice profile from ${voiceProfile.source}: ${voiceProfile.samples.length} samples, ` +
+      `${voiceProfile.rules.length} rules, ${voiceProfile.bannedWords.length} blocking words, ` +
+      `${(voiceProfile.discouragedWords ?? []).length} discouraged`
   );
   /**
    * One prompt per audience, built where the generation happens.
@@ -529,13 +531,25 @@ async function main() {
         getBrandContext: embeddingClient
           ? () => retrieveContext({ db, embeddingClient }, "brand philosophy goals strategy")
           : async () => "",
+        // Hard blocks only, which is now normally none: #60 moved Tara's word
+        // list to `discouragedWords` because a preference must not fail a
+        // response. Blogs deliberately do not use her voice anyway, and
+        // buildBlogGuardrails still applies the AI-writing blocklist. Passing
+        // the preferences here would make them blocking again.
         voiceBannedWords: voiceProfile.bannedWords,
       });
-      console.log(
-        `[blog:create] ${result.ok ? "Done" : "Failed"}: ${result.topicTitle ?? "no topic"}`
-      );
+      // Three outcomes, three lines. "Done: no topic" was printed weekly over
+      // an empty queue for the life of this feature — blog_generations has
+      // never held a row — and it is the same word a real generation prints.
       if (!result.ok) {
-        console.error("[blog:create]", result.text);
+        console.error(`[blog:create] FAILED: ${result.text}`);
+      } else if (!result.generated) {
+        console.log(
+          "[blog:create] Nothing to do — no pending blog topics. This task will keep " +
+            "running weekly and producing nothing until a topic is added with `!blog create <topic>`."
+        );
+      } else {
+        console.log(`[blog:create] Generated: ${result.topicTitle}`);
       }
     },
 
@@ -722,7 +736,12 @@ async function main() {
           getBrandContext: embeddingClient
           ? () => retrieveContext({ db, embeddingClient }, "brand philosophy goals strategy")
           : async () => "",
-          voiceBannedWords: voiceProfile.bannedWords,
+          // Hard blocks only, which is now normally none: #60 moved Tara's word
+        // list to `discouragedWords` because a preference must not fail a
+        // response. Blogs deliberately do not use her voice anyway, and
+        // buildBlogGuardrails still applies the AI-writing blocklist. Passing
+        // the preferences here would make them blocking again.
+        voiceBannedWords: voiceProfile.bannedWords,
         },
         args || undefined
       );
