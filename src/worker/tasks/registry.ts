@@ -60,6 +60,17 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "sessions-sync",
+      name: "Web Sessions Sync (Shopify Analytics)",
+      // The only feed that answers "did anyone arrive". Shopify holds 37
+      // months where GA4's property only exists from 2026-08-24, so this is
+      // the source for any year-over-year question. The first run backfills to
+      // 2023-09-01; later runs re-read a short overlap because Shopify revises
+      // recent days.
+      schedule: { type: "daily", hour: 13, minute: 32 },
+      enabled: true,
+    },
+    {
       id: "gsc-sync",
       name: "Search Console Sync",
       // Search Console lags two to three days, so the hour is arbitrary — what
@@ -125,6 +136,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "customers-sync": "sync:customers",
     "social-sync": "sync:social",
     "gsc-sync": "sync:gsc",
+    "sessions-sync": "sync:sessions",
     "inventory-sync": "sync:inventory",
     "attentive-sync": "sync:attentive",
     "kb-sync": "sync:knowledge-base",

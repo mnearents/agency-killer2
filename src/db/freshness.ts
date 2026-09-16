@@ -22,6 +22,7 @@ import {
   drafts,
   draftDecisions,
   gscDaily,
+  webSessions,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -180,6 +181,7 @@ export const FRESHNESS_SOURCES = [
     // sync stopped — and every day it is stopped costs a day of history that
     // cannot be recovered afterwards.
     { source: "Search Console", table: gscDaily, name: "gsc_daily", column: gscDaily.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
+    { source: "Web sessions", table: webSessions, name: "web_sessions", column: webSessions.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
   ];
 
 export async function getDataFreshness(db: Db, now: Date): Promise<SourceFreshness[]> {
