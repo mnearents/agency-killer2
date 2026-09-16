@@ -18,6 +18,35 @@
 > - The shared-inventory-pool problem described in Prompt B is tracked separately as its
 >   own issue, since it is a live oversell exposure rather than a line-items dependency.
 >
+> **Shipped since this document was committed** (2026-09-16). The body below is still
+> the spec as written; this records what no longer needs building.
+>
+> - **Prompt D, both parts.** Search Console syncs daily with the retained 12 months
+>   backfilled (157,601 rows). Web sessions come from **Shopify Analytics, not GA4** —
+>   the GA4 property was created 2026-08-24 and holds two months, so it cannot express
+>   a year-over-year comparison at all. Shopify holds 37 months (56,004 rows). The two
+>   sources disagree by a wide margin and are stored under separate `source` keys rather
+>   than blended.
+> - **Prompt E part 1, the WRITE half.** Segments are defined in Postgres and pushed to
+>   Attentive behind a mandatory dry run. Attentive has no endpoint that reads segment
+>   membership back, so the diff is computed against our own push history. The READ half
+>   (campaign/journey/message reporting) is still open as #23.
+> - **Prompt F items 2 and 3.** Experiments with pre-declared success criteria that
+>   cannot be edited after the fact, and drafts gated on `voice_check`. Item 4 (calendar
+>   write access) is still open as #28.
+> - **Prompt G, all of it.** Samples tagged by channel, rules split into three layers,
+>   `brand_voice(channel)` and `voice_check` on the MCP surface, and the check wired into
+>   the orchestrator so every generation passes it rather than one in six.
+>
+> Still unbuilt: Prompt E part 1 READ half (#23), Prompt E part 2 / Judge.me (#24),
+> Prompt F item 4 (#28), and the unit economics engine (#34).
+>
+> **One correction to a premise in the body.** Prompt D's justification rests on a 62%
+> year-over-year traffic collapse. That collapse is real — orders fell 57% alongside
+> sessions, so it is not a measurement artifact (#74) — but it is almost entirely a
+> collapse in *new subscriber acquisition*, not in retention. The subscription base fell
+> only 19% over the same period while new signups went from ~300/month to ~20 (#79).
+>
 > Tracked as GitHub issues on `mnearents/agency-killer2`. This document is the spec of
 > record; the issues are the working surface.
 
