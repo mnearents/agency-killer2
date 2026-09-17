@@ -203,3 +203,122 @@ export function computeUnitEconomics(
     complete: missing.length === 0,
   };
 }
+
+/**
+ * ─── Margin by order value ────────────────────────────────────────────
+ *
+ * #34 asks for this to answer one question: does free shipping over $60
+ * subsidise the worst orders? "If margin at $61-70 is worse than at $50-59,
+ * the threshold is subsidising the worst orders and should move to $65 or $70."
+ *
+ * Bands are open at the bottom and closed at the top, so an order at exactly
+ * $60 sits in the $60-70 band — the side of the threshold where shipping
+ * becomes free, which is the behaviour being tested.
+ */
+const BANDS: Array<{ label: string; minCents: number; maxCents: number | null }> = [
+  { label: "$0-20", minCents: 0, maxCents: 2000 },
+  { label: "$20-40", minCents: 2000, maxCents: 4000 },
+  { label: "$40-50", minCents: 4000, maxCents: 5000 },
+  { label: "$50-60", minCents: 5000, maxCents: 6000 },
+  { label: "$60-70", minCents: 6000, maxCents: 7000 },
+  { label: "$70-80", minCents: 7000, maxCents: 8000 },
+  { label: "$80-100", minCents: 8000, maxCents: 10000 },
+  { label: "$100+", minCents: 10000, maxCents: null },
+];
+
+/** The two bands the threshold question turns on. */
+const BELOW_THRESHOLD = "$50-60";
+const ABOVE_THRESHOLD = "$60-70";
+
+export interface BandMargin {
+  label: string;
+  orders: number;
+  revenueCents: number;
+  productCostCents: number;
+  paymentCents: number;
+  marginCents: number;
+  /** Null when the band is empty — never 0, which would read as no margin. */
+  marginPct: number | null;
+}
+
+export function bandMargins(orders: OrderForEconomics[], rates: RateSettings): BandMargin[] {
+  // Every band is returned, including empty ones: an absent band reads as "no
+  // data here" when it means "no orders here".
+  return BANDS.map((band) => {
+    const inBand = orders.filter(
+      (o) =>
+        o.totalPriceCents >= band.minCents &&
+        (band.maxCents === null || o.totalPriceCents < band.maxCents)
+    );
+
+    let revenueCents = 0;
+    let productCostCents = 0;
+    let paymentCents = 0;
+
+    for (const o of inBand) {
+      revenueCents += o.totalPriceCents - (o.totalTaxCents ?? 0);
+      productCostCents += o.productCostCents;
+      paymentCents += paymentFeeCents(o.totalPriceCents, rates);
+    }
+
+    const marginCents = revenueCents - productCostCents - paymentCents;
+
+    return {
+      label: band.label,
+      orders: inBand.length,
+      revenueCents,
+      productCostCents,
+      paymentCents,
+      marginCents,
+      marginPct: revenueCents === 0 ? null : marginCents / revenueCents,
+    };
+  });
+}
+
+export interface ThresholdVerdict {
+  /** Null when it cannot be decided, never false — those are different. */
+  subsidising: boolean | null;
+  belowPct: number | null;
+  abovePct: number | null;
+  reason: string;
+}
+
+/**
+ * The threshold test, as a verdict rather than two numbers to interpret.
+ *
+ * Provisional by construction: the cost the threshold actually absorbs is the
+ * shipping label, and that is not in the database. What this can establish is
+ * whether losing the shipping REVENUE is on its own enough to make the larger
+ * order worse. Against production it is not.
+ */
+export function thresholdVerdict(bands: BandMargin[]): ThresholdVerdict {
+  const below = bands.find((b) => b.label === BELOW_THRESHOLD);
+  const above = bands.find((b) => b.label === ABOVE_THRESHOLD);
+
+  if (!below?.orders || !above?.orders || below.marginPct === null || above.marginPct === null) {
+    return {
+      subsidising: null,
+      belowPct: below?.marginPct ?? null,
+      abovePct: above?.marginPct ?? null,
+      reason:
+        `Cannot be decided: no orders in ${!below?.orders ? BELOW_THRESHOLD : ABOVE_THRESHOLD}. ` +
+        `Both bands need orders before the comparison means anything.`,
+    };
+  }
+
+  const subsidising = above.marginPct < below.marginPct;
+
+  return {
+    subsidising,
+    belowPct: below.marginPct,
+    abovePct: above.marginPct,
+    reason:
+      `${ABOVE_THRESHOLD} margin is ${(100 * above.marginPct).toFixed(1)}% against ` +
+      `${(100 * below.marginPct).toFixed(1)}% at ${BELOW_THRESHOLD}. ` +
+      (subsidising
+        ? `The band above the threshold is worse, which is what moving it to $65 or $70 would address.`
+        : `The band above the threshold is no worse, so the threshold is not subsidising on this evidence.`) +
+      ` PROVISIONAL: fulfilment cost is not in the database, and the shipping label is the cost the ` +
+      `threshold actually absorbs. This compares margin net of product cost and payment fees only.`,
+  };
+}
