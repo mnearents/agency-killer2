@@ -109,6 +109,11 @@ import {
   BUSINESS_LINES,
 } from "@/domain/economics/queries";
 import {
+  computeTargetCpa,
+  realisedChurnedLtv,
+  TARGET_LTV_CAC_RATIO,
+} from "@/domain/economics/target-cpa";
+import {
   getDrafts,
   getDraftDecisions,
   draftExists,
@@ -1594,6 +1599,115 @@ const marginByOrderValue: McpTool = {
   },
 };
 
+/**
+ * `target_cpa` deliberately does NOT take the LTV from any cohort but the
+ * churned, observed one — see #34 and `target-cpa.ts`. The cohort is chosen
+ * inside `realisedChurnedLtv`, which reads one block and cannot be pointed at
+ * another from here.
+ */
+const targetCpa: McpTool = {
+  name: "target_cpa",
+  title: "Target cost per acquisition",
+  description:
+    "What an acquisition may cost, per business line, at break-even and at 3:1 LTV:CAC. " +
+    "Both figures are taken over CONTRIBUTION, not revenue — the same words over revenue give a number larger by the entire cost of delivery. " +
+    "Subscriptions are priced off realised churned-cohort LTV (finished, non-migrated runs only); the active cohort is excluded because those runs are unfinished, and reading it would roughly double every figure here. " +
+    "Read `bound` on each basis before spending anything. `ceiling` means the CPA is too generous (a cost category is missing); `floor` means it is too conservative (the churned cohort is truncated by a short observation window); `indeterminate` means both apply and neither dominates, so the direction of the error is unknown. " +
+    "Physical and digital lines are priced on a single order — repeat purchases are not counted, so those figures are conservative.",
+  readOnly: true,
+  schema: {
+    businessLine: { type: "enum", values: BUSINESS_LINES },
+    days: { type: "integer", min: 1, max: 730, default: 90 },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const start = new Date(now);
+    start.setUTCDate(start.getUTCDate() - (args.days as number));
+    const startDate = start.toISOString().slice(0, 10);
+    const endDate = now.toISOString().slice(0, 10);
+
+    const rates = await getRateSettings(ctx.db, endDate);
+    if (!rates) {
+      return {
+        error:
+          "No payment rates are in effect for this date, so nothing was computed. " +
+          "rate_settings should hold payment_pct and payment_fixed_cents — see migration 0031.",
+      };
+    }
+
+    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+
+    // Read once, for the subscription line only. `realisedChurnedLtv` picks
+    // the cohort; nothing here can hand it a different one.
+    const ltv = realisedChurnedLtv(await getSubscriptionFacts(ctx.db), now);
+
+    const wanted = args.businessLine as string | undefined;
+
+    const lines = byLine
+      .filter((l) => wanted === undefined || l.line === wanted)
+      .map(({ line, orders }) => {
+        const economics = computeUnitEconomics(orders, rates);
+        const r = computeTargetCpa({
+          businessLine: line,
+          economics,
+          ltv: line === "subscription" ? ltv : null,
+        });
+
+        return {
+          businessLine: r.businessLine,
+          orders: economics.orders,
+          aov: dollarsFrom(economics.aovCents),
+          codPct: r.codPct === null ? null : Number((100 * r.codPct).toFixed(2)),
+          ratioBasis: r.ratioBasis,
+          recommendedBasis: r.recommendedBasis,
+          bases: r.bases.map((b) => ({
+            basis: b.basis,
+            label: b.label,
+            valuePerCustomer: dollarsFrom(b.perCustomerRevenueCents),
+            contributionPerCustomer:
+              b.contributionPerCustomerCents === null
+                ? null
+                : dollarsFrom(b.contributionPerCustomerCents),
+            breakEvenCpa: b.breakEvenCpaCents === null ? null : dollarsFrom(b.breakEvenCpaCents),
+            targetCpaAt3to1:
+              b.targetCpa3to1Cents === null ? null : dollarsFrom(b.targetCpa3to1Cents),
+            bound: b.bound,
+            boundReasons: b.boundReasons,
+            cohortSize: b.cohortSize,
+            caveats: b.caveats,
+          })),
+          blockers: r.blockers,
+        };
+      });
+
+    return {
+      window: { startDate, endDate, days: args.days },
+      ratio: `${TARGET_LTV_CAC_RATIO}:1 LTV:CAC, taken over contribution`,
+      ...(ltv
+        ? {
+            subscriptionLtv: {
+              cohort: ltv.cohort,
+              subscribers: ltv.subscribers,
+              avgLtv: dollarsFrom(ltv.avgLtvCents),
+              avgTenureMonths: Number(ltv.avgTenureMonths.toFixed(1)),
+              observationWindowMonths: Number(ltv.observationWindowMonths.toFixed(1)),
+              unfinishedRuns: ltv.unfinishedRuns,
+              isFloor: ltv.isFloor,
+            },
+          }
+        : {
+            subscriptionLtv: null,
+            subscriptionLtvNote:
+              "No finished, non-migrated subscription run is on record, so realised LTV could not be computed.",
+          }),
+      lines,
+      caveat:
+        "Fulfilment (3PL labels, pick/pack, storage) is not yet in the database, so every cost of " +
+        "delivery behind these figures is a floor and every CPA built on one is a ceiling.",
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1869,6 +1983,7 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPushHistory,
   unitEconomics,
   marginByOrderValue,
+  targetCpa,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,
