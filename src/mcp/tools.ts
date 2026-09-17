@@ -98,7 +98,11 @@ import {
 } from "@/domain/segments/queries";
 import { SEED_SEGMENTS } from "@/domain/shopify/segments";
 import { isAgentAttribution } from "@/domain/drafts/drafts";
-import { computeUnitEconomics } from "@/domain/economics/unit-economics";
+import {
+  computeUnitEconomics,
+  bandMargins,
+  thresholdVerdict,
+} from "@/domain/economics/unit-economics";
 import {
   getRateSettings,
   getOrdersForEconomics,
@@ -1526,6 +1530,70 @@ const unitEconomics: McpTool = {
   },
 };
 
+const marginByOrderValue: McpTool = {
+  name: "margin_by_order_value",
+  title: "Contribution margin by order value",
+  description:
+    "Contribution margin banded by order value, for the question #34 poses: is free shipping over $60 subsidising the worst orders? " +
+    "Returns a verdict comparing the $50-60 and $60-70 bands directly, plus every band's margin. " +
+    "PROVISIONAL by construction: the cost the threshold absorbs is the shipping label, which is not in the database, so this compares margin net of product cost and payment fees only. " +
+    "Physical orders only by default — a threshold on shipping means nothing for a subscription or a printable.",
+  readOnly: true,
+  schema: {
+    businessLine: { type: "enum", values: BUSINESS_LINES, default: "physical" },
+    days: { type: "integer", min: 1, max: 730, default: 365 },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const start = new Date(now);
+    start.setUTCDate(start.getUTCDate() - (args.days as number));
+    const startDate = start.toISOString().slice(0, 10);
+    const endDate = now.toISOString().slice(0, 10);
+
+    const rates = await getRateSettings(ctx.db, endDate);
+    if (!rates) {
+      return {
+        error:
+          "No payment rates are in effect for this date, so nothing was computed. " +
+          "rate_settings should hold payment_pct and payment_fixed_cents — see migration 0031.",
+      };
+    }
+
+    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+    const line = args.businessLine as string;
+    const orders = byLine.find((l) => l.line === line)?.orders ?? [];
+    const bands = bandMargins(orders, rates);
+    const verdict = thresholdVerdict(bands);
+
+    return {
+      window: { startDate, endDate, days: args.days },
+      businessLine: line,
+      orders: orders.length,
+      freeShippingThresholdDollars: 60,
+      verdict: {
+        subsidising: verdict.subsidising,
+        marginBelowThresholdPct:
+          verdict.belowPct === null ? null : Number((100 * verdict.belowPct).toFixed(1)),
+        marginAboveThresholdPct:
+          verdict.abovePct === null ? null : Number((100 * verdict.abovePct).toFixed(1)),
+        reason: verdict.reason,
+      },
+      bands: bands.map((b) => ({
+        band: b.label,
+        orders: b.orders,
+        revenue: dollarsFrom(b.revenueCents),
+        productCost: dollarsFrom(b.productCostCents),
+        paymentFees: dollarsFrom(b.paymentCents),
+        margin: dollarsFrom(b.marginCents),
+        marginPct: b.marginPct === null ? null : Number((100 * b.marginPct).toFixed(1)),
+      })),
+      caveat:
+        "Fulfilment (3PL labels, pick/pack, storage) is not in the database. Every margin here " +
+        "is a ceiling, and the threshold verdict is provisional until label costs are loaded.",
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1800,6 +1868,7 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPush,
   segmentPushHistory,
   unitEconomics,
+  marginByOrderValue,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,

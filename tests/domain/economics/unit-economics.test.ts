@@ -30,6 +30,8 @@ import {
   paymentFeeCents,
   computeUnitEconomics,
   breakEvenAmer,
+  bandMargins,
+  thresholdVerdict,
   type OrderForEconomics,
   type RateSettings,
 } from "@/domain/economics/unit-economics";
@@ -243,5 +245,90 @@ describe("partially costed orders", () => {
     const r = computeUnitEconomics([order({ costIsKnown: true }), partly()], RATES);
     expect(r.cogsCoveragePct).toBeCloseTo(0.5, 5);
     expect(r.components.find((c) => /product cost/i.test(c.label))!.cents).toBe(1442 + 1000);
+  });
+});
+
+/**
+ * ─── Margin by order value ────────────────────────────────────────────
+ *
+ * #34 asks for this to test one thing: whether free shipping over $60
+ * subsidises the worst orders. "If margin at $61-70 is worse than at $50-59,
+ * the threshold is subsidising the worst orders and should move to $65 or $70."
+ *
+ * Run against production, it does not. Margin sits between 63% and 69% across
+ * every band above $20, and $60-70 (66.8%) is marginally BETTER than $50-60
+ * (66.1%). Absolute contribution rises monotonically with band.
+ *
+ * The test is not conclusive, and the function says so: fulfilment is the cost
+ * the threshold actually absorbs, and it is not in the database. What can be
+ * measured is that losing the shipping revenue does not, on its own, make the
+ * larger order worse.
+ */
+describe("bandMargins", () => {
+  const o = (totalCents: number, over: Partial<OrderForEconomics> = {}) =>
+    order({ totalPriceCents: totalCents, totalTaxCents: 0, productCostCents: 0, costIsKnown: true, ...over });
+
+  it("puts each order in the band its value falls in", () => {
+    const bands = bandMargins([o(1500), o(2500), o(6500)], RATES);
+    const counts = Object.fromEntries(bands.map((b) => [b.label, b.orders]));
+    expect(counts["$0-20"]).toBe(1);
+    expect(counts["$20-40"]).toBe(1);
+    expect(counts["$60-70"]).toBe(1);
+  });
+
+  // The boundary is the whole question, so it is pinned rather than assumed.
+  it("puts an order at exactly the threshold in the band above", () => {
+    const bands = bandMargins([o(6000)], RATES);
+    expect(bands.find((b) => b.label === "$60-70")!.orders).toBe(1);
+    expect(bands.find((b) => b.label === "$50-60")!.orders).toBe(0);
+  });
+
+  it("reports every band, including the empty ones", () => {
+    const bands = bandMargins([o(4500)], RATES);
+    expect(bands.length).toBeGreaterThan(5);
+    // An absent band would read as "no data here" rather than "no orders here".
+    expect(bands.every((b) => typeof b.orders === "number")).toBe(true);
+  });
+
+  it("computes margin per band, net of product cost and payment fees", () => {
+    const [band] = bandMargins([o(10000, { productCostCents: 3000 })], RATES).filter((b) => b.orders > 0);
+    // 10000 - 3000 - (270 + 30)
+    expect(band.marginCents).toBe(6700);
+    expect(band.marginPct).toBeCloseTo(0.67, 2);
+  });
+
+  it("reports null margin for an empty band rather than zero", () => {
+    const empty = bandMargins([o(4500)], RATES).find((b) => b.orders === 0)!;
+    expect(empty.marginPct).toBeNull();
+  });
+
+  /**
+   * The answer to the threshold question, as a computed verdict rather than a
+   * number a reader has to interpret — and explicitly provisional, because the
+   * cost it turns on is missing.
+   */
+  it("compares the bands either side of the threshold", () => {
+    const worse = bandMargins(
+      [o(5500, { productCostCents: 1000 }), o(6500, { productCostCents: 4000 })],
+      RATES
+    );
+    expect(thresholdVerdict(worse).subsidising).toBe(true);
+
+    const fine = bandMargins(
+      [o(5500, { productCostCents: 4000 }), o(6500, { productCostCents: 1000 })],
+      RATES
+    );
+    expect(thresholdVerdict(fine).subsidising).toBe(false);
+  });
+
+  it("refuses a verdict when either band has no orders", () => {
+    const v = thresholdVerdict(bandMargins([o(500)], RATES));
+    expect(v.subsidising).toBeNull();
+    expect(v.reason).toMatch(/no orders/i);
+  });
+
+  it("says the verdict is provisional while fulfilment is unknown", () => {
+    const v = thresholdVerdict(bandMargins([o(5500), o(6500)], RATES));
+    expect(v.reason).toMatch(/fulfilment/i);
   });
 });
