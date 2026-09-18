@@ -72,10 +72,11 @@ export interface OrdersByLine {
  * Orders in a window, split by business line, each carrying the landed cost of
  * its contents.
  *
- * `costIsKnown` is false when ANY line on the order lacks a recorded cost —
- * not when the sum happens to be zero. A partially-costed order produces a
- * partially-costed margin, and calling that measured would be the optimistic
- * direction.
+ * Cost coverage is carried per line, not per order: `lineRevenueCents` is what
+ * the line items came to and `costedLineRevenueCents` is the part of it whose
+ * variant has a landed cost. An order with one uncosted line used to count as
+ * wholly uncosted, which reported 71.6% coverage against production where
+ * 89.8% of line revenue was costed.
  */
 export async function getOrdersForEconomics(
   db: Db,
@@ -94,8 +95,12 @@ export async function getOrdersForEconomics(
                 AND li.product_type <> 'Subscription') AS has_physical,
         -- Cost of the goods, times quantity.
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
-        -- Every line has to have a cost for the order's cost to be known.
-        BOOL_AND(inv.unit_cost_cents IS NOT NULL) AS cost_is_known
+        -- Coverage is measured over line revenue, so a partly-costed order
+        -- contributes the part that is costed rather than nothing at all.
+        COALESCE(SUM(li.price_cents * li.quantity), 0) AS line_revenue_cents,
+        COALESCE(SUM(CASE WHEN inv.unit_cost_cents IS NOT NULL
+                          THEN li.price_cents * li.quantity ELSE 0 END), 0)
+          AS costed_line_revenue_cents
       FROM shopify_orders o
       JOIN shopify_line_items li ON li.order_id = o.id
       LEFT JOIN shopify_inventory inv ON inv.id = li.variant_id
@@ -109,14 +114,16 @@ export async function getOrdersForEconomics(
         WHEN has_physical THEN 'physical'
         ELSE 'digital'
       END AS line,
-      total_price_cents, total_tax_cents, product_cost_cents, cost_is_known
+      total_price_cents, total_tax_cents, product_cost_cents,
+      line_revenue_cents, costed_line_revenue_cents
     FROM per_order
   `)) as unknown as Array<{
     line: BusinessLine;
     total_price_cents: number;
     total_tax_cents: number;
     product_cost_cents: number;
-    cost_is_known: boolean;
+    line_revenue_cents: number;
+    costed_line_revenue_cents: number;
   }>;
 
   const byLine = new Map<BusinessLine, OrderForEconomics[]>(
@@ -128,7 +135,8 @@ export async function getOrdersForEconomics(
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),
-      costIsKnown: Boolean(r.cost_is_known),
+      lineRevenueCents: Number(r.line_revenue_cents),
+      costedLineRevenueCents: Number(r.costed_line_revenue_cents),
     });
   }
 
@@ -247,7 +255,10 @@ export async function getNewCustomerOrders(
                 AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
                 AND li.product_type <> 'Subscription') AS has_physical,
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
-        BOOL_AND(inv.unit_cost_cents IS NOT NULL) AS cost_is_known,
+        COALESCE(SUM(li.price_cents * li.quantity), 0) AS line_revenue_cents,
+        COALESCE(SUM(CASE WHEN inv.unit_cost_cents IS NOT NULL
+                          THEN li.price_cents * li.quantity ELSE 0 END), 0)
+          AS costed_line_revenue_cents,
         fo.whole_history_held
       FROM first_orders fo
       JOIN shopify_orders o ON o.id = fo.id
@@ -261,7 +272,8 @@ export async function getNewCustomerOrders(
         WHEN has_physical THEN 'physical'
         ELSE 'digital'
       END AS line,
-      total_price_cents, total_tax_cents, product_cost_cents, cost_is_known,
+      total_price_cents, total_tax_cents, product_cost_cents,
+      line_revenue_cents, costed_line_revenue_cents,
       whole_history_held
     FROM per_order
   `)) as unknown as Array<{
@@ -269,7 +281,8 @@ export async function getNewCustomerOrders(
     total_price_cents: number;
     total_tax_cents: number;
     product_cost_cents: number;
-    cost_is_known: boolean;
+    line_revenue_cents: number;
+    costed_line_revenue_cents: number;
     whole_history_held: boolean | null;
   }>;
 
@@ -288,7 +301,8 @@ export async function getNewCustomerOrders(
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),
-      costIsKnown: Boolean(r.cost_is_known),
+      lineRevenueCents: Number(r.line_revenue_cents),
+      costedLineRevenueCents: Number(r.costed_line_revenue_cents),
     });
   }
 

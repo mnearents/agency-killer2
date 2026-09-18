@@ -98,7 +98,8 @@ export function computeAmer(input: AmerInput): AmerResult {
   let newOrders = 0;
   let productCostCents = 0;
   let paymentCents = 0;
-  let revenueWithKnownCost = 0;
+  let lineRevenueCents = 0;
+  let costedLineRevenueCents = 0;
 
   const lineTotals: Array<{ line: string; orders: number; revenueCents: number }> = [];
 
@@ -110,7 +111,8 @@ export function computeAmer(input: AmerInput): AmerResult {
       lineRevenue += exTax;
       productCostCents += o.productCostCents;
       paymentCents += paymentFeeCents(o.totalPriceCents, rates);
-      if (o.costIsKnown) revenueWithKnownCost += exTax;
+      lineRevenueCents += o.lineRevenueCents;
+      costedLineRevenueCents += o.costedLineRevenueCents;
     }
     newRevenueCents += lineRevenue;
     newOrders += orders.length;
@@ -118,9 +120,11 @@ export function computeAmer(input: AmerInput): AmerResult {
   }
 
   const missing: string[] = [];
-  if (newRevenueCents > 0 && revenueWithKnownCost < newRevenueCents) {
-    const uncosted = 1 - revenueWithKnownCost / newRevenueCents;
-    missing.push(`Landed product cost for ${(100 * uncosted).toFixed(0)}% of new-customer revenue`);
+  if (lineRevenueCents > 0 && costedLineRevenueCents < lineRevenueCents) {
+    const uncosted = 1 - costedLineRevenueCents / lineRevenueCents;
+    missing.push(
+      `Landed product cost for ${(100 * uncosted).toFixed(0)}% of new-customer line-item revenue`
+    );
   }
   if (input.fulfilmentCents === undefined) missing.push(FULFILMENT_LABEL);
 

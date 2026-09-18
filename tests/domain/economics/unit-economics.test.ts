@@ -82,11 +82,13 @@ describe("breakEvenAmer", () => {
   });
 });
 
+/** A fully-costed $45 order: all of its line revenue has a landed cost. */
 const order = (over: Partial<OrderForEconomics> = {}): OrderForEconomics => ({
   totalPriceCents: 4500,
   totalTaxCents: 0,
   productCostCents: 1442,
-  costIsKnown: true,
+  lineRevenueCents: 4500,
+  costedLineRevenueCents: 4500,
   ...over,
 });
 
@@ -125,9 +127,9 @@ describe("computeUnitEconomics", () => {
    * unknown is a guess, and it has to say so rather than quietly treating the
    * unknown as zero.
    */
-  it("reports what fraction of revenue has a known product cost", () => {
+  it("reports what fraction of line-item revenue has a known product cost", () => {
     const r = computeUnitEconomics(
-      [order({ costIsKnown: true }), order({ costIsKnown: false, productCostCents: 0 })],
+      [order(), order({ costedLineRevenueCents: 0, productCostCents: 0 })],
       RATES
     );
     expect(r.cogsCoveragePct).toBeCloseTo(0.5, 5);
@@ -157,8 +159,8 @@ describe("computeUnitEconomics", () => {
 
   // An unknown cost counted as zero makes the margin look better than it is.
   it("does not treat an unknown product cost as zero in the coverage figure", () => {
-    const known = computeUnitEconomics([order({ costIsKnown: true })], RATES);
-    const unknown = computeUnitEconomics([order({ costIsKnown: false })], RATES);
+    const known = computeUnitEconomics([order()], RATES);
+    const unknown = computeUnitEconomics([order({ costedLineRevenueCents: 0 })], RATES);
     expect(known.cogsCoveragePct).toBe(1);
     expect(unknown.cogsCoveragePct).toBe(0);
   });
@@ -179,7 +181,7 @@ describe("computeUnitEconomics", () => {
  */
 describe("incomplete cost coverage is a named gap, not a footnote", () => {
   const uncosted = (over: Partial<OrderForEconomics> = {}) =>
-    order({ costIsKnown: false, productCostCents: 0, ...over });
+    order({ costedLineRevenueCents: 0, productCostCents: 0, ...over });
 
   it("names missing product costs alongside missing fulfilment", () => {
     const r = computeUnitEconomics([uncosted()], RATES);
@@ -187,13 +189,13 @@ describe("incomplete cost coverage is a named gap, not a footnote", () => {
     expect(r.missing.some((m) => /fulfilment/i.test(m))).toBe(true);
   });
 
-  it("says how much of the revenue is uncosted, not merely that some is", () => {
+  it("says how much of the line revenue is uncosted, not merely that some is", () => {
     const r = computeUnitEconomics([order(), uncosted()], RATES);
     expect(r.missing.find((m) => /product cost/i.test(m))).toMatch(/50/);
   });
 
   it("does not name it when every order has a recorded cost", () => {
-    const r = computeUnitEconomics([order({ costIsKnown: true })], RATES);
+    const r = computeUnitEconomics([order()], RATES);
     expect(r.missing.some((m) => /product cost/i.test(m))).toBe(false);
   });
 
@@ -204,7 +206,7 @@ describe("incomplete cost coverage is a named gap, not a footnote", () => {
   });
 
   it("still marks it measured when coverage is complete", () => {
-    const r = computeUnitEconomics([order({ costIsKnown: true })], RATES);
+    const r = computeUnitEconomics([order()], RATES);
     expect(r.components.find((c) => /product cost/i.test(c.label))!.basis).toBe("measured");
   });
 });
@@ -222,16 +224,18 @@ describe("incomplete cost coverage is a named gap, not a footnote", () => {
  * evidence than you have is a worse floor.
  */
 describe("partially costed orders", () => {
+  /** $10 of line revenue is costed, $10 is not. Half the order is known. */
   const partly = (over: Partial<OrderForEconomics> = {}) =>
-    order({ productCostCents: 1000, costIsKnown: false, ...over });
+    order({
+      productCostCents: 1000,
+      lineRevenueCents: 2000,
+      costedLineRevenueCents: 1000,
+      ...over,
+    });
 
   it("counts the product cost it does know", () => {
     const r = computeUnitEconomics([partly()], RATES);
     expect(r.components.find((c) => /product cost/i.test(c.label))!.cents).toBe(1000);
-  });
-
-  it("still reports the order as not fully costed", () => {
-    expect(computeUnitEconomics([partly()], RATES).cogsCoveragePct).toBe(0);
   });
 
   it("raises the COD floor rather than understating it", () => {
@@ -240,10 +244,52 @@ describe("partially costed orders", () => {
     expect(withPartial).toBeGreaterThan(withNone);
   });
 
+  /**
+   * ─── Coverage is over line revenue, not over whole orders ───────────
+   *
+   * This used to be all-or-nothing: one uncosted line made the entire order's
+   * revenue uncosted. Measured against production, 89.8% of line-item revenue
+   * carries a landed cost while the metric reported 71.6% — the same mistake
+   * #83 fixed in the numerator, still living in the coverage figure.
+   *
+   * It is not cosmetic. Coverage is what holds `complete` at false and every
+   * aMER verdict at `undecidable`, so understating it by eighteen points
+   * suppresses conclusions the data supports.
+   */
+  it("counts the costed half of a half-costed order", () => {
+    expect(computeUnitEconomics([partly()], RATES).cogsCoveragePct).toBeCloseTo(0.5, 5);
+  });
+
+  it("weights coverage by line revenue, not by order count", () => {
+    const big = partly({ lineRevenueCents: 90_000, costedLineRevenueCents: 90_000 });
+    const small = partly({ lineRevenueCents: 10_000, costedLineRevenueCents: 0 });
+    expect(computeUnitEconomics([big, small], RATES).cogsCoveragePct).toBeCloseTo(0.9, 5);
+  });
+
+  // A fully costed order is still exactly 1, so `complete` remains reachable.
+  it("reports full coverage when every line is costed", () => {
+    const r = computeUnitEconomics(
+      [order({ lineRevenueCents: 5000, costedLineRevenueCents: 5000 })],
+      RATES
+    );
+    expect(r.cogsCoveragePct).toBe(1);
+  });
+
+  it("reports no coverage when no line is costed", () => {
+    const r = computeUnitEconomics(
+      [order({ lineRevenueCents: 5000, costedLineRevenueCents: 0, productCostCents: 0 })],
+      RATES
+    );
+    expect(r.cogsCoveragePct).toBe(0);
+  });
+
   // Coverage still measures confidence, not how much cost was found.
   it("keeps coverage and cost separate", () => {
-    const r = computeUnitEconomics([order({ costIsKnown: true }), partly()], RATES);
-    expect(r.cogsCoveragePct).toBeCloseTo(0.5, 5);
+    const r = computeUnitEconomics(
+      [order({ lineRevenueCents: 2000, costedLineRevenueCents: 2000 }), partly()],
+      RATES
+    );
+    expect(r.cogsCoveragePct).toBeCloseTo(0.75, 5);
     expect(r.components.find((c) => /product cost/i.test(c.label))!.cents).toBe(1442 + 1000);
   });
 });
@@ -266,7 +312,14 @@ describe("partially costed orders", () => {
  */
 describe("bandMargins", () => {
   const o = (totalCents: number, over: Partial<OrderForEconomics> = {}) =>
-    order({ totalPriceCents: totalCents, totalTaxCents: 0, productCostCents: 0, costIsKnown: true, ...over });
+    order({
+      totalPriceCents: totalCents,
+      totalTaxCents: 0,
+      productCostCents: 0,
+      lineRevenueCents: totalCents,
+      costedLineRevenueCents: totalCents,
+      ...over,
+    });
 
   it("puts each order in the band its value falls in", () => {
     const bands = bandMargins([o(1500), o(2500), o(6500)], RATES);
