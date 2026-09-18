@@ -47,6 +47,7 @@ import {
   type LtvBlock,
   type Granularity,
 } from "@/domain/subscriptions/analytics";
+import { summarisePricing } from "@/domain/subscriptions/pricing";
 import {
   getAttentiveWeekSummary,
   getCampaignMessagePerformance,
@@ -2058,6 +2059,74 @@ const inventoryPools: McpTool = {
   },
 };
 
+/**
+ * ─── Pricing audit (#8) ───────────────────────────────────────────────
+ */
+const subscriptionPricingAudit: McpTool = {
+  name: "subscription_pricing_audit",
+  title: "Subscriptions billed off the plan grid",
+  description:
+    "Every ACTIVE subscription whose price does not match the plan grid, with the DIRECTION and the monthly cost of being wrong. " +
+    "An undercharge is revenue quietly leaking; an overcharge is a customer being harmed and a support ticket waiting to happen. They need opposite responses, so they are never combined into one distance. " +
+    "This is NOT `priceAnomaly`, and deliberately so: that flag controls exclusion from MRR, and a Studio subscriber billed Spark's $5 is not a corrupt number — $5 is what we collect, and it belongs in MRR. Flagging these there would delete real revenue from the headline to report a billing error. " +
+    "`monthlyImpact` amortises an annual shortfall over the year it covers, so a $108 annual undercharge reads as $9 a month and can be ranked against a monthly one; raw delta ranks them wrongly. " +
+    "Read `monthlyOverchargeExcludingCorrupt`, not the gross overcharge: four corrupt records dominate the latter and reading it as customer harm would describe a mass overbilling that is not happening. " +
+    "`unpriceable` is listed separately and never counted as correct: a zero price, a missing price, or a tier/cohort/interval with no grid row at all. " +
+    "Derived at read time from the stored plan and price, so it cannot go stale when the grid changes.",
+  readOnly: true,
+  schema: {},
+  async run(ctx) {
+    const facts = await getSubscriptionFacts(ctx.db);
+    const r = summarisePricing(
+      facts.map((f) => ({
+        id: f.id,
+        status: f.status,
+        tier: f.tier,
+        pricingCohort: f.pricingCohort,
+        billingInterval: f.billingInterval,
+        billingCadence: f.billingCadence,
+        priceCents: f.priceCents,
+        priceAnomaly: f.priceAnomaly,
+      }))
+    );
+
+    return {
+      assessed: r.assessed,
+      onGrid: r.onGrid,
+      offGridCount: r.offGrid.length,
+      monthlyUndercharge: dollarsFrom(r.monthlyUnderchargeCents),
+      monthlyOvercharge: dollarsFrom(r.monthlyOverchargeCents),
+      // The figure about customers. The gross total is dominated by corrupt
+      // rows that priceAnomaly already excludes from MRR.
+      monthlyOverchargeExcludingCorrupt: dollarsFrom(r.monthlyOverchargeExcludingCorruptCents),
+      annualisedUndercharge: dollarsFrom(r.monthlyUnderchargeCents * 12),
+      offGrid: r.offGrid.map((o) => ({
+        id: o.id,
+        plan: `${o.tier} ${o.pricingCohort} ${o.billingInterval}`,
+        verdict: o.verdict,
+        expected: dollarsFrom(o.expectedCents),
+        actual: dollarsFrom(o.actualCents),
+        delta: dollarsFrom(o.deltaCents),
+        monthlyImpact: dollarsFrom(o.monthlyImpactCents),
+        alsoPriceAnomaly: o.alsoPriceAnomaly,
+      })),
+      unpriceable: r.unpriceable.map((u) => ({
+        id: u.id,
+        plan: `${u.tier} ${u.pricingCohort} ${u.billingInterval}`,
+        verdict: u.verdict,
+        actual: u.actualCents === null ? null : dollarsFrom(u.actualCents),
+      })),
+      excludedNotActive: r.excludedNotActive,
+      notes: [
+        "Cancelled subscriptions are excluded: they bill nothing, so their mispricing costs nothing.",
+        "`unknown-plan` means no grid row for that tier, cohort and interval — a product decision nobody recorded, not a price that happens to be right.",
+        "Grandfathered pricing is only reachable by existing Color Happy subscribers, so a `current` subscriber on a grandfathered price reads as an undercharge because that is what it is.",
+        "`alsoPriceAnomaly` marks rows already excluded from MRR as corrupt. Read `monthlyOverchargeExcludingCorrupt` for the figure about customers — the gross total is dominated by four records at $19,382, $7,963, $2,425 and $2,207, which are not people paying.",
+      ],
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -2316,6 +2385,7 @@ export const ALL_TOOLS: McpTool[] = [
   subscriptionSummary,
   subscriptionLtv,
   subscriptionChanges,
+  subscriptionPricingAudit,
   emailSmsPerformance,
   emailCampaignDetail,
   emailJourneyDetail,
