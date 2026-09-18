@@ -106,8 +106,12 @@ import {
 import {
   getRateSettings,
   getOrdersForEconomics,
+  getAdSpend,
+  getNewCustomerOrders,
+  AD_CHANNELS,
   BUSINESS_LINES,
 } from "@/domain/economics/queries";
+import { computeAmer } from "@/domain/economics/amer";
 import {
   computeTargetCpa,
   realisedChurnedLtv,
@@ -1708,6 +1712,90 @@ const targetCpa: McpTool = {
   },
 };
 
+const amerTool: McpTool = {
+  name: "amer",
+  title: "aMER against break-even",
+  description:
+    "New-customer order revenue divided by ad spend, measured against the break-even aMER of the customers that spend actually bought. " +
+    "aMER alone is a ratio with no scale: the paid era ran between 0.51 and 5.33, and whether 2.0 is good depends on a cost of delivery that differs by a factor of six across the three business lines. So break-even is computed over the NEW-CUSTOMER revenue mix in the window, not blended across all orders and not taken from one line. " +
+    "`verdict` is withheld as `undecidable` when aMER sits above break-even while a cost category is missing — break-even is a floor then, and clearing an understated bar is not evidence of clearing the real one. A `below-break-even` verdict survives that, because below a floor is below the real figure too. " +
+    "A first-ever order means the customer's Shopify lifetime order count equals the number of orders we hold; order history begins 2025-07-22, so the earliest order we hold is routinely a repeat purchase. " +
+    "Meta is the only channel in the warehouse. There has been NO ad spend since 2026-03-29, so any window inside the last six months returns a null aMER — undefined, not infinite.",
+  readOnly: true,
+  schema: {
+    days: { type: "integer", min: 1, max: 730, default: 90 },
+    channel: { type: "enum", values: AD_CHANNELS },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const start = new Date(now);
+    start.setUTCDate(start.getUTCDate() - (args.days as number));
+    const startDate = start.toISOString().slice(0, 10);
+    const endDate = now.toISOString().slice(0, 10);
+
+    const rates = await getRateSettings(ctx.db, endDate);
+    if (!rates) {
+      return {
+        error:
+          "No payment rates are in effect for this date, so nothing was computed. " +
+          "rate_settings should hold payment_pct and payment_fixed_cents — see migration 0031.",
+      };
+    }
+
+    const spendRows = await getAdSpend(
+      ctx.db,
+      startDate,
+      endDate,
+      args.channel as "meta" | undefined
+    );
+    const spendCents = spendRows.reduce((sum, r) => sum + r.spendCents, 0);
+
+    const { byLine, undecidableOrders } = await getNewCustomerOrders(ctx.db, startDate, endDate);
+    const r = computeAmer({ spendCents, rates, byLine });
+
+    return {
+      window: { startDate, endDate, days: args.days },
+      spend: {
+        total: dollarsFrom(r.spendCents),
+        byChannel: spendRows.map((c) => ({
+          channel: c.channel,
+          spend: dollarsFrom(c.spendCents),
+          daysWithSpend: c.daysWithSpend,
+        })),
+        // Absent channels are absent from our data, not from the world.
+        coverage:
+          "Meta only. No other ad channel is synced, so this denominator is Meta spend even when no channel is named.",
+      },
+      newCustomers: {
+        orders: r.newOrders,
+        revenue: dollarsFrom(r.newRevenueCents),
+        definition:
+          "First-ever orders: the customer's Shopify lifetime order count equals the number of orders we hold. Order history begins 2025-07-22.",
+        ...(undecidableOrders > 0
+          ? {
+              undecidableOrders,
+              undecidableNote:
+                "Orders whose customer has no lifetime order count in Shopify. Counted as neither new nor repeat.",
+            }
+          : {}),
+      },
+      amer: r.amer === null ? null : Number(r.amer.toFixed(3)),
+      breakEvenAmer: r.breakEvenAmer === null ? null : Number(r.breakEvenAmer.toFixed(3)),
+      breakEvenBound: r.breakEvenBound,
+      codPct: r.codPct === null ? null : Number((100 * r.codPct).toFixed(2)),
+      verdict: r.verdict,
+      reason: r.reason,
+      lines: r.lines.map((l) => ({
+        businessLine: l.line,
+        newOrders: l.newOrders,
+        newRevenue: dollarsFrom(l.newRevenueCents),
+        shareOfNewRevenuePct: Number((100 * l.shareOfNewRevenue).toFixed(1)),
+      })),
+      missing: r.missing,
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -1984,6 +2072,7 @@ export const ALL_TOOLS: McpTool[] = [
   unitEconomics,
   marginByOrderValue,
   targetCpa,
+  amerTool,
   currentAlerts,
   pilotNotesGet,
   pilotNotesAdd,

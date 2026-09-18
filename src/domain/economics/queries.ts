@@ -7,7 +7,7 @@
 
 import { and, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { rateSettings } from "@/db/schema";
+import { metaInsights, rateSettings } from "@/db/schema";
 import type { OrderForEconomics, RateSettings } from "./unit-economics";
 
 /** The business lines #34 insists on keeping apart. */
@@ -133,4 +133,167 @@ export async function getOrdersForEconomics(
   }
 
   return [...byLine.entries()].map(([line, orders]) => ({ line, orders }));
+}
+
+
+/**
+ * ─── aMER inputs ──────────────────────────────────────────────────────
+ */
+
+/**
+ * The ad channels whose spend is in the warehouse.
+ *
+ * Meta is the only one. That is a fact about our data, not about the business,
+ * and the tool says so — a caller asking for "all channels" must not read the
+ * answer as covering Google or TikTok simply because nothing said otherwise.
+ */
+export const AD_CHANNELS = ["meta"] as const;
+export type AdChannel = (typeof AD_CHANNELS)[number];
+
+export interface AdSpend {
+  channel: AdChannel;
+  spendCents: number;
+  /** Days in the window with any delivery. Zero of N is a real answer. */
+  daysWithSpend: number;
+}
+
+/**
+ * Ad spend per channel over a window.
+ *
+ * Every channel in scope is returned, including one that spent nothing. An
+ * absent channel reads as "we do not track it"; a channel with zero reads as
+ * "it did not run", and those lead to opposite conclusions.
+ */
+export async function getAdSpend(
+  db: Db,
+  startDate: string,
+  endDate: string,
+  channel?: AdChannel
+): Promise<AdSpend[]> {
+  const wanted = channel ? [channel] : [...AD_CHANNELS];
+  const out: AdSpend[] = [];
+
+  if (wanted.includes("meta")) {
+    const [row] = (await db.execute(sql`
+      SELECT COALESCE(SUM(spend_cents), 0) AS spend_cents,
+             COUNT(DISTINCT date::date) AS days_with_spend
+      FROM ${metaInsights}
+      WHERE date >= ${startDate}::date AND date < (${endDate}::date + 1)
+    `)) as unknown as Array<{ spend_cents: number; days_with_spend: number }>;
+    out.push({
+      channel: "meta",
+      spendCents: Number(row?.spend_cents ?? 0),
+      daysWithSpend: Number(row?.days_with_spend ?? 0),
+    });
+  }
+
+  return out;
+}
+
+export interface NewCustomerOrders {
+  byLine: OrdersByLine[];
+  /**
+   * Orders whose customer's lifetime order count is unknown, so whether the
+   * order was a first cannot be decided. Never folded into either side.
+   */
+  undecidableOrders: number;
+}
+
+/**
+ * First-ever orders placed in a window, split by business line.
+ *
+ * "First-ever" is not "earliest order we hold". Order history begins
+ * 2025-07-22 and 34,415 customers bought only before that, so the earliest
+ * held order is routinely a repeat purchase. Shopify's own `orders_count` is
+ * the lifetime figure, and a customer whose lifetime count equals the number
+ * of orders we hold is one whose whole history is in the warehouse — for them,
+ * and only them, the earliest held order is the first one.
+ *
+ * Against production that is 1,933 of the 8,567 customers with an order in the
+ * window; the other 6,634 have orders we do not hold and were already
+ * customers. A customer with no lifetime count at all is undecidable and is
+ * counted separately rather than assumed either way.
+ */
+export async function getNewCustomerOrders(
+  db: Db,
+  startDate: string,
+  endDate: string
+): Promise<NewCustomerOrders> {
+  const rows = (await db.execute(sql`
+    WITH held AS (
+      SELECT customer_id, COUNT(*) AS held_orders, MIN(order_created_at) AS first_held
+      FROM shopify_orders
+      WHERE customer_id IS NOT NULL
+      GROUP BY customer_id
+    ),
+    first_orders AS (
+      SELECT o.id,
+             -- NULL when Shopify's lifetime count is missing: undecidable, not new.
+             CASE WHEN c.orders_count IS NULL THEN NULL
+                  ELSE c.orders_count = h.held_orders END AS whole_history_held
+      FROM shopify_orders o
+      JOIN held h ON h.customer_id = o.customer_id AND h.first_held = o.order_created_at
+      JOIN shopify_customers c ON c.id = o.customer_id
+      WHERE o.order_created_at >= ${startDate}::date
+        AND o.order_created_at < (${endDate}::date + 1)
+    ),
+    per_order AS (
+      SELECT
+        o.id,
+        o.total_price_cents,
+        COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
+        BOOL_OR(li.product_type = 'Subscription') AS has_subscription,
+        BOOL_OR(li.product_type IS NOT NULL
+                AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
+                AND li.product_type <> 'Subscription') AS has_physical,
+        COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
+        BOOL_AND(inv.unit_cost_cents IS NOT NULL) AS cost_is_known,
+        fo.whole_history_held
+      FROM first_orders fo
+      JOIN shopify_orders o ON o.id = fo.id
+      JOIN shopify_line_items li ON li.order_id = o.id
+      LEFT JOIN shopify_inventory inv ON inv.id = li.variant_id
+      GROUP BY o.id, o.total_price_cents, o.total_tax_cents, fo.whole_history_held
+    )
+    SELECT
+      CASE
+        WHEN has_subscription THEN 'subscription'
+        WHEN has_physical THEN 'physical'
+        ELSE 'digital'
+      END AS line,
+      total_price_cents, total_tax_cents, product_cost_cents, cost_is_known,
+      whole_history_held
+    FROM per_order
+  `)) as unknown as Array<{
+    line: BusinessLine;
+    total_price_cents: number;
+    total_tax_cents: number;
+    product_cost_cents: number;
+    cost_is_known: boolean;
+    whole_history_held: boolean | null;
+  }>;
+
+  const byLine = new Map<BusinessLine, OrderForEconomics[]>(
+    BUSINESS_LINES.map((l) => [l, []])
+  );
+  let undecidableOrders = 0;
+
+  for (const r of rows) {
+    if (r.whole_history_held === null) {
+      undecidableOrders++;
+      continue;
+    }
+    if (!r.whole_history_held) continue;
+    byLine.get(r.line)?.push({
+      totalPriceCents: Number(r.total_price_cents),
+      totalTaxCents: Number(r.total_tax_cents),
+      productCostCents: Number(r.product_cost_cents),
+      costIsKnown: Boolean(r.cost_is_known),
+    });
+  }
+
+  return {
+    byLine: [...byLine.entries()].map(([line, orders]) => ({ line, orders })),
+    undecidableOrders,
+  };
 }
