@@ -1,9 +1,9 @@
 /**
  * One-time historical backfill of Meta insights.
  *
- * The daily sync only looks back 7 days and first shipped months after this
- * account stopped spending, so it could never have captured the Nov 2024 –
- * Mar 2026 history. This pulls it once, month by month.
+ * The daily sync only looks back 7 days and first shipped on 2026-09-07, so it
+ * could never have captured the history before that, and cannot recover a gap
+ * longer than a week. This pulls the whole range, month by month, ending today.
  *
  * Structure (campaigns, ad sets, ads, creatives) is synced first because the
  * insight rows are useless without names and images to hang off them.
@@ -19,12 +19,17 @@
 
 import { createDb } from "@/db/client";
 import { createMetaApiClient } from "@/integrations/meta-api";
-import { backfillInsights } from "@/domain/meta/backfill";
+import {
+  backfillInsights,
+  defaultBackfillEnd,
+  BACKFILL_START,
+} from "@/domain/meta/backfill";
 import { syncStructure } from "@/domain/meta/sync";
 
-// The full lifetime of this ad account: first spend Nov 2024, last Mar 2026.
-const DEFAULT_START = "2024-11-01";
-const DEFAULT_END = "2026-03-31";
+// Start at the account's first spend; end at today. The end used to be a
+// constant asserting when spending stopped, which is the thing a backfill is
+// supposed to establish rather than assume — see #79.
+const DEFAULT_START = BACKFILL_START;
 
 function requireEnv(key: string): string {
   const value = process.env[key];
@@ -45,7 +50,7 @@ function parseDate(argv: string[], flag: string, fallback: string): string {
 async function main() {
   const argv = process.argv;
   const startDate = parseDate(argv, "--start", DEFAULT_START);
-  const endDate = parseDate(argv, "--end", DEFAULT_END);
+  const endDate = parseDate(argv, "--end", defaultBackfillEnd(new Date()));
   const insightsOnly = argv.includes("--insights-only");
 
   const db = createDb(requireEnv("DATABASE_URL"));
