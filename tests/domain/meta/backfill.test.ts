@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { monthChunks, backfillInsights } from "@/domain/meta/backfill";
+import {
+  monthChunks,
+  backfillInsights,
+  defaultBackfillEnd,
+  BACKFILL_START,
+} from "@/domain/meta/backfill";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { MetaApiError } from "@/integrations/meta-api";
 import { createMockMetaApiClient } from "../../mocks/meta-api";
 import type { MetaApiInsight } from "@/integrations/meta-api";
@@ -236,5 +243,61 @@ describe("backfillInsights", () => {
     });
 
     expect(result.attributionWindow).toBe("7d_click");
+  });
+});
+
+/**
+ * ─── The end date was an assumption, not a measurement (#79) ──────────
+ *
+ * `scripts/backfill-meta-insights.ts` carried
+ *
+ *     // The full lifetime of this ad account: first spend Nov 2024, last Mar 2026.
+ *     const DEFAULT_END = "2026-03-31";
+ *
+ * and the daily incremental sync only looks back seven days and only began on
+ * 2026-09-07. So April through August 2026 were never requested from Meta at
+ * all, and "no spend since March" and "nobody asked since March" were the same
+ * empty range in the database for five months.
+ *
+ * The constant turned out to be right — asked today, Meta returns no-data for
+ * every one of those months. That is luck, and the next time the sync stalls
+ * for a fortnight the same comment will be wrong and will still look right.
+ *
+ * A backfill's end is the present. It is the one end date that cannot encode a
+ * belief about when spending stopped.
+ */
+describe("defaultBackfillEnd", () => {
+  it("ends at today, not at a date someone believed was the last spend", () => {
+    expect(defaultBackfillEnd(new Date("2026-09-17T12:00:00Z"))).toBe("2026-09-17");
+  });
+
+  it("moves with the clock", () => {
+    expect(defaultBackfillEnd(new Date("2027-01-04T00:00:00Z"))).toBe("2027-01-04");
+  });
+
+  // The window it produces has to reach the months the daily sync cannot.
+  it("covers a gap longer than the incremental sync's seven-day lookback", () => {
+    const chunks = monthChunks(BACKFILL_START, defaultBackfillEnd(new Date("2026-09-17T12:00:00Z")));
+    expect(chunks.map((c) => c.start)).toContain("2026-04-01");
+    expect(chunks.at(-1)!.end).toBe("2026-09-17");
+  });
+});
+
+/**
+ * The script has to actually use it. A helper that ends at today while the
+ * caller keeps its own frozen constant is the same bug with a test attached.
+ */
+describe("backfill script end date", () => {
+  const script = readFileSync(join(process.cwd(), "scripts/backfill-meta-insights.ts"), "utf-8");
+
+  // Asserted at the fallback argument, not just as a mention. A script that
+  // imports the helper, calls it, and then uses its own constant anyway would
+  // satisfy a looser match while behaving exactly as it did before.
+  it("takes the --end fallback from defaultBackfillEnd", () => {
+    expect(script).toMatch(/parseDate\(\s*argv,\s*"--end",\s*defaultBackfillEnd\(/);
+  });
+
+  it("holds no hardcoded end date of its own", () => {
+    expect(script).not.toMatch(/DEFAULT_END\s*=\s*"\d{4}-\d{2}-\d{2}"/);
   });
 });

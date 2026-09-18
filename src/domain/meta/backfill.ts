@@ -25,6 +25,25 @@ import { classifyOutcome, type SyncOutcome } from "./outcomes";
 
 export const BACKFILL_TASK = "backfill:meta";
 
+/** First spend on this ad account. Measured: the earliest row Meta returns. */
+export const BACKFILL_START = "2024-11-01";
+
+/**
+ * The end of a backfill window is the present, always.
+ *
+ * It used to be a constant in the script — `"2026-03-31"`, with a comment
+ * calling it "last spend Mar 2026". That belief was correct and still cost five
+ * months of coverage: the daily sync looks back seven days and only began on
+ * 2026-09-07, so April through August 2026 were never requested from Meta at
+ * all, and an unasked range looked exactly like an empty one. See #79.
+ *
+ * A date derived from the clock cannot encode a belief about when spending
+ * stopped. Whether it stopped is what the backfill is for finding out.
+ */
+export function defaultBackfillEnd(now: Date): string {
+  return now.toISOString().split("T")[0];
+}
+
 /** The attribution window every backfilled row is recorded under. */
 export const ATTRIBUTION_WINDOW = "7d_click";
 
