@@ -1,0 +1,45 @@
+{
+  "$comment": [
+    "Declared shared inventory pools (#9). Groups of quantity-break variants that",
+    "sell the same physical stock through separate Shopify inventory items.",
+    "",
+    "This file is the source of truth, deliberately. The grouping is a fact about",
+    "fulfilment, not about naming, and a title convention will drift — so a group",
+    "is a group because it is written here, never because a regex matched.",
+    "`inventory_pools` in the MCP surfaces UNDECLARED candidates so a new",
+    "quantity-break product is noticed rather than silently unmonitored.",
+    "",
+    "packSize is units per pack. A variant's `quantity` in Shopify is how many",
+    "packs can be made, NOT how many units are held."
+  ],
+  "pools": [
+    {
+      "groupKey": "Spooky Spells",
+      "productTitle": "Reusable Trick or Treat Bag",
+      "note": "2023 Halloween design. Seven pack sizes over one pool, all UNLISTED, all selling.",
+      "variants": [
+        { "sku": "BAGHLLWN2023", "packSize": 1 },
+        { "sku": "BAGHLLWN2023P2", "packSize": 2 },
+        { "sku": "BAGHLLWN2023P3", "packSize": 3 },
+        { "sku": "BAGHLLWN2023P4", "packSize": 4 },
+        { "sku": "BAGHLLWN2023P5", "packSize": 5 },
+        { "sku": "BAGHLLWN2023P10", "packSize": 10 },
+        { "sku": "BAGHLLWN2023P25", "packSize": 25 }
+      ]
+    },
+    {
+      "groupKey": "Ghostly Goodies",
+      "productTitle": "Reusable Trick or Treat Bag",
+      "note": "2022 Halloween design. Same shape as Spooky Spells.",
+      "variants": [
+        { "sku": "BAGHLLWN2022", "packSize": 1 },
+        { "sku": "BAGHLLWN2022P2", "packSize": 2 },
+        { "sku": "BAGHLLWN2022P3", "packSize": 3 },
+        { "sku": "BAGHLLWN2022P4", "packSize": 4 },
+        { "sku": "BAGHLLWN2022P5", "packSize": 5 },
+        { "sku": "BAGHLLWN2022P10", "packSize": 10 },
+        { "sku": "BAGHLLWN2022P25", "packSize": 25 }
+      ]
+    }
+  ]
+}

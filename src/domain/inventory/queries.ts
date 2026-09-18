@@ -60,3 +60,40 @@ export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
     unitsSoldLast30d: Number(r.unitsSoldLast30d),
   }));
 }
+
+/**
+ * ─── Shared pools (#9) ────────────────────────────────────────────────
+ */
+
+/**
+ * Every tracked variant, with its 30-day velocity, for pool assessment.
+ *
+ * Deliberately NOT filtered to ACTIVE. `classifyItem` ignores anything that is
+ * not ACTIVE, and the entire quantity-break product is UNLISTED — which is the
+ * gap #9 is about. Filtering here would reproduce the blind spot this query
+ * exists to remove.
+ */
+export async function getPoolVariantRows(db: Db, since: Date) {
+  const sales = db
+    .select({
+      variantId: shopifyLineItems.variantId,
+      unitsSold: sql<number>`SUM(${shopifyLineItems.quantity})`.as("units_sold"),
+    })
+    .from(shopifyLineItems)
+    .innerJoin(shopifyOrders, eq(shopifyOrders.id, shopifyLineItems.orderId))
+    .where(gte(shopifyOrders.orderCreatedAt, since))
+    .groupBy(shopifyLineItems.variantId)
+    .as("sales");
+
+  return db
+    .select({
+      variantId: shopifyInventory.id,
+      sku: shopifyInventory.sku,
+      variantTitle: shopifyInventory.variantTitle,
+      quantity: shopifyInventory.quantity,
+      productStatus: shopifyInventory.productStatus,
+      unitsSoldLast30d: sql<number>`COALESCE(${sales.unitsSold}, 0)`,
+    })
+    .from(shopifyInventory)
+    .leftJoin(sales, eq(sales.variantId, shopifyInventory.id));
+}

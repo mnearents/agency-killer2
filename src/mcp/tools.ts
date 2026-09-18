@@ -55,7 +55,14 @@ import {
   getMessageCostTotals,
 } from "@/domain/attentive/queries";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
-import { getInventoryItems } from "@/domain/inventory/queries";
+import { getInventoryItems, getPoolVariantRows } from "@/domain/inventory/queries";
+import {
+  assessPool,
+  findUndeclaredPoolCandidates,
+  parsePoolDeclaration,
+  type PoolVariant,
+} from "@/domain/inventory/pools";
+import POOL_DECLARATION from "@/domain/inventory/inventory-pools.json";
 import { classifyItem } from "@/domain/inventory/checks";
 import { computeDailyVelocity, computeDaysOfCover } from "@/domain/inventory/velocity";
 import { getEntriesByWeek } from "@/domain/calendar/queries";
@@ -1929,6 +1936,128 @@ const emailJourneyDetail: McpTool = {
   },
 };
 
+/**
+ * ─── Shared inventory pools (#9) ──────────────────────────────────────
+ */
+const inventoryPools: McpTool = {
+  name: "inventory_pools",
+  title: "Shared inventory pools",
+  description:
+    "Quantity-break variants that sell the same physical stock through separate Shopify inventory items, and whether their counts still agree. " +
+    "A pack variant's quantity is how many N-PACKS can be made, not how many units are held — so 796, 398 and 31 across the 1, 2 and 25 packs are the SAME 796 bags, and adding the rows gives 3,049, which is a quantity of nothing. NEVER sum quantity across a pool. " +
+    "`poolUnits` is the real figure. `diverged` is true only when a member is short by more than its own pack size could truncate away, so a correctly synced pool never raises an alarm. " +
+    "Nothing in Shopify keeps these in step — a Mechanic task did, and it was uninstalled — so divergence is the signal that stock is being oversold. " +
+    "`monitoredByOrdinaryChecks` is false when every member is UNLISTED, which means `inventory_status` classifies them all as `ignored` while they continue to sell. " +
+    "`undeclaredCandidates` are quantity-break products that look like pools and are not in the declaration; grouping is declared data, never inferred, so these need a human to confirm before they count.",
+  readOnly: true,
+  schema: {},
+  async run(ctx) {
+    const since = new Date(ctx.now());
+    since.setUTCDate(since.getUTCDate() - 30);
+
+    const rows = await getPoolVariantRows(ctx.db, since);
+    const declared = parsePoolDeclaration(POOL_DECLARATION);
+
+    // A multimap, not a map. 17 SKUs in this catalogue belong to more than one
+    // variant — `BAGHLLWN2023` is an ACTIVE "Default Title" product AND an
+    // UNLISTED "Spooky Spells / 1" variant, two separate inventory items over
+    // the same bags. Keeping one would drop the other silently, and those two
+    // items diverging is precisely the failure this tool exists to catch.
+    const bySku = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const key = r.sku ?? "";
+      const list = bySku.get(key);
+      if (list) list.push(r);
+      else bySku.set(key, [r]);
+    }
+
+    const pools = declared.map((pool) => {
+      const missing: string[] = [];
+      const variants: PoolVariant[] = [];
+
+      for (const v of pool.variants) {
+        const matches = bySku.get(v.sku) ?? [];
+        if (matches.length === 0) {
+          // A declared SKU the catalogue no longer has is a stale declaration,
+          // not an empty pool. Silently dropping it would shrink the pool and
+          // change the answer without saying so.
+          missing.push(v.sku);
+          continue;
+        }
+        for (const row of matches) {
+          variants.push({
+            variantId: row.variantId,
+            sku: v.sku,
+            variantTitle: row.variantTitle ?? "",
+            packSize: v.packSize,
+            quantity: row.quantity,
+            productStatus: row.productStatus,
+            unitsSoldLast30d: Number(row.unitsSoldLast30d),
+          });
+        }
+      }
+
+      const a = assessPool(pool.groupKey, variants);
+      return {
+        group: pool.groupKey,
+        productTitle: pool.productTitle,
+        ...(pool.note ? { note: pool.note } : {}),
+        poolUnits: a.poolUnits,
+        diverged: a.diverged,
+        driftUnits: a.worstDriftUnits,
+        worstVariant: a.worst ? { sku: a.worst.sku, shortBy: a.worst.driftUnits } : null,
+        rawSpreadUnits: a.rawSpreadUnits,
+        rawSpreadNote:
+          "High minus low across members. Integer division alone produces a spread; only `driftUnits` is real disagreement.",
+        unitsSoldLast30d: a.unitsSoldLast30d,
+        monitoredByOrdinaryChecks: a.monitoredByOrdinaryChecks,
+        members: a.members.map((m) => ({
+          sku: m.sku,
+          variantTitle: m.variantTitle,
+          productStatus: m.productStatus,
+          packSize: m.packSize,
+          packsHeld: m.quantity,
+          impliedUnits: m.impliedUnits,
+          shortBy: m.driftUnits,
+        })),
+        ...(missing.length > 0
+          ? {
+              declaredButNotInCatalogue: missing,
+              staleDeclarationNote:
+                "These SKUs are declared here but absent from shopify_inventory, so the pool was assessed without them.",
+            }
+          : {}),
+        ...(a.reason ? { reason: a.reason } : {}),
+      };
+    });
+
+    const candidates = findUndeclaredPoolCandidates(
+      rows.map((r) => ({
+        variantId: r.variantId,
+        sku: r.sku ?? "",
+        variantTitle: r.variantTitle,
+        quantity: r.quantity,
+        productStatus: r.productStatus,
+        unitsSoldLast30d: Number(r.unitsSoldLast30d),
+      })),
+      declared.map((p) => p.groupKey)
+    );
+
+    return {
+      pools,
+      undeclaredCandidates: candidates,
+      ...(candidates.length > 0
+        ? {
+            candidatesNote:
+              "These look like quantity-break products and are NOT declared, so they are unmonitored. " +
+              "Grouping is a fact about fulfilment rather than about naming, so a human confirms one before it counts.",
+          }
+        : {}),
+      declaration: "src/domain/inventory/inventory-pools.json",
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -2192,6 +2321,7 @@ export const ALL_TOOLS: McpTool[] = [
   emailJourneyDetail,
   socialPerformance,
   inventoryStatus,
+  inventoryPools,
   calendarEntriesTool,
   brandVoice,
   voiceCheckTool,
