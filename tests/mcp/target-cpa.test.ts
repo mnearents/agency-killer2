@@ -61,7 +61,8 @@ const order = (totalPriceCents: number) => ({
   totalPriceCents,
   totalTaxCents: 0,
   productCostCents: 0,
-  costIsKnown: true,
+  lineRevenueCents: totalPriceCents,
+  costedLineRevenueCents: totalPriceCents,
 });
 
 beforeEach(() => {

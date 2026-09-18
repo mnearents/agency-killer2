@@ -29,7 +29,8 @@ const costed = (cents: number, costCents: number) => ({
   totalPriceCents: cents,
   totalTaxCents: 0,
   productCostCents: costCents,
-  costIsKnown: true,
+  lineRevenueCents: cents,
+  costedLineRevenueCents: cents,
 });
 
 beforeEach(() => {

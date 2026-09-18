@@ -53,13 +53,26 @@ export interface OrderForEconomics {
    */
   productCostCents: number;
   /**
-   * Whether a landed cost was actually recorded.
+   * Line-item revenue on this order, before discounts and excluding shipping.
+   *
+   * The base for cost coverage. Order revenue is the wrong base: it is net of
+   * discounts and includes shipping, neither of which any landed cost attaches
+   * to, so a percentage over it compares two different things.
+   */
+  lineRevenueCents: number;
+  /**
+   * The part of `lineRevenueCents` whose variant has a landed cost recorded.
    *
    * Separate from a cost of 0 because digital products genuinely cost nothing
    * while a planner with nothing entered is a gap, and counting the second as
    * zero makes every margin quietly optimistic.
+   *
+   * Measured per line rather than per order. One uncosted line used to make an
+   * order's whole revenue uncosted, which reported 71.6% coverage against
+   * production where 89.8% of line revenue was in fact costed — #83's mistake
+   * surviving in the metric after it was fixed in the numerator.
    */
-  costIsKnown: boolean;
+  costedLineRevenueCents: number;
 }
 
 export type CostBasis = "measured" | "estimated" | "missing";
@@ -82,7 +95,7 @@ export interface UnitEconomicsResult {
   codPct: number | null;
   contributionMarginCents: number;
   breakEvenAmer: number | null;
-  /** Share of revenue whose landed product cost is actually known. */
+  /** Share of LINE-ITEM revenue whose landed product cost is recorded. */
   cogsCoveragePct: number;
   /** Cost categories not included. Non-empty means the COD is a floor. */
   missing: string[];
@@ -142,7 +155,8 @@ export function computeUnitEconomics(
   let productCostCents = 0;
   let percentageCents = 0;
   let fixedCents = 0;
-  let revenueWithKnownCost = 0;
+  let lineRevenueCents = 0;
+  let costedLineRevenueCents = 0;
 
   for (const o of orders) {
     // Tax leaves revenue; the processor still charged on it.
@@ -155,15 +169,20 @@ export function computeUnitEconomics(
     // The known part counts even when the order is not fully costed. Adding
     // nothing unless every line has a cost throws away real evidence and
     // produces a floor lower than the data supports — conservative in the
-    // wrong direction is still wrong.
+    // wrong direction is still wrong. The same applies to the coverage
+    // figure, which is why it is summed per line here and not per order.
     productCostCents += o.productCostCents;
-    if (o.costIsKnown) revenueWithKnownCost += exTax;
+    lineRevenueCents += o.lineRevenueCents;
+    costedLineRevenueCents += o.costedLineRevenueCents;
   }
 
   const paymentCents = percentageCents + fixedCents;
   const codCents = productCostCents + paymentCents;
 
-  const cogsCoveragePct = revenueCents === 0 ? 0 : revenueWithKnownCost / revenueCents;
+  // Over line revenue, named in the field's docstring. A coverage figure over
+  // order revenue divides costed line revenue by a base that includes shipping
+  // and is net of discounts.
+  const cogsCoveragePct = lineRevenueCents === 0 ? 0 : costedLineRevenueCents / lineRevenueCents;
 
   const components: CostComponent[] = [
     {
@@ -184,7 +203,7 @@ export function computeUnitEconomics(
     .filter((c) => c.basis === "missing")
     .map((c) =>
       c.label === "Landed product cost"
-        ? `Landed product cost for ${((1 - cogsCoveragePct) * 100).toFixed(0)}% of revenue`
+        ? `Landed product cost for ${((1 - cogsCoveragePct) * 100).toFixed(0)}% of line-item revenue`
         : c.label
     );
 

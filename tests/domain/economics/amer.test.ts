@@ -9,7 +9,8 @@ const uncosted = (cents: number): OrderForEconomics => ({
   totalPriceCents: cents,
   totalTaxCents: 0,
   productCostCents: 0,
-  costIsKnown: false,
+  lineRevenueCents: cents,
+  costedLineRevenueCents: 0,
 });
 
 /** An order whose landed cost is known, so the COD over it is complete. */
@@ -17,7 +18,8 @@ const costed = (cents: number, costCents: number): OrderForEconomics => ({
   totalPriceCents: cents,
   totalTaxCents: 0,
   productCostCents: costCents,
-  costIsKnown: true,
+  lineRevenueCents: cents,
+  costedLineRevenueCents: cents,
 });
 
 /**
@@ -210,7 +212,7 @@ describe("computeAmer: the verdict respects which way the costs are wrong", () =
       byLine: [{ line: "physical", orders: [uncosted(100_000), costed(100_000, 30_000)] }],
       fulfilmentCents: 5_000,
     });
-    expect(r.missing.join(" ")).toMatch(/Landed product cost for 50% of new-customer revenue/);
+    expect(r.missing.join(" ")).toMatch(/Landed product cost for 50% of new-customer line-item revenue/);
     expect(r.breakEvenBound).toBe("floor");
     expect(r.verdict).toBe("undecidable");
   });
