@@ -65,6 +65,35 @@ this paragraph, which said Attentive had no API at all.
   We know our own segment sizes because we define them in Postgres and push
   them (#32); Attentive will not tell us what is in a list.
 
+Six reports are scraped. The slugs are listed at `/analytics/reports` —
+`/analytics/reports/library` renders nothing on its own, which is why they went
+unfound for so long:
+
+| slug | table |
+|---|---|
+| `campaign-performance-aggregate-group` | `attentive_campaigns` (one row per day per channel) |
+| `attributed-revenue` | `attentive_revenue` |
+| `campaign-aggregate-performance-aggregate-group` | `attentive_campaign_messages` |
+| `campaign-performance-by-segment` | `attentive_campaign_segments` |
+| `journeys-message-level-performance-v2` | `attentive_journey_messages` |
+| `daily-message-cost` | `attentive_message_costs` |
+
+Two traps in that data. **Campaign rows and segment rows are the same revenue
+counted twice** — segment rows break the same sends out by audience, so never
+sum the two tables. And **every export opens with an aggregate row**, labelled
+`Total` in five reports and `Overall Performance` in the sixth; kept, it
+becomes a campaign with six figures of deliveries and no date.
+
+**Attentive shows in-app marketing popups that cover the Export button.** They
+render into `#engagement-wrapper` and swallow the click, and Playwright reports
+the button "visible, enabled and stable" while retrying for thirty seconds — so
+the failure is a click timeout that names nothing. `exportReport` clears them
+first. If a new page stops exporting, look for an overlay before anything else.
+
+The session does not currently persist (#95): `context.cookies()` saves zero
+httpOnly cookies, so each run logs in afresh and needs a 2FA code answered over
+Slack. The sync is not unattended until that is fixed.
+
 Statlas (CTC) has no API. Its data is imported manually.
 
 ### Subscription data — read this before counting subscribers
