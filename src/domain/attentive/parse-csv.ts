@@ -126,3 +126,273 @@ export function parseAttributedRevenueCsv(csv: string): AttributedRevenueRow[] {
 
   return rows;
 }
+
+/**
+ * ─── Campaign, segment and journey level (#23) ────────────────────────
+ *
+ * The two parsers above read columns by POSITION, which is safe only because
+ * their reports are frozen. The four reports below have between 6 and 27
+ * columns in different orders, and Attentive adds columns over time — "Text
+ * ROAS" and "Email ROAS" are both tagged New in the UI today.
+ *
+ * A positional parser pointed at a changed report does not fail. It reads
+ * "EMAIL" where it expected a delivered count, gets zero from `parseNum`, and
+ * stores it. So these are indexed by header name and throw when a column they
+ * need is absent — a missing column is a changed report, and a changed report
+ * read as zeroes is worse than no report.
+ *
+ * ## Blank is not zero, except when it is
+ *
+ * Attentive leaves a cell empty rather than writing 0:
+ *
+ *   a COUNT that is blank    — nothing happened. Zero.
+ *   a RATE or AVERAGE blank  — the denominator was zero. Undefined, not zero.
+ *
+ * An average order value of 0 says the orders were free; null says there were
+ * no orders. The second is true and the first is quotable.
+ */
+
+/** Every export opens with an aggregate row. These are the names it uses. */
+const AGGREGATE_ROW_LABELS = new Set(["Total", "Overall Performance"]);
+
+interface Table {
+  header: string[];
+  rows: string[][];
+  delimiter: string;
+}
+
+function readTable(csv: string): Table | null {
+  // The byte-order mark would otherwise make the first header unfindable by
+  // name, and every date would read as undefined.
+  const text = csv.replace(/^﻿/, "").trim();
+  if (!text) return null;
+
+  const lines = text.split("\n");
+  if (lines.length < 2) return null;
+
+  const delimiter = detectDelimiter(lines[0]);
+  const clean = (v: string) => v.replace(/^"|"$/g, "").trim();
+
+  return {
+    header: splitCsvLine(lines[0], delimiter).map(clean),
+    rows: lines.slice(1).map((l) => splitCsvLine(l, delimiter).map(clean)),
+    delimiter,
+  };
+}
+
+/**
+ * A reader bound to one report's header.
+ *
+ * `require` collects every missing column before throwing, so a changed report
+ * is diagnosed in one run rather than one column at a time.
+ */
+function columnReader(table: Table, reportName: string, required: string[]) {
+  const index = new Map(table.header.map((h, i) => [h, i]));
+  const missing = required.filter((c) => !index.has(c));
+  if (missing.length > 0) {
+    throw new Error(`${reportName} is missing columns: ${missing.join(", ")}`);
+  }
+
+  const raw = (row: string[], column: string): string => {
+    const i = index.get(column);
+    return i === undefined ? "" : row[i] ?? "";
+  };
+
+  return {
+    text: (row: string[], column: string) => raw(row, column),
+    /** Blank means nothing happened. */
+    count: (row: string[], column: string) => (raw(row, column) === "" ? 0 : parseNum(raw(row, column))),
+    /** Blank means no denominator — null, never 0. */
+    ratio: (row: string[], column: string) => {
+      const v = raw(row, column);
+      return v === "" ? null : parseNum(v);
+    },
+    /** Dollars in the export; integer cents everywhere inside. */
+    cents: (row: string[], column: string) => {
+      const v = raw(row, column);
+      return v === "" ? 0 : Math.round(parseNum(v) * 100);
+    },
+    /** Null when there were no orders behind the average. */
+    centsOrNull: (row: string[], column: string) => {
+      const v = raw(row, column);
+      return v === "" ? null : Math.round(parseNum(v) * 100);
+    },
+    bool: (row: string[], column: string) => raw(row, column).toUpperCase() === "TRUE",
+  };
+}
+
+/** Data rows only: no header, no aggregate row, no trailing blank. */
+function dataRows(table: Table, dateColumnIndex = 0): string[][] {
+  return table.rows.filter((r) => {
+    const first = r[dateColumnIndex] ?? "";
+    return first !== "" && !AGGREGATE_ROW_LABELS.has(first);
+  });
+}
+
+export interface CampaignMessageRow {
+  date: string;
+  campaign: string;
+  message: string;
+  messageVariant: string;
+  channel: string;
+  hasMedia: boolean;
+  delivered: number;
+  emailSends: number;
+  emailUniqueOpens: number;
+  emailUniqueClicks: number;
+  totalClicks: number;
+  conversions: number;
+  revenueCents: number;
+  avgOrderValueCents: number | null;
+  unsubscribes: number;
+  emailHardBounces: number;
+}
+
+export function parseCampaignMessageCsv(csv: string): CampaignMessageRow[] {
+  const table = readTable(csv);
+  if (!table) return [];
+
+  const c = columnReader(table, "Campaign message report", [
+    "Message Send Date",
+    "Campaign",
+    "Message",
+    "Message Channel",
+    "Delivered",
+    "Conversions",
+    "Revenue ($ USD)",
+    "Unsubscribes",
+  ]);
+
+  return dataRows(table).map((r) => ({
+    date: c.text(r, "Message Send Date"),
+    campaign: c.text(r, "Campaign"),
+    message: c.text(r, "Message"),
+    messageVariant: c.text(r, "Message Variant"),
+    channel: c.text(r, "Message Channel"),
+    hasMedia: c.bool(r, "Has Media"),
+    delivered: c.count(r, "Delivered"),
+    emailSends: c.count(r, "Email Sends"),
+    emailUniqueOpens: c.count(r, "Email Unique Opens"),
+    emailUniqueClicks: c.count(r, "Email Unique Clicks"),
+    totalClicks: c.count(r, "Total Clicks"),
+    conversions: c.count(r, "Conversions"),
+    revenueCents: c.cents(r, "Revenue ($ USD)"),
+    avgOrderValueCents: c.centsOrNull(r, "Average Order Value ($ USD)"),
+    unsubscribes: c.count(r, "Unsubscribes"),
+    emailHardBounces: c.count(r, "Email Hard Bounces"),
+  }));
+}
+
+export interface CampaignSegmentRow {
+  date: string;
+  message: string;
+  segment: string;
+  channel: string;
+  delivered: number;
+  totalClicks: number;
+  conversions: number;
+  revenueCents: number;
+  unsubscribes: number;
+}
+
+export function parseCampaignSegmentCsv(csv: string): CampaignSegmentRow[] {
+  const table = readTable(csv);
+  if (!table) return [];
+
+  const c = columnReader(table, "Campaign performance by segment report", [
+    "Message Send Date",
+    "Message",
+    "Segment",
+    "Message Channel",
+    "Delivered",
+    "Conversions",
+    "Revenue ($ USD)",
+    "Unsubscribes",
+  ]);
+
+  return dataRows(table).map((r) => ({
+    date: c.text(r, "Message Send Date"),
+    message: c.text(r, "Message"),
+    segment: c.text(r, "Segment"),
+    channel: c.text(r, "Message Channel"),
+    delivered: c.count(r, "Delivered"),
+    totalClicks: c.count(r, "Total Clicks"),
+    conversions: c.count(r, "Conversions"),
+    revenueCents: c.cents(r, "Revenue ($ USD)"),
+    unsubscribes: c.count(r, "Unsubscribes"),
+  }));
+}
+
+export interface JourneyMessageRow {
+  date: string;
+  journeyName: string;
+  triggerName: string;
+  message: string;
+  channel: string;
+  delivered: number;
+  totalClicks: number;
+  conversions: number;
+  revenueCents: number;
+  avgOrderValueCents: number | null;
+  unsubscribes: number;
+}
+
+export function parseJourneyMessageCsv(csv: string): JourneyMessageRow[] {
+  const table = readTable(csv);
+  if (!table) return [];
+
+  const c = columnReader(table, "Journey message-level report", [
+    "Send Date",
+    "Journey Name",
+    "Message",
+    "Channel",
+    "Delivered",
+    "Conversions",
+    "Revenue ($ USD)",
+    "Unsubscribes",
+  ]);
+
+  return dataRows(table).map((r) => ({
+    date: c.text(r, "Send Date"),
+    journeyName: c.text(r, "Journey Name"),
+    triggerName: c.text(r, "Trigger Name"),
+    message: c.text(r, "Message"),
+    channel: c.text(r, "Channel"),
+    delivered: c.count(r, "Delivered"),
+    totalClicks: c.count(r, "Total Clicks"),
+    conversions: c.count(r, "Conversions"),
+    revenueCents: c.cents(r, "Revenue ($ USD)"),
+    avgOrderValueCents: c.centsOrNull(r, "Average Order Value ($ USD)"),
+    unsubscribes: c.count(r, "Unsubscribes"),
+  }));
+}
+
+export interface MessageCostRow {
+  date: string;
+  campaignCostCents: number;
+  automatedSendCostCents: number;
+  receivedCostCents: number;
+  carrierFeesCents: number;
+  /** As reported. The rounded parts do not always add to it. */
+  totalCents: number;
+}
+
+export function parseMessageCostCsv(csv: string): MessageCostRow[] {
+  const table = readTable(csv);
+  if (!table) return [];
+
+  const c = columnReader(table, "Daily message cost report", [
+    "Send Date",
+    "Total ($ USD)",
+  ]);
+
+  return dataRows(table).map((r) => ({
+    date: c.text(r, "Send Date"),
+    campaignCostCents: c.cents(r, "Campaign Cost ($ USD)"),
+    automatedSendCostCents: c.cents(r, "Automated Send Cost ($ USD)"),
+    receivedCostCents: c.cents(r, "Received Cost ($ USD)"),
+    carrierFeesCents: c.cents(r, "Carrier Fees ($ USD)"),
+    // Stored as reported rather than summed: rounded parts disagree with it.
+    totalCents: c.cents(r, "Total ($ USD)"),
+  }));
+}

@@ -47,7 +47,13 @@ import {
   type LtvBlock,
   type Granularity,
 } from "@/domain/subscriptions/analytics";
-import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
+import {
+  getAttentiveWeekSummary,
+  getCampaignMessagePerformance,
+  getCampaignSegmentPerformance,
+  getJourneyMessagePerformance,
+  getMessageCostTotals,
+} from "@/domain/attentive/queries";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { classifyItem } from "@/domain/inventory/checks";
@@ -1796,6 +1802,133 @@ const amerTool: McpTool = {
   },
 };
 
+/**
+ * ─── Campaign and journey detail (#23) ────────────────────────────────
+ *
+ * `email_sms_performance` answers "did email do anything this month". These
+ * answer "which send worked" and "which step of which flow drops people",
+ * which is what anyone can act on.
+ */
+const emailCampaignDetail: McpTool = {
+  name: "email_campaign_detail",
+  title: "Per-campaign email and SMS performance",
+  description:
+    "Every campaign send in a window, named, with delivered, opens, clicks, conversions, revenue AND unsubscribes — ordered by revenue. " +
+    "Read unsubscribes beside revenue on every row: a campaign with strong revenue and a spike in unsubscribes borrowed from future sends rather than earning anything, and on revenue alone it looks like a win worth repeating. " +
+    "`bySegment` breaks the same sends out by the audience they went to; its revenue is the SAME money as `campaigns`, counted a second way, so never add the two together. " +
+    "`messagingCost` is the SMS carrier cost over the window, which is a daily figure and cannot be attributed to a particular campaign. " +
+    "Scraped from the Attentive UI, not an API — check `data_freshness` before reading a quiet window as a quiet month.",
+  readOnly: true,
+  schema: { ...RANGE_SCHEMA },
+  async run(ctx, args) {
+    const range = resolveRange(args, ctx.now(), 30);
+    const [campaigns, bySegment, cost] = await Promise.all([
+      getCampaignMessagePerformance(ctx.db, range.startDate, range.endDate),
+      getCampaignSegmentPerformance(ctx.db, range.startDate, range.endDate),
+      getMessageCostTotals(ctx.db, range.startDate, range.endDate),
+    ]);
+
+    return {
+      range: describeRange(range),
+      campaigns: campaigns.map((c) => ({
+        date: c.date,
+        campaign: c.campaign,
+        message: c.message,
+        channel: c.channel,
+        delivered: c.delivered,
+        emailUniqueOpens: c.emailUniqueOpens,
+        clicks: c.totalClicks,
+        conversions: c.conversions,
+        revenue: dollarsFrom(c.revenueCents),
+        unsubscribes: c.unsubscribes,
+        // Per thousand delivered, so a small send and a large one compare.
+        unsubscribesPerThousandDelivered:
+          c.delivered === 0 ? null : Number(((1000 * c.unsubscribes) / c.delivered).toFixed(2)),
+      })),
+      bySegment: bySegment.map((s) => ({
+        date: s.date,
+        message: s.message,
+        segment: s.segment,
+        channel: s.channel,
+        delivered: s.delivered,
+        clicks: s.totalClicks,
+        conversions: s.conversions,
+        revenue: dollarsFrom(s.revenueCents),
+        unsubscribes: s.unsubscribes,
+      })),
+      messagingCost: {
+        total: dollarsFrom(cost.totalCents),
+        campaign: dollarsFrom(cost.campaignCostCents),
+        automatedSend: dollarsFrom(cost.automatedSendCostCents),
+        received: dollarsFrom(cost.receivedCostCents),
+        carrierFees: dollarsFrom(cost.carrierFeesCents),
+        daysWithData: cost.days,
+        // Zero days is a gap. Zero dollars over thirty days is a free month.
+        ...(cost.days === 0
+          ? { note: "No message-cost rows in this window, so the cost is unknown rather than zero." }
+          : {}),
+      },
+      ...(campaigns.length === 0
+        ? {
+            note:
+              "No campaign-level rows in this window. The detail reports began syncing on 2026-09-18, " +
+              "so an earlier window is empty because nothing was collected, not because nothing was sent.",
+          }
+        : {}),
+    };
+  },
+};
+
+const emailJourneyDetail: McpTool = {
+  name: "email_journey_detail",
+  title: "Per-message journey performance",
+  description:
+    "Every message inside every journey, rolled up over the window and ordered by revenue. " +
+    "This is where silent ongoing loss lives: a journey runs unattended for months, and nobody re-reads a flow that was set up and left running, so a step that stopped converting keeps sending. " +
+    "`sendDays` is how many days that step actually sent — a step that ran twice must not be read as one that ran all month. " +
+    "Unsubscribes are per step, which is what makes 'this message is where people leave' answerable. " +
+    "Scraped from the Attentive UI, not an API.",
+  readOnly: true,
+  schema: { ...RANGE_SCHEMA },
+  async run(ctx, args) {
+    const range = resolveRange(args, ctx.now(), 30);
+    const rows = await getJourneyMessagePerformance(ctx.db, range.startDate, range.endDate);
+
+    return {
+      range: describeRange(range),
+      messages: rows.map((r) => ({
+        journey: r.journeyName,
+        trigger: r.triggerName,
+        message: r.message,
+        channel: r.channel,
+        sendDays: Number(r.sendDays),
+        delivered: Number(r.delivered),
+        clicks: Number(r.totalClicks),
+        conversions: Number(r.conversions),
+        revenue: dollarsFrom(Number(r.revenueCents)),
+        unsubscribes: Number(r.unsubscribes),
+        // Null rather than 0 when nothing was delivered: a rate over no sends
+        // is undefined, and 0% reads as "nobody clicked".
+        clickRatePct:
+          Number(r.delivered) === 0
+            ? null
+            : Number(((100 * Number(r.totalClicks)) / Number(r.delivered)).toFixed(2)),
+        unsubscribesPerThousandDelivered:
+          Number(r.delivered) === 0
+            ? null
+            : Number(((1000 * Number(r.unsubscribes)) / Number(r.delivered)).toFixed(2)),
+      })),
+      ...(rows.length === 0
+        ? {
+            note:
+              "No journey rows in this window. The journey report began syncing on 2026-09-18, " +
+              "so an earlier window is empty because nothing was collected, not because no journey ran.",
+          }
+        : {}),
+    };
+  },
+};
+
 const currentAlerts: McpTool = {
   name: "current_alerts",
   title: "Current alerts",
@@ -2055,6 +2188,8 @@ export const ALL_TOOLS: McpTool[] = [
   subscriptionLtv,
   subscriptionChanges,
   emailSmsPerformance,
+  emailCampaignDetail,
+  emailJourneyDetail,
   socialPerformance,
   inventoryStatus,
   calendarEntriesTool,

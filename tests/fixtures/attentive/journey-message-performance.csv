@@ -1,0 +1,60 @@
+﻿Send Date,Journey Name,Trigger Name,Message,Channel,Delivered,Total Clicks,Total Click Rate,Conversions,CVR,Revenue ($ USD),Unsubscribes,Unsubscribe Rate,Average Order Value ($ USD),Revenue / Message ($ USD)
+Total,,,,,7359,463,0.06291615708656068,44,0.09503239740820735,974.7,56,0.007609729582823754,22.152272727272727,0.13245006114961272
+2026-08-19,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 2,EMAIL,885,36,0.04067796610169491,,,0,4,0.004519774011299435,,0
+2026-08-19,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 1,EMAIL,158,1,0.006329113924050633,1,1,16.59,,,16.59,0.105
+2026-08-19,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 1,EMAIL,50,1,0.02,,,0,2,0.04,,0
+2026-08-19,Browse Abandonment - Text + Email (1),Viewed a product,Browse Abandonment Text Message (Email + SMS Journey) ,TEXT,48,,,,,0,,,,0
+2026-08-19,Cart Abandonment - Text + Email,Added to cart,Message 06-07-24 14:29,EMAIL,30,2,0.06666666666666667,1,0.5,15.75,,,15.75,0.525
+2026-08-19,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 2,EMAIL,25,,,,,0,,,,0
+2026-08-19,Cart Abandonment - Text + Email,Added to cart,Cart Abandonment Text Message (Email + SMS),TEXT,9,,,,,0,,,,0
+2026-08-19,SR | Checkout Abandonment - Text + Email,Checkout started,Journey Checkout Abandoner Email 1,EMAIL,7,1,0.14285714285714285,,,0,,,,0
+2026-08-19,RAD Cancellation Email,Cancelled Subscription,Message 07-20-26 13:29,EMAIL,5,,,,,0,,,,0
+2026-08-19,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 2,EMAIL,2,,,,,0,,,,0
+2026-08-19,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 3,EMAIL,2,,,,,0,,,,0
+2026-08-19,RAD Welcome Email - Transactional,Active Subscriber,Message 05-27-24 22:28,EMAIL,1,,,,,0,,,,0
+2026-08-19,SR | Welcome Series,Signed up for email,Welcome 2,EMAIL,1,,,,,0,,,,0
+2026-08-19,Welcome New SMS Subscribers,Signed up for texts,Coupon Nudge 1,TEXT,1,,,,,0,,,,0
+2026-08-19,SR | Welcome Series,Signed up for email,Message 12-18-25 12:14,EMAIL,1,,,,,0,,,,0
+2026-08-19,Post Purchase Upsell V2,Made a purchase,Upsell Email #1,EMAIL,1,,,,,0,,,,0
+2026-08-19,Joined a class transactional,Joined Class,Message 05-27-24 21:58,EMAIL,1,,,,,0,,,,0
+2026-08-19,Post Purchase Upsell V2,Made a purchase,Message 06-16-26 14:02,EMAIL,,1,,,,0,,,,
+2026-08-19,SR | Welcome Series,Signed up for email,Welcome Series Email #1 Variation B,EMAIL,,1,,1,1,40.9,,,40.9,
+2026-08-19,Color Happy Cancellation Trans,Inactive Subscriber,Color Happy Cancellation Email,EMAIL,,,,,,0,,,,
+2026-08-19,Color Happy Failed Payment,Failed Payment,CH Failed Payment Email,EMAIL,,,,,,0,,,,
+2026-08-19,SR | New Customer Post Purchase,Made a purchase,Post Purchase Email #1,EMAIL,,,,,,0,,,,
+2026-08-19,RAD Yearly - Pages Dropped,pages_dropped,Yearly RAD Pages Dropped,EMAIL,,,,,,0,,,,
+2026-08-19,SR | Checkout Abandonment - Text + Email,Checkout started,Abandoned Checkout SMS Message (Email + SMS),TEXT,,,,,,0,,,,
+2026-08-20,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 2,EMAIL,157,,,,,0,,,,0
+2026-08-20,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 1,EMAIL,51,,,,,0,,,,0
+2026-08-20,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 2,EMAIL,27,1,0.037037037037037035,1,1,15.75,,,15.75,0.5833333333333334
+2026-08-20,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 2,EMAIL,20,6,0.3,,,0,1,0.05,,0
+2026-08-20,Browse Abandonment - Text + Email (1),Viewed a product,Browse Abandonment Text Message (Email + SMS Journey) ,TEXT,18,,,,,0,,,,0
+2026-08-20,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 1,EMAIL,18,,,,,0,,,,0
+2026-08-20,Post Purchase Upsell V2,Made a purchase,Upsell Email #1,EMAIL,10,,,,,0,,,,0
+2026-08-20,Cart Abandonment - Text + Email,Added to cart,Message 06-07-24 14:29,EMAIL,10,,,,,0,,,,0
+2026-08-20,SR | Checkout Abandonment - Text + Email,Checkout started,Journey Checkout Abandoner Email 1,EMAIL,6,,,,,0,,,,0
+2026-08-20,SR | Checkout Abandonment - Text + Email,Checkout started,Journey Checkout Abandoner Email 2,EMAIL,6,1,0.16666666666666666,,,0,,,,0
+2026-08-20,Post Purchase Upsell V2,Made a purchase,Message 06-16-26 14:02,EMAIL,3,,,,,0,,,,0
+2026-08-20,Cart Abandonment - Text + Email,Added to cart,Cart Abandonment Text Message (Email + SMS),TEXT,3,,,,,0,,,,0
+2026-08-20,SR | Welcome Series,Signed up for email,Welcome Series Email #1 Variation B,EMAIL,3,3,1,,,0,,,,0
+2026-08-20,RAD Cancellation Email,Cancelled Subscription,Message 07-20-26 13:29,EMAIL,2,,,,,0,,,,0
+2026-08-20,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 3,EMAIL,2,,,,,0,,,,0
+2026-08-20,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 4,EMAIL,2,,,,,0,,,,0
+2026-08-20,SR | Welcome Series,Signed up for email,Message 05-17-24 14:34,EMAIL,1,,,,,0,,,,0
+2026-08-20,SR | Welcome Series,Signed up for email,Welcome 4,EMAIL,1,,,,,0,,,,0
+2026-08-20,Welcome New SMS Subscribers,Signed up for texts,Contact Card Message,TEXT,1,,,,,0,,,,0
+2026-08-20,SR | Welcome Series,Signed up for email,Message 04-24-24 15:42,EMAIL,1,,,,,0,,,,0
+2026-08-20,Welcome New SMS Subscribers,Signed up for texts,Welcome Subscribers,TEXT,1,,,,,0,,,,0
+2026-08-20,RAD Yearly - Pages Dropped,pages_dropped,Yearly RAD Pages Dropped,EMAIL,,1,,,,0,,,,
+2026-08-20,SR | Welcome Series,Signed up for email,Welcome 2,EMAIL,,,,,,0,,,,
+2026-08-20,SR | Welcome Series,Signed up for email,Message 12-18-25 12:14,EMAIL,,,,,,0,,,,
+2026-08-21,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 2,EMAIL,50,,,,,0,,,,0
+2026-08-21,Browse Abandonment - Text + Email (1),Viewed a product,Journey Browse Abandoner Email 1,EMAIL,42,1,0.023809523809523808,,,0,,,,0
+2026-08-21,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 3,EMAIL,21,4,0.19047619047619047,1,0.25,12.5,,,12.5,0.5952380952380952
+2026-08-21,Browse Abandonment - Text + Email (1),Viewed a product,Browse Abandonment Text Message (Email + SMS Journey) ,TEXT,16,,,,,0,,,,0
+2026-08-21,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 1,EMAIL,10,,,,,0,,,,0
+2026-08-21,Sunset Journey - Email (1),Joined a Segment,List Cleaning Journey Email 2,EMAIL,9,4,0.4444444444444444,,,0,1,0.1111111111111111,,0
+2026-08-21,Cart Abandonment - Text + Email,Added to cart,Journey Cart Abandoner Email 2,EMAIL,9,,,,,0,,,,0
+2026-08-21,SR | Checkout Abandonment - Text + Email,Checkout started,Journey Checkout Abandoner Email 2,EMAIL,6,,,,,0,,,,0
+2026-08-21,Cart Abandonment - Text + Email,Added to cart,Message 06-07-24 14:29,EMAIL,6,,,,,0,,,,0
+2026-08-21,SR | Checkout Abandonment - Text + Email,Checkout started,Journey Checkout Abandoner Email 3,EMAIL,6,,,,,0,,,,0
