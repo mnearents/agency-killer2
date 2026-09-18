@@ -9,6 +9,7 @@ import { and, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { metaInsights, rateSettings } from "@/db/schema";
 import type { OrderForEconomics, RateSettings } from "./unit-economics";
+import { classifyBusinessLine, type OrderLineFacts } from "./classify";
 
 /** The business lines #34 insists on keeping apart. */
 export const BUSINESS_LINES = ["subscription", "digital", "physical"] as const;
@@ -63,6 +64,32 @@ export async function getRateSettings(db: Db, on: string): Promise<RateSettings 
   return { paymentPctRate, paymentFixedCents };
 }
 
+
+/**
+ * The row's four classifier flags, as the pure rule wants them.
+ *
+ * The rule lives in `classify.ts` rather than in a SQL CASE so that it can be
+ * tested — the query counts, the rule decides.
+ *
+ * Exported for that test. A misspelled key here reads as `undefined`, which is
+ * falsy, so a typo in `has_tracked_inventory` would quietly move every physical
+ * order into digital and nothing else would change.
+ */
+export function lineOf(r: {
+  has_subscription_type: boolean;
+  has_untyped_without_inventory: boolean;
+  has_tracked_inventory: boolean;
+  has_known_physical_type: boolean;
+}): BusinessLine {
+  const facts: OrderLineFacts = {
+    hasSubscriptionType: Boolean(r.has_subscription_type),
+    hasUntypedWithoutInventory: Boolean(r.has_untyped_without_inventory),
+    hasTrackedInventory: Boolean(r.has_tracked_inventory),
+    hasKnownPhysicalType: Boolean(r.has_known_physical_type),
+  };
+  return classifyBusinessLine(facts);
+}
+
 export interface OrdersByLine {
   line: BusinessLine;
   orders: OrderForEconomics[];
@@ -89,10 +116,16 @@ export async function getOrdersForEconomics(
         o.id,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
-        BOOL_OR(li.product_type = 'Subscription') AS has_subscription,
+        BOOL_OR(li.product_type = 'Subscription') AS has_subscription_type,
+        -- Never a product: a plan change, a proration, a subscription gift.
+        BOOL_OR(li.product_type IS NULL AND inv.id IS NULL) AS has_untyped_without_inventory,
+        -- Only a physical thing has a stock count, which is why this outranks
+        -- a blank product_type on 1,742 line items. See #43.
+        BOOL_OR(inv.tracked = 1) AS has_tracked_inventory,
         BOOL_OR(li.product_type IS NOT NULL
+                AND li.product_type <> ''
                 AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
-                AND li.product_type <> 'Subscription') AS has_physical,
+                AND li.product_type <> 'Subscription') AS has_known_physical_type,
         -- Cost of the goods, times quantity.
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         -- Coverage is measured over line revenue, so a partly-costed order
@@ -109,16 +142,16 @@ export async function getOrdersForEconomics(
       GROUP BY o.id, o.total_price_cents, o.total_tax_cents
     )
     SELECT
-      CASE
-        WHEN has_subscription THEN 'subscription'
-        WHEN has_physical THEN 'physical'
-        ELSE 'digital'
-      END AS line,
+      has_subscription_type, has_untyped_without_inventory,
+      has_tracked_inventory, has_known_physical_type,
       total_price_cents, total_tax_cents, product_cost_cents,
       line_revenue_cents, costed_line_revenue_cents
     FROM per_order
   `)) as unknown as Array<{
-    line: BusinessLine;
+    has_subscription_type: boolean;
+    has_untyped_without_inventory: boolean;
+    has_tracked_inventory: boolean;
+    has_known_physical_type: boolean;
     total_price_cents: number;
     total_tax_cents: number;
     product_cost_cents: number;
@@ -131,7 +164,7 @@ export async function getOrdersForEconomics(
   );
 
   for (const r of rows) {
-    byLine.get(r.line)?.push({
+    byLine.get(lineOf(r))?.push({
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),
@@ -250,10 +283,16 @@ export async function getNewCustomerOrders(
         o.id,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
-        BOOL_OR(li.product_type = 'Subscription') AS has_subscription,
+        BOOL_OR(li.product_type = 'Subscription') AS has_subscription_type,
+        -- Never a product: a plan change, a proration, a subscription gift.
+        BOOL_OR(li.product_type IS NULL AND inv.id IS NULL) AS has_untyped_without_inventory,
+        -- Only a physical thing has a stock count, which is why this outranks
+        -- a blank product_type on 1,742 line items. See #43.
+        BOOL_OR(inv.tracked = 1) AS has_tracked_inventory,
         BOOL_OR(li.product_type IS NOT NULL
+                AND li.product_type <> ''
                 AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
-                AND li.product_type <> 'Subscription') AS has_physical,
+                AND li.product_type <> 'Subscription') AS has_known_physical_type,
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         COALESCE(SUM(li.price_cents * li.quantity), 0) AS line_revenue_cents,
         COALESCE(SUM(CASE WHEN inv.unit_cost_cents IS NOT NULL
@@ -267,17 +306,17 @@ export async function getNewCustomerOrders(
       GROUP BY o.id, o.total_price_cents, o.total_tax_cents, fo.whole_history_held
     )
     SELECT
-      CASE
-        WHEN has_subscription THEN 'subscription'
-        WHEN has_physical THEN 'physical'
-        ELSE 'digital'
-      END AS line,
+      has_subscription_type, has_untyped_without_inventory,
+      has_tracked_inventory, has_known_physical_type,
       total_price_cents, total_tax_cents, product_cost_cents,
       line_revenue_cents, costed_line_revenue_cents,
       whole_history_held
     FROM per_order
   `)) as unknown as Array<{
-    line: BusinessLine;
+    has_subscription_type: boolean;
+    has_untyped_without_inventory: boolean;
+    has_tracked_inventory: boolean;
+    has_known_physical_type: boolean;
     total_price_cents: number;
     total_tax_cents: number;
     product_cost_cents: number;
@@ -297,7 +336,7 @@ export async function getNewCustomerOrders(
       continue;
     }
     if (!r.whole_history_held) continue;
-    byLine.get(r.line)?.push({
+    byLine.get(lineOf(r))?.push({
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),
