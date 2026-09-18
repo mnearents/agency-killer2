@@ -46,8 +46,26 @@ Meta, Shopify, Dropbox, Attentive, Anthropic, OpenAI (embeddings only),
 AssemblyAI, Shotstack, Slack. See `.env.example` for the full list. Never commit
 `.env` or credentials.
 
-Attentive and Statlas (CTC) have **no APIs** — data from these is imported
-manually.
+**Attentive has a REST API, and it has no reporting in it.** Those are two
+separate facts and conflating them is what produced the previous version of
+this paragraph, which said Attentive had no API at all.
+
+- `src/integrations/attentive-write.ts` uses `api.attentivemobile.com` with
+  `ATTENTIVE_API_KEY` to push segment membership and read subscriber
+  eligibility. That is a real, working API.
+- There is no campaign, journey, message or report endpoint on it. Verified by
+  probing: `/v1/me` answers 200, `/v1/campaigns`, `/v1/journeys`, `/v1/reports`
+  and `/v1/messages` all 404. Reporting is not in the public API at any tier.
+- So reporting is **scraped**, not imported by hand:
+  `src/integrations/attentive-agent.ts` drives Playwright through the Attentive
+  UI, handles SMS 2FA by asking Slack for the code, downloads CSV exports and
+  persists its cookies in `agent_sessions` for the next run. Credentials are
+  `ATTENTIVE_AGENT_USERNAME` / `ATTENTIVE_AGENT_PASSWORD`.
+- **Segment membership cannot be read back from Attentive at any tier** (#23).
+  We know our own segment sizes because we define them in Postgres and push
+  them (#32); Attentive will not tell us what is in a list.
+
+Statlas (CTC) has no API. Its data is imported manually.
 
 ### Subscription data — read this before counting subscribers
 
@@ -127,26 +145,39 @@ Railway URL — the internal one does not resolve off-platform.
 src/
 ├── domain/                 # Business logic — the core
 │   ├── meta/               # Ad performance analysis, recommendations
-│   ├── shopify/            # Orders, products, subscriptions, LTV
+│   ├── shopify/            # Orders, products, customers, segments
+│   ├── subscriptions/      # Seal facts, LTV, tier movement
+│   ├── economics/          # COD, contribution margin, target CPA, aMER
 │   ├── email/              # Email/SMS campaigns, creative generation
-│   ├── video/              # Analysis pipeline, edit decisions, rendering
+│   ├── attentive/          # Scraped report import and queries
 │   ├── social/             # Organic IG/FB analytics, reel creation
 │   ├── blog/               # SEO/GEO article generation
+│   ├── seo/                # Search Console and web sessions sync
 │   ├── knowledge/          # RAG retrieval, document ingestion, chunking
 │   ├── voice/              # Brand voice prompt assembly, validation
-│   └── inventory/          # Stock monitoring, alerts, bundling
+│   ├── inventory/          # Stock monitoring, alerts, bundling
+│   ├── segments/           # Segment definitions and the Attentive push
+│   ├── experiments/        # Declared experiments and their results
+│   ├── drafts/             # Generated drafts and decisions on them
+│   ├── calendar/           # Marketing calendar entries
+│   ├── alerts/             # Deterministic alert rules
+│   ├── report/             # Weekly report assembly
+│   ├── qa/                 # Output quality checks
+│   └── pilot/              # Pilot notes — the engine's own log
 ├── integrations/           # External API clients — the seams
 │   ├── anthropic.ts        # Claude API (generation + vision)
 │   ├── meta-api.ts         # Meta Marketing API
 │   ├── shopify-api.ts      # Shopify Admin GraphQL
 │   ├── dropbox.ts          # Dropbox file sync
 │   ├── assemblyai.ts       # Audio transcription
-│   ├── shotstack.ts        # Video rendering
 │   ├── openai.ts           # Embeddings only
-│   ├── attentive.ts        # Email/SMS events
-│   └── playwright.ts       # Image composition (Playwright + Sharp)
+│   ├── seal-api.ts         # Seal subscriptions
+│   ├── search-console.ts   # Google Search Console
+│   ├── shopify-analytics.ts # ShopifyQL (sessions)
+│   ├── instagram-api.ts    # Organic IG/FB
+│   ├── attentive-write.ts  # Attentive REST API (segment push, eligibility)
+│   └── attentive-agent.ts  # Playwright scrape of Attentive reports (no API)
 ├── ai/                     # LLM orchestration layer
-│   ├── prompts/            # Prompt templates (deterministic assembly)
 │   ├── guardrails.ts       # Output validation, fail-closed checks
 │   └── orchestrator.ts     # Route tasks to appropriate models/prompts
 ├── db/                     # Drizzle ORM
@@ -170,6 +201,16 @@ templates/email/            # HTML/CSS email templates (Playwright renders)
 tests/                      # Mirrors src/ structure
 tests/evals/                # LLM evals (tier 1 only)
 ```
+
+Two integrations named in the Stack table have no file here. **Shotstack** is
+not built — the video pipeline is deferred (#13). **Playwright** has no wrapper
+module; it is used directly by `integrations/attentive-agent.ts` and
+`domain/email/renderer.ts`.
+
+Every other path above is asserted by `tests/docs/claude-md-structure.test.ts`,
+which fails if this tree names a file that does not exist. It was added after
+this map spent the project pointing at `integrations/attentive.ts`, which was
+never written.
 
 ## Integration seam pattern
 
