@@ -678,6 +678,157 @@ export const attentiveRevenue = pgTable(
   ]
 );
 
+/**
+ * ─── Campaign, journey and cost detail (#23) ──────────────────────────
+ *
+ * `attentive_campaigns` above is one row per day per channel despite its name:
+ * it has no campaign id and no campaign name, so a winning launch email and
+ * four filler sends average into one mediocre number and both facts disappear.
+ * These three tables hold what the aggregate cannot.
+ *
+ * They are separate tables rather than columns on the old one because the
+ * grain is different — per message, per journey step, per day of cost — and
+ * because `attentive_campaigns_dedup_idx` is applied in production on
+ * (date, message_variant), which a campaign-level row would collide with.
+ */
+export const attentiveCampaignMessages = pgTable(
+  "attentive_campaign_messages",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    campaign: text("campaign").notNull(),
+    message: text("message").notNull(),
+    messageVariant: text("message_variant").notNull().default(""),
+    channel: text("channel").notNull(),
+    hasMedia: integer("has_media").notNull().default(0),
+    delivered: integer("delivered").notNull().default(0),
+    emailSends: integer("email_sends").notNull().default(0),
+    emailUniqueOpens: integer("email_unique_opens").notNull().default(0),
+    emailUniqueClicks: integer("email_unique_clicks").notNull().default(0),
+    totalClicks: integer("total_clicks").notNull().default(0),
+    conversions: integer("conversions").notNull().default(0),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    /** Null when there were no orders. Zero would say the orders were free. */
+    avgOrderValueCents: integer("avg_order_value_cents"),
+    /** The cost side of every send. #23 calls this the one most likely to be dropped. */
+    unsubscribes: integer("unsubscribes").notNull().default(0),
+    emailHardBounces: integer("email_hard_bounces").notNull().default(0),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attentive_campaign_messages_date_idx").on(table.date),
+    index("attentive_campaign_messages_campaign_idx").on(table.campaign),
+    uniqueIndex("attentive_campaign_messages_dedup_idx").on(
+      table.date,
+      table.campaign,
+      table.message,
+      table.channel
+    ),
+  ]
+);
+
+/**
+ * The same sends, broken out by the audience they went to.
+ *
+ * A separate table rather than a `segment` column on the rows above, for two
+ * reasons. A nullable column in a unique index does not dedupe — Postgres
+ * treats every NULL as distinct, so an unsegmented send would insert afresh on
+ * every import and `onConflictDoUpdate` would never fire. And the grain really
+ * is different: these rows sum to the same revenue as the campaign rows, so
+ * holding both in one table is an invitation to count it twice.
+ */
+export const attentiveCampaignSegments = pgTable(
+  "attentive_campaign_segments",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    message: text("message").notNull(),
+    /** "All Subscribers" for a whole-list send — Attentive's own wording. */
+    segment: text("segment").notNull(),
+    channel: text("channel").notNull(),
+    delivered: integer("delivered").notNull().default(0),
+    totalClicks: integer("total_clicks").notNull().default(0),
+    conversions: integer("conversions").notNull().default(0),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    unsubscribes: integer("unsubscribes").notNull().default(0),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attentive_campaign_segments_date_idx").on(table.date),
+    index("attentive_campaign_segments_segment_idx").on(table.segment),
+    uniqueIndex("attentive_campaign_segments_dedup_idx").on(
+      table.date,
+      table.message,
+      table.segment,
+      table.channel
+    ),
+  ]
+);
+
+export const attentiveJourneyMessages = pgTable(
+  "attentive_journey_messages",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    journeyName: text("journey_name").notNull(),
+    triggerName: text("trigger_name").notNull().default(""),
+    message: text("message").notNull(),
+    channel: text("channel").notNull(),
+    delivered: integer("delivered").notNull().default(0),
+    totalClicks: integer("total_clicks").notNull().default(0),
+    conversions: integer("conversions").notNull().default(0),
+    revenueCents: integer("revenue_cents").notNull().default(0),
+    avgOrderValueCents: integer("avg_order_value_cents"),
+    unsubscribes: integer("unsubscribes").notNull().default(0),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("attentive_journey_messages_date_idx").on(table.date),
+    index("attentive_journey_messages_journey_idx").on(table.journeyName),
+    uniqueIndex("attentive_journey_messages_dedup_idx").on(
+      table.date,
+      table.journeyName,
+      table.message,
+      table.channel
+    ),
+  ]
+);
+
+/**
+ * Daily SMS cost — not on #23's list, and the cheapest thing in the export.
+ *
+ * #34 needs it: a journey's revenue and its revenue net of carrier fees are
+ * different numbers, and only one of them is a margin.
+ */
+export const attentiveMessageCosts = pgTable(
+  "attentive_message_costs",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    date: timestamp("date", { withTimezone: true, mode: "date" }).notNull(),
+    campaignCostCents: integer("campaign_cost_cents").notNull().default(0),
+    automatedSendCostCents: integer("automated_send_cost_cents").notNull().default(0),
+    receivedCostCents: integer("received_cost_cents").notNull().default(0),
+    carrierFeesCents: integer("carrier_fees_cents").notNull().default(0),
+    /** As reported. The rounded parts do not always add to it. */
+    totalCents: integer("total_cents").notNull().default(0),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("attentive_message_costs_dedup_idx").on(table.date)]
+);
+
+export type AttentiveCampaignMessage = typeof attentiveCampaignMessages.$inferSelect;
+export type AttentiveCampaignSegment = typeof attentiveCampaignSegments.$inferSelect;
+export type AttentiveJourneyMessage = typeof attentiveJourneyMessages.$inferSelect;
+export type AttentiveMessageCost = typeof attentiveMessageCosts.$inferSelect;
+
 export type AttentiveCampaign = typeof attentiveCampaigns.$inferSelect;
 export type NewAttentiveCampaign = typeof attentiveCampaigns.$inferInsert;
 

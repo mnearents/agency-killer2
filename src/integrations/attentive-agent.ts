@@ -18,8 +18,24 @@ import { eq, sql } from "drizzle-orm";
 const ATTENTIVE_BASE = "https://ui.attentivemobile.com";
 const LOGIN_URL = `${ATTENTIVE_BASE}/signin`;
 
-const CAMPAIGN_PERFORMANCE_URL = `${ATTENTIVE_BASE}/analytics/reports/library/campaign-performance-aggregate-group`;
-const ATTRIBUTED_REVENUE_URL = `${ATTENTIVE_BASE}/analytics/reports/library/attributed-revenue`;
+const report = (slug: string) => `${ATTENTIVE_BASE}/analytics/reports/library/${slug}`;
+
+const CAMPAIGN_PERFORMANCE_URL = report("campaign-performance-aggregate-group");
+const ATTRIBUTED_REVENUE_URL = report("attributed-revenue");
+
+/**
+ * The detail reports #23 asks for. Slugs read off the live report library on
+ * 2026-09-18 — `/analytics/reports` lists them; `/analytics/reports/library`
+ * on its own renders nothing.
+ *
+ * `campaign-performance-aggregate-group`, which the two exports above use, is
+ * an intentionally aggregate report: one row per day per channel, no campaign
+ * name. These carry the name, the segment, the journey step and the cost.
+ */
+const CAMPAIGN_MESSAGE_URL = report("campaign-aggregate-performance-aggregate-group");
+const CAMPAIGN_SEGMENT_URL = report("campaign-performance-by-segment");
+const JOURNEY_MESSAGE_URL = report("journeys-message-level-performance-v2");
+const MESSAGE_COST_URL = report("daily-message-cost");
 
 const SESSION_ID = "attentive";
 
@@ -35,6 +51,14 @@ export interface AttentiveAgentConfig {
 export interface AttentiveExportResult {
   campaignCsv: string | null;
   revenueCsv: string | null;
+  /** Per-campaign, per-message — carries the campaign name and unsubscribes. */
+  campaignMessageCsv: string | null;
+  /** The same sends broken out by the audience they went to. */
+  campaignSegmentCsv: string | null;
+  /** Per-message-within-journey. Where silent ongoing loss lives (#23). */
+  journeyMessageCsv: string | null;
+  /** Daily SMS cost, split by source. Feeds #34. */
+  messageCostCsv: string | null;
   errors: string[];
 }
 
@@ -99,8 +123,14 @@ export async function exportAttentiveReports(
 ): Promise<AttentiveExportResult> {
   const errors: string[] = [];
   let browser: Browser | null = null;
-  let campaignCsv: string | null = null;
-  let revenueCsv: string | null = null;
+  const exported: Record<string, string | null> = {
+    campaignCsv: null,
+    revenueCsv: null,
+    campaignMessageCsv: null,
+    campaignSegmentCsv: null,
+    journeyMessageCsv: null,
+    messageCostCsv: null,
+  };
 
   try {
     console.log("[attentive-agent] Launching browser...");
@@ -193,22 +223,27 @@ export async function exportAttentiveReports(
     // Now export reports using the authenticated context
     const page = await context.newPage();
 
-    try {
-      campaignCsv = await exportReport(page, CAMPAIGN_PERFORMANCE_URL, "Campaign Performance");
-      console.log(`[attentive-agent] Campaign Performance: ${campaignCsv?.split("\n").length ?? 0} lines`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`Campaign Performance export failed: ${msg}`);
-      console.error(`[attentive-agent] Campaign Performance failed: ${msg}`);
-    }
+    // Each report is independent: one failing must not cost the other five,
+    // and every failure is named rather than folded into a count.
+    const wanted: Array<[keyof AttentiveExportResult, string, string]> = [
+      ["campaignCsv", CAMPAIGN_PERFORMANCE_URL, "Campaign Performance"],
+      ["revenueCsv", ATTRIBUTED_REVENUE_URL, "Attributed Revenue"],
+      ["campaignMessageCsv", CAMPAIGN_MESSAGE_URL, "Detailed Campaign Message Performance"],
+      ["campaignSegmentCsv", CAMPAIGN_SEGMENT_URL, "Campaign Performance by Segment"],
+      ["journeyMessageCsv", JOURNEY_MESSAGE_URL, "Journey Message-Level Performance"],
+      ["messageCostCsv", MESSAGE_COST_URL, "Daily Message Cost"],
+    ];
 
-    try {
-      revenueCsv = await exportReport(page, ATTRIBUTED_REVENUE_URL, "Attributed Revenue");
-      console.log(`[attentive-agent] Attributed Revenue: ${revenueCsv?.split("\n").length ?? 0} lines`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`Attributed Revenue export failed: ${msg}`);
-      console.error(`[attentive-agent] Attributed Revenue failed: ${msg}`);
+    for (const [key, url, name] of wanted) {
+      try {
+        const csv = await exportReport(page, url, name);
+        exported[key] = csv;
+        console.log(`[attentive-agent] ${name}: ${csv.split("\n").length} lines`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${name} export failed: ${msg}`);
+        console.error(`[attentive-agent] ${name} failed: ${msg}`);
+      }
     }
 
     await context.close();
@@ -222,7 +257,15 @@ export async function exportAttentiveReports(
     }
   }
 
-  return { campaignCsv, revenueCsv, errors };
+  return {
+    campaignCsv: exported.campaignCsv,
+    revenueCsv: exported.revenueCsv,
+    campaignMessageCsv: exported.campaignMessageCsv,
+    campaignSegmentCsv: exported.campaignSegmentCsv,
+    journeyMessageCsv: exported.journeyMessageCsv,
+    messageCostCsv: exported.messageCostCsv,
+    errors,
+  };
 }
 
 // ─── Login with 2FA ───────────────────────────────────────────────────
@@ -335,6 +378,29 @@ async function loginWith2FA(page: Page, config: AttentiveAgentConfig): Promise<v
   console.log("[attentive-agent] Login complete");
 }
 
+/**
+ * Remove Attentive's in-app marketing popups.
+ *
+ * Returns how many were removed so the caller can log it — a run that had to
+ * clear a popup and one that did not are different runs, and if this number
+ * starts climbing the popups are worth a real dismissal rather than a removal.
+ */
+async function dismissOverlays(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    let removed = 0;
+    const wrapper = document.getElementById("engagement-wrapper");
+    if (wrapper) {
+      wrapper.remove();
+      removed++;
+    }
+    for (const el of Array.from(document.querySelectorAll("[data-engagement]"))) {
+      el.remove();
+      removed++;
+    }
+    return removed;
+  });
+}
+
 // ─── Report export ────────────────────────────────────────────────────
 
 async function exportReport(page: Page, reportUrl: string, reportName: string): Promise<string> {
@@ -357,6 +423,20 @@ async function exportReport(page: Page, reportUrl: string, reportName: string): 
     console.error(`[attentive-agent] URL: ${currentUrl}, Title: ${title}`);
     console.error(`[attentive-agent] Body preview: ${bodyText?.slice(0, 500)}`);
     throw new Error(`${reportName} page did not show Export button within 30s`);
+  }
+
+  // Attentive renders in-app marketing popups into #engagement-wrapper, and
+  // they sit over the Export button. Playwright finds the button, reports it
+  // "visible, enabled and stable", and then retries the click for thirty
+  // seconds while the popup swallows every one — so the report fails with a
+  // click timeout rather than anything that names the cause.
+  //
+  // Observed on every one of six reports on 2026-09-18, with a popup about
+  // Product Affinity segments. The popups are dismissible and therefore
+  // intermittent, which is worse: the sync works until someone is shown one.
+  const overlays = await dismissOverlays(page);
+  if (overlays > 0) {
+    console.log(`[attentive-agent] Dismissed ${overlays} in-app popup(s) over ${reportName}`);
   }
 
   console.log(`[attentive-agent] Clicking Export for ${reportName}...`);

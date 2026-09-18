@@ -20,7 +20,12 @@ import { createSealApiClient } from "@/integrations/seal-api";
 import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
 import { createEmbeddingClient } from "@/integrations/openai";
-import { createDb } from "@/db/client";
+import { createDb, type Db } from "@/db/client";
+import { syncRuns } from "@/db/schema";
+// Reused rather than re-derived: the outcome vocabulary (ok / no-data /
+// auth-failed / api-error) is about syncs, not about Meta. A non-Meta error
+// classifies as api-error, which is the right answer for a scrape failure.
+import { classifyOutcome } from "@/domain/meta/outcomes";
 import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
 
 // Sync services
@@ -58,7 +63,13 @@ import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
-import { importAttentiveCsv } from "@/domain/attentive/import";
+import {
+  importAttentiveCsv,
+  importCampaignMessages,
+  importCampaignSegments,
+  importJourneyMessages,
+  importMessageCosts,
+} from "@/domain/attentive/import";
 import { exportAttentiveReports } from "@/integrations/attentive-agent";
 import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 import { backfillSocialInsights } from "@/domain/social/backfill";
@@ -521,26 +532,60 @@ async function main() {
         return;
       }
       console.log("[sync:attentive] Starting Attentive export agent...");
+      const startedAt = new Date();
       const exportResult = await exportAttentiveReports({
         username: attUser,
         password: attPass,
         db,
         askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
       });
+
       let imported = 0;
-      if (exportResult.campaignCsv) {
-        const r = await importAttentiveCsv(db, exportResult.campaignCsv);
+      const importErrors: string[] = [];
+
+      /** One report in, its rows counted and its failures kept. */
+      const load = async (
+        csv: string | null,
+        name: string,
+        run: (db: Db, csv: string) => Promise<{ imported: number; errors: string[] }>
+      ) => {
+        if (!csv) return;
+        const r = await run(db, csv);
         imported += r.imported;
-        console.log(`[sync:attentive] Campaign Performance: ${r.imported} rows imported`);
-      }
-      if (exportResult.revenueCsv) {
-        const r = await importAttentiveCsv(db, exportResult.revenueCsv);
-        imported += r.imported;
-        console.log(`[sync:attentive] Attributed Revenue: ${r.imported} rows imported`);
-      }
-      console.log(`[sync:attentive] Done: ${imported} total rows imported`);
-      if (exportResult.errors.length > 0) {
-        console.error("[sync:attentive] Errors:", exportResult.errors);
+        importErrors.push(...r.errors.map((e) => `${name}: ${e}`));
+        console.log(`[sync:attentive] ${name}: ${r.imported} rows imported`);
+      };
+
+      await load(exportResult.campaignCsv, "Campaign Performance", importAttentiveCsv);
+      await load(exportResult.revenueCsv, "Attributed Revenue", importAttentiveCsv);
+      await load(exportResult.campaignMessageCsv, "Campaign Messages", importCampaignMessages);
+      await load(exportResult.campaignSegmentCsv, "Campaign Segments", importCampaignSegments);
+      await load(exportResult.journeyMessageCsv, "Journey Messages", importJourneyMessages);
+      await load(exportResult.messageCostCsv, "Message Costs", importMessageCosts);
+
+      const failures = [...exportResult.errors, ...importErrors];
+
+      // Recorded, not just logged. Without a row here a run that errored, a run
+      // that found nothing and a run that never happened all look identical
+      // afterwards — which is how the Meta sync sat empty for months (#54).
+      const classified = classifyOutcome({
+        configured: true,
+        rowsWritten: imported,
+        error: failures[0],
+      });
+      await db.insert(syncRuns).values({
+        task: "sync:attentive",
+        outcome: classified.outcome,
+        rowsWritten: imported,
+        errorMessage: failures.length > 0 ? failures.join("; ") : null,
+        errorCode: classified.errorCode,
+        startedAt,
+        finishedAt: new Date(),
+      });
+
+      console.log(`[sync:attentive] Done: ${imported} rows, outcome ${classified.outcome}`);
+      if (failures.length > 0) {
+        console.error("[sync:attentive] Errors:", failures);
       }
     },
 
