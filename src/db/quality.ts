@@ -89,7 +89,7 @@ export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
       check: "line items with a blank product_type",
       table: "shopify_line_items",
       detail:
-        "Real products whose type was never set in Shopify. They cannot be split into physical vs digital revenue by product_type, and because the untyped products skew cheap, excluding them biases average order value upward.",
+        "Real products whose type was never set in Shopify — wall calendars, notepads, stickers, a quilt. The unit economics engine no longer depends on product_type to place them (#43: it falls back to whether the variant has a stock count), but every other consumer of product_type still does, and the fallback is a workaround for about thirty products that need editing in Shopify admin.",
       affected: Number(lineItems?.blankType ?? 0),
       total,
     },
