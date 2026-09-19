@@ -14,6 +14,13 @@ vi.mock("@/db/quality", () => ({
   getDataQuality: vi.fn().mockResolvedValue([]),
   anyQualityIssue: vi.fn().mockReturnValue(false),
 }));
+// Stubbed rather than left live: the real one reads `process.env`, so the
+// assertion below would depend on which variables happen to be set on the
+// machine running the suite.
+vi.mock("@/db/env-health", () => ({
+  getEnvHealth: vi.fn().mockResolvedValue([]),
+  anyEnvProblem: vi.fn().mockReturnValue(false),
+}));
 
 const ctx: McpToolContext = { db: {} as never, now: () => new Date("2026-09-02T12:00:00Z") };
 
@@ -21,11 +28,15 @@ describe("runToolCall", () => {
   it("returns the tool result as JSON text", async () => {
     const result = await runToolCall(ctx, "data_freshness", {});
     expect(result.isError).toBeFalsy();
+    // Deep equality on purpose: a field added to this response without a
+    // thought about it should fail here rather than appear unannounced.
     expect(JSON.parse(result.content[0].text)).toEqual({
       sources: [],
       anyStale: false,
       quality: [],
       anyQualityIssue: false,
+      environment: [],
+      anyEnvProblem: false,
     });
   });
 

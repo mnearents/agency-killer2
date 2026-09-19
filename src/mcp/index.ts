@@ -15,8 +15,16 @@ import { createDb } from "@/db/client";
 import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 import { createAttentiveWriteClient } from "@/integrations/attentive-write";
+import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 
 async function main() {
+  // The whole manifest, not just the failures (#35). A silent pass is
+  // indistinguishable from a check that never ran, and stderr is the only
+  // channel available here — stdout carries JSON-RPC.
+  for (const line of formatEnvCheck(checkEnv("mcp", process.env))) {
+    console.error(line);
+  }
+
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     console.error("[mcp] DATABASE_URL not set");
