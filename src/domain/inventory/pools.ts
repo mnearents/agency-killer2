@@ -75,8 +75,18 @@ export interface PoolMember {
   driftUnits: number;
 }
 
+/**
+ * `in-step` and `dormant` are deliberately different.
+ *
+ * Agreement among variants nobody sells through is arithmetic, not evidence.
+ * Reporting it as in-step is a green that means nothing — and a green that
+ * means nothing is what trains a reader to skip the field on the day it does.
+ */
+export type PoolStatus = "in-step" | "diverged" | "dormant" | "unassessable";
+
 export interface PoolAssessment {
   groupKey: string;
+  status: PoolStatus;
   /** Null when there is nothing to measure. Never 0, which would read as empty. */
   poolUnits: number | null;
   members: PoolMember[];
@@ -92,6 +102,15 @@ export interface PoolAssessment {
   unitsSoldLast30d: number;
   /** False when every member is invisible to `classifyItem` — the #9 exposure. */
   monitoredByOrdinaryChecks: boolean;
+  /**
+   * Units claimed by more than one inventory item at the same pack size.
+   *
+   * Two inventory items over the same physical goods double-count them in
+   * Shopify's own totals. The Halloween bags are 1,260 real units reported as
+   * 2,520, because the retired bundle product still holds a full copy of the
+   * live product's stock.
+   */
+  duplicateStockUnits: number;
   reason?: string;
 }
 
@@ -111,6 +130,7 @@ export interface PoolAssessment {
 export function assessPool(groupKey: string, variants: PoolVariant[]): PoolAssessment {
   const empty = {
     groupKey,
+    status: "unassessable" as PoolStatus,
     poolUnits: null,
     members: [],
     diverged: null,
@@ -119,6 +139,7 @@ export function assessPool(groupKey: string, variants: PoolVariant[]): PoolAsses
     rawSpreadUnits: 0,
     unitsSoldLast30d: 0,
     monitoredByOrdinaryChecks: false,
+    duplicateStockUnits: 0,
   };
 
   if (variants.length === 0) {
@@ -144,6 +165,16 @@ export function assessPool(groupKey: string, variants: PoolVariant[]): PoolAsses
     };
   });
 
+  // Same SKU, same pack size, two inventory items: the second copy is stock
+  // that does not exist.
+  const seen = new Map<string, number>();
+  let duplicateStockUnits = 0;
+  for (const { v, units } of implied) {
+    const key = `${v.sku}|${v.packSize}`;
+    if (seen.has(key)) duplicateStockUnits += units;
+    else seen.set(key, units);
+  }
+
   const unitsSoldLast30d = variants.reduce(
     // Sales are in packs too, so a 2-pack sale is two units out of the pool.
     (sum, v) => sum + v.unitsSoldLast30d * v.packSize,
@@ -158,6 +189,7 @@ export function assessPool(groupKey: string, variants: PoolVariant[]): PoolAsses
       members,
       unitsSoldLast30d,
       monitoredByOrdinaryChecks,
+      duplicateStockUnits,
       reason:
         "This pool has one member, so there is nothing to compare it against. " +
         "Agreement is a statement about two or more counts.",
@@ -165,17 +197,40 @@ export function assessPool(groupKey: string, variants: PoolVariant[]): PoolAsses
   }
 
   const worst = members.reduce((a, b) => (b.driftUnits > a.driftUnits ? b : a));
+  const diverged = worst.driftUnits > 0;
+
+  // Dormant means the BUNDLE is retired: nothing sold, and no multi-pack is
+  // sellable. Keyed on the multi-packs rather than on "any ACTIVE member",
+  // because a retired bundle can share a SKU with the live single-unit
+  // product that replaced it — which is exactly the Halloween case, where the
+  // ACTIVE "Default Title" product and the UNLISTED "/1" variant are two
+  // inventory items under one SKU.
+  const sellableMultiPack = variants.some(
+    (v) => v.packSize > 1 && v.productStatus === "ACTIVE"
+  );
+  const dormant = !sellableMultiPack && unitsSoldLast30d === 0;
+  const status: PoolStatus = diverged ? "diverged" : dormant ? "dormant" : "in-step";
 
   return {
     groupKey,
+    status,
     poolUnits,
     members,
-    diverged: worst.driftUnits > 0,
+    diverged,
     worstDriftUnits: worst.driftUnits,
     worst: worst.driftUnits > 0 ? worst : null,
     rawSpreadUnits: poolUnits - lowest,
     unitsSoldLast30d,
     monitoredByOrdinaryChecks,
+    duplicateStockUnits,
+    ...(status === "dormant"
+      ? {
+          reason:
+            "Nothing is listed and nothing sold in 30 days, so these counts are frozen rather than " +
+            "synchronised. They agree because nothing touches them, which is not evidence that " +
+            "anything keeps them in step.",
+        }
+      : {}),
   };
 }
 

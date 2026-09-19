@@ -1951,7 +1951,9 @@ const inventoryPools: McpTool = {
     "Quantity-break variants that sell the same physical stock through separate Shopify inventory items, and whether their counts still agree. " +
     "A pack variant's quantity is how many N-PACKS can be made, not how many units are held — so 796, 398 and 31 across the 1, 2 and 25 packs are the SAME 796 bags, and adding the rows gives 3,049, which is a quantity of nothing. NEVER sum quantity across a pool. " +
     "`poolUnits` is the real figure. `diverged` is true only when a member is short by more than its own pack size could truncate away, so a correctly synced pool never raises an alarm. " +
-    "Nothing in Shopify keeps these in step — a Mechanic task did, and it was uninstalled — so divergence is the signal that stock is being oversold. " +
+    "Read `status` before `diverged`. A `dormant` pool — nothing listed, nothing sold in 30 days — has FROZEN counts, and frozen counts agree with each other forever. Agreement there is arithmetic, not evidence that anything keeps them in step. " +
+    "Nothing in Shopify keeps these in step, and the Mechanic task that used to is gone: the bundle variants were retired in favour of an app that applies quantity-break discounts. Both declared pools are dormant for that reason. " +
+    "`duplicateStockUnits` is stock claimed by two inventory items at once. The retired bundle product still holds a full copy of the live product's count, so Shopify's own totals double-count those bags. " +
     "`monitoredByOrdinaryChecks` is false when every member is UNLISTED, which means `inventory_status` classifies them all as `ignored` while they continue to sell. " +
     "`undeclaredCandidates` are quantity-break products that look like pools and are not in the declaration; grouping is declared data, never inferred, so these need a human to confirm before they count.",
   readOnly: true,
@@ -2007,6 +2009,7 @@ const inventoryPools: McpTool = {
         group: pool.groupKey,
         productTitle: pool.productTitle,
         ...(pool.note ? { note: pool.note } : {}),
+        status: a.status,
         poolUnits: a.poolUnits,
         diverged: a.diverged,
         driftUnits: a.worstDriftUnits,
@@ -2016,6 +2019,7 @@ const inventoryPools: McpTool = {
           "High minus low across members. Integer division alone produces a spread; only `driftUnits` is real disagreement.",
         unitsSoldLast30d: a.unitsSoldLast30d,
         monitoredByOrdinaryChecks: a.monitoredByOrdinaryChecks,
+        duplicateStockUnits: a.duplicateStockUnits,
         members: a.members.map((m) => ({
           sku: m.sku,
           variantTitle: m.variantTitle,

@@ -365,3 +365,129 @@ describe("a SKU held by two inventory items", () => {
     expect(r.worstDriftUnits).toBe(96);
   });
 });
+
+/**
+ * ─── Dormant is not in-step ───────────────────────────────────────────
+ *
+ * The first version of this module concluded that "something is keeping them
+ * in step today", because 74 units had sold and the seven variants still
+ * agreed. Matt supplied the fact that breaks it: **Mechanic is not
+ * installed.** He stopped selling bundle variants and moved to an app that
+ * applies quantity-break discounts.
+ *
+ * So the bundle product is dormant — UNLISTED, nothing sells through it — and
+ * its numbers are frozen at whatever they were when it was retired. Frozen
+ * numbers agree trivially and forever. "They agree" was never evidence that a
+ * sync existed.
+ *
+ * Which makes the original report a green that means nothing, and a green that
+ * means nothing trains a reader to skip the field on the day it does mean
+ * something. Same failure the module was written to catch, one level up.
+ */
+describe("assessPool: dormancy", () => {
+  const dormantPair: PoolVariant[] = [
+    variant({ sku: "A", packSize: 1, quantity: 796, productStatus: "UNLISTED", unitsSoldLast30d: 0 }),
+    variant({ sku: "B", packSize: 2, quantity: 398, productStatus: "UNLISTED", unitsSoldLast30d: 0 }),
+  ];
+
+  it("calls a pool nobody lists and nobody buys dormant, not in-step", () => {
+    const r = assessPool("Retired", dormantPair);
+    expect(r.status).toBe("dormant");
+    expect(r.reason).toMatch(/frozen rather than synchronised/);
+  });
+
+  it("calls a live pool in agreement in-step", () => {
+    const live = dormantPair.map((v) => ({ ...v, productStatus: "ACTIVE" }));
+    expect(assessPool("Live", live).status).toBe("in-step");
+  });
+
+  /**
+   * Keyed on the multi-packs, not on "any ACTIVE member". A retired bundle can
+   * share a SKU with the live single-unit product that replaced it — which is
+   * the Halloween case exactly: the ACTIVE "Default Title" product and the
+   * UNLISTED "/1" variant are two inventory items under one SKU, and treating
+   * the pool as live because of the survivor hid the retirement.
+   */
+  it("is still dormant when only the single-unit member is live", () => {
+    const withLiveSingle = [
+      { ...dormantPair[0], productStatus: "ACTIVE" },
+      dormantPair[1],
+    ];
+    expect(assessPool("Retired", withLiveSingle).status).toBe("dormant");
+  });
+
+  it("is live when a multi-pack is still sellable", () => {
+    const sellableMultiPack = [dormantPair[0], { ...dormantPair[1], productStatus: "ACTIVE" }];
+    expect(assessPool("Live", sellableMultiPack).status).toBe("in-step");
+  });
+
+  // Selling through it makes it live even while unlisted — an UNLISTED product
+  // is still reachable by direct link.
+  it("is not dormant when something sold through it", () => {
+    const selling = [dormantPair[0], { ...dormantPair[1], unitsSoldLast30d: 3 }];
+    expect(assessPool("Selling", selling).status).toBe("in-step");
+  });
+
+  /**
+   * Divergence outranks dormancy. A dormant pool that HAS drifted drifted
+   * before it went quiet, and that is worth seeing — it is the evidence that
+   * the sync was already failing when the product was retired.
+   */
+  it("reports divergence even in a dormant pool", () => {
+    const drifted = [dormantPair[0], { ...dormantPair[1], quantity: 300 }];
+    const r = assessPool("Retired", drifted);
+    expect(r.status).toBe("diverged");
+    expect(r.diverged).toBe(true);
+  });
+
+  it("keeps `diverged` false on a dormant pool that agrees", () => {
+    // The flag stays honest; the STATUS is what says not to read anything into it.
+    expect(assessPool("Retired", dormantPair).diverged).toBe(false);
+  });
+
+  it("calls a pool it cannot compare unassessable", () => {
+    expect(assessPool("Gone", []).status).toBe("unassessable");
+    expect(assessPool("Solo", [dormantPair[0]]).status).toBe("unassessable");
+  });
+});
+
+/**
+ * ─── Stock claimed twice ──────────────────────────────────────────────
+ *
+ * The retired bundle product still holds a full copy of the live product's
+ * count: `BAGHLLWN2023` is an ACTIVE "Default Title" variant at 796 AND an
+ * UNLISTED "Spooky Spells / 1" variant at 796, two inventory items over the
+ * same bags. Shopify's own totals therefore double-count them.
+ *
+ * That is not drift — the two agree — so `diverged` is silent about it, and it
+ * needs its own number.
+ */
+describe("assessPool: duplicate inventory items", () => {
+  it("counts stock claimed twice at the same pack size", () => {
+    const r = assessPool("Spooky Spells", [
+      variant({ sku: "BAGHLLWN2023", packSize: 1, quantity: 796, productStatus: "ACTIVE" }),
+      variant({ sku: "BAGHLLWN2023", packSize: 1, quantity: 796, productStatus: "UNLISTED" }),
+      variant({ sku: "BAGHLLWN2023P2", packSize: 2, quantity: 398 }),
+    ]);
+    expect(r.duplicateStockUnits).toBe(796);
+    // And it is not drift: they agree, which is the point.
+    expect(r.diverged).toBe(false);
+  });
+
+  it("counts nothing when every inventory item is distinct", () => {
+    const r = assessPool("Clean", [
+      variant({ sku: "A", packSize: 1, quantity: 796 }),
+      variant({ sku: "B", packSize: 2, quantity: 398 }),
+    ]);
+    expect(r.duplicateStockUnits).toBe(0);
+  });
+
+  // Different pack sizes of one SKU are not duplicates — they are the pool.
+  it("does not count different pack sizes as duplicates", () => {
+    const r = assessPool("Packs", [
+      variant({ sku: "A", packSize: 1, quantity: 796 }),
+      variant({ sku: "A", packSize: 2, quantity: 398 }),
+    ]);
+    expect(r.duplicateStockUnits).toBe(0);
+  });
+});
