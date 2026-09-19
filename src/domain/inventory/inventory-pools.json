@@ -9,6 +9,13 @@
     "`inventory_pools` in the MCP surfaces UNDECLARED candidates so a new",
     "quantity-break product is noticed rather than silently unmonitored.",
     "",
+    "BOTH pools below are DORMANT and kept deliberately. The bundle variants",
+    "were retired in favour of an app that applies quantity-break discounts, so",
+    "nothing sells through them and their counts are frozen. They are declared",
+    "so the tool reports them as dormant rather than leaving 14 variants",
+    "holding stock numbers that no check looks at. Delete these entries when",
+    "the Shopify product is archived.",
+    "",
     "packSize is units per pack. A variant's `quantity` in Shopify is how many",
     "packs can be made, NOT how many units are held."
   ],
@@ -16,7 +23,7 @@
     {
       "groupKey": "Spooky Spells",
       "productTitle": "Reusable Trick or Treat Bag",
-      "note": "2023 Halloween design. Seven pack sizes over one pool, all UNLISTED, all selling.",
+      "note": "2023 Halloween design, retired. Seven pack sizes on UNLISTED product 8823553327349; live stock is the ACTIVE single-variant product 8143913844981.",
       "variants": [
         { "sku": "BAGHLLWN2023", "packSize": 1 },
         { "sku": "BAGHLLWN2023P2", "packSize": 2 },
@@ -30,7 +37,7 @@
     {
       "groupKey": "Ghostly Goodies",
       "productTitle": "Reusable Trick or Treat Bag",
-      "note": "2022 Halloween design. Same shape as Spooky Spells.",
+      "note": "2022 Halloween design, retired. Live stock is the ACTIVE single-variant product 7855387607285.",
       "variants": [
         { "sku": "BAGHLLWN2022", "packSize": 1 },
         { "sku": "BAGHLLWN2022P2", "packSize": 2 },
