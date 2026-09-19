@@ -21,11 +21,13 @@ import { createDropboxClient } from "@/integrations/dropbox";
 import { createAnthropicClient } from "@/integrations/anthropic";
 import { createEmbeddingClient } from "@/integrations/openai";
 import { createDb, type Db } from "@/db/client";
-import { syncRuns } from "@/db/schema";
+import { sql } from "drizzle-orm";
+import { envChecks, syncRuns } from "@/db/schema";
 // Reused rather than re-derived: the outcome vocabulary (ok / no-data /
 // auth-failed / api-error) is about syncs, not about Meta. A non-Meta error
 // classifies as api-error, which is the right answer for a scrape failure.
 import { classifyOutcome } from "@/domain/meta/outcomes";
+import { checkEnv, formatEnvCheck, toStoredVariables } from "@/config/env-manifest";
 import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
 
 // Sync services
@@ -118,6 +120,52 @@ async function main() {
     process.exit(1);
   }
   console.log(`[worker] Schema confirmed at or past ${expected.tag}.`);
+
+  // ─── Environment check (#35) ────────────────────────────────────────
+  //
+  // Logged in full AND recorded, because the log is the part nobody reads.
+  // The MCP runs on a different machine, so `process.env` there says nothing
+  // about this process — and two of the three variables that shipped unset
+  // were the worker's. The record is what lets `data_freshness` answer from
+  // anywhere.
+  //
+  // After the schema gate on purpose: the table has to exist before the row
+  // can be written, and a boot that cannot record its check should fail on
+  // the schema, not here.
+  const envCheck = checkEnv("worker", process.env);
+  for (const line of formatEnvCheck(envCheck)) {
+    // Through stderr when something is absent. A degraded boot styled as
+    // routine reads as routine.
+    if (envCheck.complete) console.log(line);
+    else console.error(line);
+  }
+  try {
+    await db
+      .insert(envChecks)
+      .values({
+        surface: "worker",
+        recordedAt: new Date(),
+        variables: toStoredVariables(envCheck),
+        missingRequired: envCheck.missingRequired.length,
+        missingDegraded: envCheck.missingDegraded.length,
+      })
+      .onConflictDoUpdate({
+        target: envChecks.surface,
+        set: {
+          recordedAt: sql`EXCLUDED.recorded_at`,
+          variables: sql`EXCLUDED.variables`,
+          missingRequired: sql`EXCLUDED.missing_required`,
+          missingDegraded: sql`EXCLUDED.missing_degraded`,
+        },
+      });
+  } catch (err) {
+    // Never fatal. Failing to RECORD the check is not a reason to refuse to
+    // run, and the stale timestamp left behind is itself the signal — an old
+    // record reads as unknown rather than as current.
+    console.error(
+      `[worker] Could not record the environment check: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 
   const metaClient = getEnvOptional("META_ACCESS_TOKEN")
     ? createMetaApiClient(getEnv("META_ACCESS_TOKEN"))

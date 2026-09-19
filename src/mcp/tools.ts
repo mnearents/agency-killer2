@@ -32,6 +32,7 @@ import {
 
 import { getDataFreshness } from "@/db/freshness";
 import { getDataQuality, anyQualityIssue } from "@/db/quality";
+import { getEnvHealth, anyEnvProblem } from "@/db/env-health";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
@@ -199,15 +200,18 @@ const dataFreshness: McpTool = {
   readOnly: true,
   schema: {},
   async run(ctx) {
-    const [sources, quality] = await Promise.all([
+    const [sources, quality, environment] = await Promise.all([
       getDataFreshness(ctx.db, ctx.now()),
       getDataQuality(ctx.db),
+      getEnvHealth(ctx.db, ctx.now()),
     ]);
     return {
       sources,
       anyStale: sources.some((s) => s.stale),
       quality,
       anyQualityIssue: anyQualityIssue(quality),
+      environment,
+      anyEnvProblem: anyEnvProblem(environment),
     };
   },
 };

@@ -824,6 +824,32 @@ export const attentiveMessageCosts = pgTable(
   (table) => [uniqueIndex("attentive_message_costs_dedup_idx").on(table.date)]
 );
 
+/**
+ * What each surface found in its environment at boot (#35).
+ *
+ * The worker runs on Railway and the MCP is spawned by Claude Desktop on
+ * Matt's Mac, so `process.env` in one says nothing about the other — and two
+ * of the three variables that shipped unset were the worker's. The worker
+ * records its own check here so `data_freshness` can report it from anywhere.
+ *
+ * `variables` holds names and a present flag and NOTHING else. The analytics
+ * role can read this, so it has to be safe to expose by construction rather
+ * than by review.
+ *
+ * One row per surface, replaced on each boot. `recordedAt` is what makes a
+ * stale record read as stale instead of as current.
+ */
+export const envChecks = pgTable("env_checks", {
+  surface: text("surface").primaryKey(),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+  /** `[{ "name": "SEAL_API_TOKEN", "present": false }]` — never a value. */
+  variables: jsonb("variables").notNull(),
+  missingRequired: integer("missing_required").notNull().default(0),
+  missingDegraded: integer("missing_degraded").notNull().default(0),
+});
+
+export type EnvCheckRow = typeof envChecks.$inferSelect;
+
 export type AttentiveCampaignMessage = typeof attentiveCampaignMessages.$inferSelect;
 export type AttentiveCampaignSegment = typeof attentiveCampaignSegments.$inferSelect;
 export type AttentiveJourneyMessage = typeof attentiveJourneyMessages.$inferSelect;
