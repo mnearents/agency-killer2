@@ -1563,6 +1563,159 @@ export const rateSettings = pgTable(
 export type RateSettingRow = typeof rateSettings.$inferSelect;
 
 /**
+ * The 3PL charge ledger, one row per charge (#34).
+ *
+ * The export is charge-grained, not shipment-grained: each row carries a
+ * charge plus context from whichever entity produced it — a shipment, a
+ * product, a storage bin, a return, the bill itself. Irrelevant blocks are
+ * blank, so a storage row has no tracking number and a pick row has no bin.
+ *
+ * Stored at that grain deliberately. Splitting it into shipments, storage and
+ * returns on import would mean a charge type nobody anticipated is dropped by
+ * an importer that still reports success; kept whole, a new type arrives as
+ * rows with an unfamiliar `fee` that a query can find.
+ *
+ * Note what the first live bill does NOT contain: any carrier postage.
+ * `billed_label_cost_cents` and `reconciled_label_cost_cents` were empty on
+ * all 201 rows while 162 carried tracking numbers, so the 3PL bills handling
+ * and postage is paid somewhere else. Both columns exist because the export
+ * declares them, and a future bill may populate them — but physical COD is not
+ * complete from this table alone, and `threepl_charges` must never be read as
+ * if it were the whole cost of delivery.
+ */
+export const threeplCharges = pgTable(
+  "threepl_charges",
+  {
+    /** Deterministic over the bill and the row's content, so re-import is idempotent. */
+    id: text("id").primaryKey(),
+
+    billNumber: text("bill_number").notNull(),
+    periodStart: date("period_start", { mode: "string" }),
+    periodEnd: date("period_end", { mode: "string" }),
+
+    chargeDate: date("charge_date", { mode: "string" }),
+    /** storage | order | recurring | returns | ad_hoc — as the export spells it. */
+    category: text("category"),
+    /** The human label: INVENTORY STORAGE, STANDARD PICK FEE, API CONNECTION… */
+    fee: text("fee"),
+    /** The machine type: storing_by_location_charge, first_pick_charge… */
+    type: text("type"),
+    label: text("label"),
+    description: text("description"),
+
+    unitRateCents: integer("unit_rate_cents"),
+    quantity: real("quantity"),
+    /**
+     * Null where the export gave no amount. Never coerced to 0 — a charge with
+     * no recorded cost and a charge of zero need opposite handling (#91).
+     */
+    totalCents: integer("total_cents"),
+
+    /** Resolved to `RH######`; joins `shopify_orders.order_number`. */
+    orderNumber: text("order_number"),
+    /** Which export column it came from. The first bill used `Order # (shipment)`. */
+    orderNumberSource: text("order_number_source"),
+    orderDate: date("order_date", { mode: "string" }),
+
+    trackingNumber: text("tracking_number"),
+    method: text("method"),
+    box: text("box"),
+    weight: real("weight"),
+    country: text("country"),
+    state: text("state"),
+    city: text("city"),
+    postalCode: text("postal_code"),
+    unitsOrdered: real("units_ordered"),
+    unitsShipped: real("units_shipped"),
+
+    sku: text("sku"),
+    productName: text("product_name"),
+    binType: text("bin_type"),
+    daysOccupied: real("days_occupied"),
+
+    returnReason: text("return_reason"),
+    unitsReceived: real("units_received"),
+    unitsRestocked: real("units_restocked"),
+    rmaCarrier: text("rma_carrier"),
+    rmaMethod: text("rma_method"),
+    rmaQuotedCostCents: integer("rma_quoted_cost_cents"),
+
+    customerName: text("customer_name"),
+    customerId: text("customer_id"),
+
+    /** What the carrier quoted versus what it charged after reweighing. */
+    billedLabelCostCents: integer("billed_label_cost_cents"),
+    reconciledLabelCostCents: integer("reconciled_label_cost_cents"),
+
+    /** Columns the parser does not map, kept rather than dropped. */
+    extra: jsonb("extra"),
+    /** The whole row, for audit. Carries recipient name and address. */
+    raw: jsonb("raw"),
+
+    sourceFile: text("source_file"),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("threepl_charges_bill_idx").on(table.billNumber),
+    index("threepl_charges_order_idx").on(table.orderNumber),
+    index("threepl_charges_date_idx").on(table.chargeDate),
+    index("threepl_charges_sku_idx").on(table.sku),
+    index("threepl_charges_category_idx").on(table.category),
+  ]
+);
+
+export type ThreeplChargeDbRow = typeof threeplCharges.$inferSelect;
+export type NewThreeplChargeDbRow = typeof threeplCharges.$inferInsert;
+
+/**
+ * Fixed overhead — software and subscriptions that do not vary with orders.
+ *
+ * Kept out of Cost of Delivery on purpose. COD is a per-order variable cost,
+ * and folding a fixed fee into it makes COD% a function of volume: a slow
+ * month would report a higher cost of delivery for no operational reason, and
+ * since break-even aMER is 1/(1-COD%) that error lands straight in every
+ * target CPA.
+ *
+ * The first row is the 3PL's own `API CONNECTION` line at $125 a period, which
+ * arrives inside the charge export rather than from a separate list — so a
+ * recurring cost can be discovered by the importer, not only entered by hand.
+ *
+ * Effective-dated the way `rate_settings` is: a change closes the open row and
+ * opens a new one, because a margin computed for March has to use March's
+ * costs and editing in place would silently restate history.
+ */
+export const recurringCosts = pgTable(
+  "recurring_costs",
+  {
+    id: text("id").primaryKey(),
+    /** What it is: "API CONNECTION", "Shopify Plus", "Klaviyo". */
+    name: text("name").notNull(),
+    vendor: text("vendor"),
+    amountCents: integer("amount_cents").notNull(),
+    /** monthly | annual | per_bill_period — never normalised on write. */
+    cadence: text("cadence").notNull(),
+    effectiveFrom: date("effective_from", { mode: "string" }).notNull(),
+    /** Null while current. Closing a row is how a cost changes. */
+    effectiveTo: date("effective_to", { mode: "string" }),
+    /**
+     * threepl | manual. A cost the importer found and one a human typed need
+     * different trust, and a single column that means both is how a stale
+     * hand-entered figure outlives the thing it described.
+     */
+    source: text("source").notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("recurring_costs_name_idx").on(table.name, table.effectiveFrom),
+    index("recurring_costs_open_idx").on(table.effectiveTo),
+  ]
+);
+
+export type RecurringCostRow = typeof recurringCosts.$inferSelect;
+export type NewRecurringCostRow = typeof recurringCosts.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts
