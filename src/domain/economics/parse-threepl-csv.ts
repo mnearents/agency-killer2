@@ -143,29 +143,59 @@ function detectDelimiter(header: string): string {
   return header.includes("\t") ? "\t" : ",";
 }
 
-function splitLine(line: string, delimiter: string): string[] {
-  if (delimiter === "\t") return line.split("\t");
-  const fields: string[] = [];
+/**
+ * Splits the whole file into records, honouring quotes across line breaks.
+ *
+ * The live export carries newlines inside quoted fields — 204 physical lines
+ * for 202 records in the first bill. Splitting on newlines first and parsing
+ * quotes second shreds those records into fragments which still parse: extra
+ * rows with null amounts and a description spliced into the date column. It
+ * looks like dirty data rather than a parser bug, which is why it is done in
+ * one pass here.
+ *
+ * `""` inside a quoted field is an escaped quote, per RFC 4180.
+ */
+export function splitRecords(content: string, delimiter: string): string[][] {
+  const records: string[][] = [];
+  let fields: string[] = [];
   let current = "";
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+  let sawAny = false;
+
+  const endField = () => {
+    fields.push(current);
+    current = "";
+  };
+  const endRecord = () => {
+    endField();
+    if (sawAny) records.push(fields);
+    fields = [];
+    sawAny = false;
+  };
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
+      if (inQuotes && content[i + 1] === '"') {
         current += '"';
         i++;
       } else {
         inQuotes = !inQuotes;
       }
+      sawAny = true;
     } else if (ch === delimiter && !inQuotes) {
-      fields.push(current);
-      current = "";
+      endField();
+      sawAny = true;
+    } else if ((ch === "\n" || ch === "\r") && !inQuotes) {
+      if (ch === "\r" && content[i + 1] === "\n") i++;
+      endRecord();
     } else {
       current += ch;
+      if (ch.trim() !== "") sawAny = true;
     }
   }
-  fields.push(current);
-  return fields;
+  endRecord();
+  return records;
 }
 
 function clean(value: string | undefined): string | null {
@@ -237,13 +267,18 @@ export function chooseOrderColumn(raws: Record<string, string>[]): OrderColumnCh
 }
 
 export function parseThreeplChargeCsv(content: string): ParseResult {
-  const lines = content.split(/\r?\n/).filter((l) => l.trim() !== "");
-  if (lines.length === 0) {
+  if (content.trim() === "") {
     throw new Error("3PL charge export is empty — nothing to import");
   }
 
-  const delimiter = detectDelimiter(lines[0]);
-  const header = splitLine(lines[0], delimiter).map((h) => h.replace(/^"|"$/g, "").trim());
+  const firstLine = content.split(/\r?\n/, 1)[0] ?? "";
+  const delimiter = detectDelimiter(firstLine);
+  const records = splitRecords(content, delimiter);
+  if (records.length === 0) {
+    throw new Error("3PL charge export is empty — nothing to import");
+  }
+
+  const header = records[0].map((h) => h.trim());
 
   const required = ["Date (charge)", "Category (charge)", "Total (charge)"];
   const missing = required.filter((c) => !header.includes(c));
@@ -255,8 +290,7 @@ export function parseThreeplChargeCsv(content: string): ParseResult {
   }
 
   const raws: Record<string, string>[] = [];
-  for (const line of lines.slice(1)) {
-    const fields = splitLine(line, delimiter);
+  for (const fields of records.slice(1)) {
     const raw: Record<string, string> = {};
     header.forEach((col, i) => {
       raw[col] = fields[i] ?? "";

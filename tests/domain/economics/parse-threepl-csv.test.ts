@@ -126,6 +126,35 @@ describe("parseThreeplChargeCsv", () => {
     expect(() => parseThreeplChargeCsv("")).toThrow(/empty/);
   });
 
+  // The live export carries fields with newlines inside the quotes — 204
+  // physical lines for 202 records. Splitting on newlines before honouring
+  // quotes shreds those records into fragments that still parse, producing
+  // extra rows with null amounts and a description spliced into the date.
+  it("treats a quoted field containing a newline as one record", () => {
+    const content = [
+      "Date (charge),Category (charge),Total (charge),Description (charge)",
+      `2026-08-25,order,1.10,"Pick fee`,
+      `second line of the note",`,
+    ].join("\n");
+    const { rows } = parseThreeplChargeCsv(content);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].chargeDate).toBe("2026-08-25");
+    expect(rows[0].totalCents).toBe(110);
+    expect(rows[0].description).toBe("Pick fee\nsecond line of the note");
+  });
+
+  it("does not invent rows from the fragments of a multi-line record", () => {
+    const content = [
+      "Date (charge),Category (charge),Total (charge),Description (charge)",
+      `2026-08-25,order,1.10,"a`,
+      `b",`,
+      `2026-08-26,storage,2.20,plain`,
+    ].join("\n");
+    const { rows } = parseThreeplChargeCsv(content);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.totalCents)).toEqual([110, 220]);
+  });
+
   it("handles comma-delimited exports with quoted fields", () => {
     const content = [
       "Date (charge),Category (charge),Total (charge),Description (charge)",
