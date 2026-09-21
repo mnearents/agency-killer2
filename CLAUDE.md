@@ -168,6 +168,58 @@ banner to **stdout**, which is the JSON-RPC channel, and the handshake fails.
 For the same reason `src/mcp/index.ts` logs to stderr only. Use the public
 Railway URL — the internal one does not resolve off-platform.
 
+That entry is the *development* one: it runs from the working tree, so an edit
+to `src/mcp/` takes effect on the next Claude Desktop restart.
+
+#### Installing on a machine that does not have this repo
+
+`pnpm mcp:bundle` writes `dist/mcp/` — two self-contained ESM files, an env
+template and a README. Copy that folder to the other machine and run
+`node install.mjs` inside it. Node 22 is the only prerequisite: no clone, no
+pnpm install, no node_modules, no toolchain.
+
+This works because the MCP import graph is pure TypeScript over three pure-JS
+packages (`@modelcontextprotocol/sdk`, `drizzle-orm`, `postgres`). Nothing in
+it compiles per-platform, so one bundle built on any machine runs on all three
+desktop platforms. It is also why the bundle must not grow a native dependency
+without someone reconsidering this.
+
+Three things the build and the installer enforce, each for a failure that is
+otherwise silent:
+
+- **No module that resolves paths at runtime may enter the bundle.** Bundled,
+  `import.meta.url` points at the bundle and the `process.cwd()` fallback
+  points wherever Claude Desktop started the process — neither is the repo.
+  `src/domain/voice/loader.ts` and `src/db/schema-gate.ts` both do this; both
+  are currently outside the MCP graph, and `DISK_READERS` in
+  `scripts/build-mcp.ts` fails the build if that changes. Such a module works
+  here and throws there.
+- **The config records an absolute path to the node binary**, taken from
+  `process.execPath` of the node that ran the installer. Claude Desktop is a
+  GUI app and does not inherit the shell's PATH, so a bare `node` resolves
+  against a minimal system PATH — which is not where a version manager keeps
+  node. This is the same reason the development entry above names
+  `/usr/local/bin/pnpm` rather than `pnpm`.
+- **The installer proves the server runs before reporting success.** It speaks
+  JSON-RPC to the command it just wrote and counts the tools listed. Writing a
+  config is not evidence: a config pointing at a node that does not exist is
+  written perfectly and produces a client that lists nothing and says nothing.
+
+The installer merges into `mcpServers` rather than replacing it, so other
+servers on that machine survive. It reports unrecognised keys in the env file
+instead of dropping them — a misspelled `ATTENTIVE_APIKEY` is otherwise
+indistinguishable from a deliberate omission.
+
+`DATABASE_URL` is the only required credential. `ANALYTICS_DATABASE_URL` and
+`ATTENTIVE_API_KEY` are optional and their tools report themselves unavailable
+when absent, so a machine that should only read can be given the first alone —
+note that leaving out `ATTENTIVE_API_KEY` is what makes an install read-only,
+since the segment push tools are the only writes in the surface.
+
+Updating a machine is replacing the two `.mjs` files; the config keeps pointing
+at the same paths. Moving the folder breaks it, because those paths are
+absolute — re-run `node install.mjs` after a move.
+
 ## Project structure
 
 ```
@@ -222,8 +274,13 @@ src/
 │   ├── index.ts            # stdio entry point
 │   ├── server.ts           # Transport-agnostic server construction
 │   ├── tools.ts            # Tool surface over the domain query layer
-│   └── args.ts             # Fail-closed argument validation
+│   ├── args.ts             # Fail-closed argument validation
+│   ├── install.ts          # Installer logic — pure, for the portable bundle
+│   └── install-cli.ts      # Installer entry point (bundled as install.mjs)
 └── lib/                    # Shared utilities (dates, formatting, etc.)
+
+scripts/
+└── build-mcp.ts            # Bundles the MCP server for another machine
 
 app/                        # Next.js App Router (dashboard)
 templates/email/            # HTML/CSS email templates (Playwright renders)
@@ -369,6 +426,7 @@ pnpm run dev:web                      # Next.js dev server
 pnpm run dev:worker                   # worker + Slack bot
 pnpm run test                         # tier 0: fast deterministic tests
 pnpm run test:all                     # tier 1: full suite + evals
+pnpm run mcp:bundle                   # build dist/mcp/ for another machine
 ```
 
 ## Testing & verification
