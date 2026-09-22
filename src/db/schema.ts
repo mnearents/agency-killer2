@@ -1716,6 +1716,64 @@ export type RecurringCostRow = typeof recurringCosts.$inferSelect;
 export type NewRecurringCostRow = typeof recurringCosts.$inferInsert;
 
 /**
+ * One row per shipping label (#34).
+ *
+ * The file that made postage attributable: its label costs sum to $129.74 over
+ * bill 720698's window, matching that invoice's gap against the charge ledger
+ * to the cent.
+ *
+ * `label_cost_cents` is NULL where the postage is billed to an account the 3PL
+ * does not invoice — every DHL BPM Ground label, 69% of the shipment base.
+ * `postage_basis` says which of three things a row is, and the distinction is
+ * the whole point: a 0.00 stored as zero would understate physical cost of
+ * delivery by two thirds of all shipments while the total still looked whole.
+ *
+ * Never aggregate cost here without also reporting coverage. A sum over this
+ * table is a sum over the 31% that is known.
+ */
+export const threeplShipments = pgTable(
+  "threepl_shipments",
+  {
+    /** The 3PL's shipping label id — unique across all 2,508 live rows. */
+    id: text("id").primaryKey(),
+
+    /** `RH######`; joins `shopify_orders.order_number`. Two live rows are neither. */
+    orderNumber: text("order_number"),
+    orderDate: date("order_date", { mode: "string" }),
+    /** When the label was created. DHL bills on induction, which can differ. */
+    createdAt: date("created_at_date", { mode: "string" }),
+
+    carrier: text("carrier"),
+    shippingMethod: text("shipping_method"),
+    trackingNumber: text("tracking_number"),
+    weightLb: real("weight_lb"),
+
+    /** What the customer paid for shipping. */
+    shippingChargedCents: integer("shipping_charged_cents"),
+    /** What the label cost — NULL when billed to an account we cannot see. */
+    labelCostCents: integer("label_cost_cents"),
+    /** billed | unbilled | zero. See the header. */
+    postageBasis: text("postage_basis").notNull(),
+
+    state: text("state"),
+    country: text("country"),
+
+    raw: jsonb("raw"),
+    sourceFile: text("source_file"),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("threepl_shipments_order_idx").on(table.orderNumber),
+    index("threepl_shipments_created_idx").on(table.createdAt),
+    index("threepl_shipments_basis_idx").on(table.postageBasis),
+    index("threepl_shipments_method_idx").on(table.shippingMethod),
+  ]
+);
+
+export type ThreeplShipmentRow = typeof threeplShipments.$inferSelect;
+export type NewThreeplShipmentRow = typeof threeplShipments.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts
