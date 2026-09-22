@@ -1,0 +1,1 @@
+ALTER TABLE "threepl_shipments" ADD COLUMN "postal_code" text;

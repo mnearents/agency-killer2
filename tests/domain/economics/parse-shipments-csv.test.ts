@@ -8,7 +8,7 @@ import {
 
 const HEADER =
   "Shipping Label ID,Order Number,Order date,Created at,Carrier,Shipping Method," +
-  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Country";
+  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Zip,Country";
 
 interface Spec {
   id?: string; order?: string; created?: string; carrier?: string; method?: string;
@@ -22,7 +22,7 @@ function csv(specs: Spec[]): string {
       [
         s.id ?? "L1", s.order ?? "RH354748", "2026-09-01", s.created ?? "2026-09-04 11:09:07",
         s.carrier ?? "dhl_ecommerce", s.method ?? "DHL BPM Ground", "TRK1",
-        s.weight ?? "2.35", s.charged ?? "4.50", s.cost ?? "0.00", "UT", "US",
+        s.weight ?? "2.35", s.charged ?? "4.50", s.cost ?? "0.00", "UT", "84043", "US",
       ].join(","),
     ),
   ].join("\n");
@@ -80,6 +80,13 @@ describe("parseShipmentsCsv", () => {
 
   it("normalises the order number so it joins shopify_orders", () => {
     expect(parseShipmentsCsv(csv([{ order: "rh354748" }])).rows[0].orderNumber).toBe("RH354748");
+  });
+
+  // Carrier rates are priced by zone, and a zone comes from the zip prefix.
+  // State spans zones, so rating from it would be wrong without being visibly
+  // wrong.
+  it("keeps the destination postcode, which is what zones are derived from", () => {
+    expect(parseShipmentsCsv(csv([{}])).rows[0].postalCode).toBe("84043");
   });
 
   it("keeps what the customer was charged separate from what the label cost", () => {

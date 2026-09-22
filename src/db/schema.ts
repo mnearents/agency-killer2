@@ -1756,6 +1756,8 @@ export const threeplShipments = pgTable(
     postageBasis: text("postage_basis").notNull(),
 
     state: text("state"),
+    /** Destination postcode — carrier zones are derived from it, not from state. */
+    postalCode: text("postal_code"),
     country: text("country"),
 
     raw: jsonb("raw"),

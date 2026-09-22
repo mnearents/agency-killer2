@@ -45,6 +45,12 @@ export interface ShipmentRow {
    */
   postageBasis: "billed" | "unbilled" | "zero";
   state: string | null;
+  /**
+   * Destination postcode. Carried because carrier rates are priced by zone,
+   * and a zone is derived from the origin/destination zip prefix — not from
+   * the state, which can span two zones and would mis-rate silently.
+   */
+  postalCode: string | null;
   country: string | null;
   raw: Record<string, string>;
 }
@@ -81,7 +87,7 @@ export interface ShipmentParseResult {
 const KNOWN_COLUMNS = new Set([
   "Shipping Label ID", "Order Number", "Order date", "Created at", "Carrier",
   "Shipping Method", "Tracking Number", "Weight (lb)", "Total Shipping Charged",
-  "Label Cost", "State", "Country",
+  "Label Cost", "State", "Country", "Zip",
 ]);
 
 function splitRecords(content: string): string[][] {
@@ -201,6 +207,7 @@ export function parseShipmentsCsv(content: string): ShipmentParseResult {
       labelCostCents,
       postageBasis,
       state: g("State"),
+      postalCode: g("Zip"),
       country: g("Country"),
       raw,
     });
