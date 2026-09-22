@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "note": "Declared product lines for unit economics (#34). Rules are evaluated in order and the FIRST match wins, so a more specific line must appear above a broader one. Every shipped product must match a rule; anything left over is reported, never defaulted.",
+  "lines": [
+    {
+      "id": "wall_calendars",
+      "label": "Wall calendars",
+      "parent": "physical",
+      "advertised": false,
+      "why": "Pushed by email and organic, not ads. Kept separate because dimensional weight makes them cost ~$15.37 to ship against $2.96 charged \u2014 blending them into planners would flatter the line we do advertise. Listed first because they are typed blank on 217 line items and Stationery on 7, so no product_type identifies them.",
+      "match": {
+        "titleContains": [
+          "wall calendar"
+        ]
+      }
+    },
+    {
+      "id": "planners",
+      "label": "Planners",
+      "parent": "physical",
+      "advertised": true,
+      "why": "The advertised physical line. Planner stickers are included as an accessory that normally rides along with a planner.",
+      "match": {
+        "productType": [
+          "Planners"
+        ],
+        "titleContains": [
+          "planner sticker"
+        ]
+      }
+    },
+    {
+      "id": "subscription",
+      "label": "RAD subscription",
+      "parent": "subscription",
+      "advertised": true,
+      "why": "Really Awesome Doodles. Digital: recurring orders ship nothing, and only some initial orders carry a physical welcome item.",
+      "match": {
+        "productType": [
+          "Subscription"
+        ]
+      }
+    },
+    {
+      "id": "return_protection",
+      "label": "Return protection",
+      "parent": "digital",
+      "advertised": false,
+      "why": "Third-party return insurance sold at checkout (2,866 line items). Revenue with no COGS, no pick, no parcel \u2014 folded into planners it would lift that line's margin with money that buys nothing. Marked an add-on: it rides along with a real product, so its presence must not make a basket count as spanning lines.",
+      "match": {
+        "productType": [
+          "return"
+        ]
+      },
+      "addon": true
+    },
+    {
+      "id": "other_physical",
+      "label": "Other physical",
+      "parent": "physical",
+      "advertised": false,
+      "why": "Notepads, stationery, markers, ties. Not advertised \u2014 a $19 notepad does not carry an ad budget \u2014 but its costs are real and must land somewhere rather than being dropped.",
+      "match": {
+        "catchAllPhysical": true
+      }
+    },
+    {
+      "id": "digital",
+      "label": "Digital printables",
+      "parent": "digital",
+      "advertised": false,
+      "why": "Terminal rule. Matches the known digital types, and otherwise claims any remaining product with no stock count \u2014 the same fallback the coarse classifier in classify.ts uses. Revenue arriving via the fallback rather than a type is reported separately, so a mis-typed physical product cannot hide in it as a printable with no shipping cost (#43).",
+      "match": {
+        "productType": [
+          "Digital",
+          "Font",
+          "Class",
+          "Gift Card",
+          "Pages"
+        ],
+        "catchAllDigital": true
+      }
+    }
+  ]
+}
