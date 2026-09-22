@@ -55,9 +55,32 @@ export const ADVERTISED_LINES = LINES.filter((l) => l.advertised).map((l) => l.i
 
 export interface ProductFacts {
   title: string | null;
+  /**
+   * The type on the ORDER — a snapshot copied onto the line item when it was
+   * bought. It does not change when the product is retyped in admin, so it is
+   * blank on 2,135 historical line items whose product has been typed all
+   * along. Never read on its own.
+   */
   productType: string | null;
+  /**
+   * The type on the PRODUCT as it stands now, from `shopify_inventory`.
+   * Authoritative: 1,902 of those 2,135 blank line items have one. This is
+   * what #43 actually was — not 30 untyped products, but the classifier
+   * reading the snapshot instead of the product.
+   */
+  liveProductType?: string | null;
   /** Whether the variant has a stock count. Only a physical thing has one. */
   tracked: boolean;
+}
+
+/**
+ * The type to classify on: the live product first, the order snapshot only as
+ * a fallback for a line item whose product no longer exists.
+ */
+export function effectiveProductType(facts: ProductFacts): string {
+  const live = (facts.liveProductType ?? "").trim();
+  if (live !== "") return live;
+  return (facts.productType ?? "").trim();
 }
 
 export interface ProductMatch {
@@ -82,7 +105,7 @@ export function classifyProduct(facts: ProductFacts): LineRule | null {
 
 export function matchProduct(facts: ProductFacts): ProductMatch | null {
   const title = (facts.title ?? "").toLowerCase();
-  const productType = facts.productType ?? "";
+  const productType = effectiveProductType(facts);
 
   for (const rule of LINES) {
     if (rule.match.titleContains?.some((needle) => title.includes(needle.toLowerCase()))) {
@@ -90,7 +113,6 @@ export function matchProduct(facts: ProductFacts): ProductMatch | null {
     }
     if (rule.match.productType?.includes(productType)) return { rule, matchedBy: "rule" };
     if (rule.match.catchAllPhysical && facts.tracked) return { rule, matchedBy: "fallback" };
-    if (rule.match.catchAllDigital && !facts.tracked) return { rule, matchedBy: "fallback" };
   }
   return null;
 }

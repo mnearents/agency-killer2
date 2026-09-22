@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   LINES,
   matchProduct,
+  effectiveProductType,
   ADVERTISED_LINES,
   classifyProduct,
   assignOrderToLine,
@@ -10,6 +11,10 @@ import {
 
 const p = (title: string, productType: string | null, tracked = true) => ({
   title, productType, tracked,
+});
+/** A product whose live type differs from the snapshot copied onto the order. */
+const live = (title: string, snapshot: string | null, liveType: string | null, tracked = true) => ({
+  title, productType: snapshot, liveProductType: liveType, tracked,
 });
 
 describe("the declaration", () => {
@@ -34,8 +39,10 @@ describe("the declaration", () => {
     expect(LINES.findIndex((l) => l.id === "planners")).toBeLessThan(catchAll);
   });
 
-  it("declares the digital fallback last of all", () => {
-    expect(LINES.findIndex((l) => l.match.catchAllDigital)).toBe(LINES.length - 1);
+  // There is no digital catch-all by design: an untyped product is excluded,
+  // not absorbed.
+  it("declares no digital catch-all", () => {
+    expect(LINES.some((l) => l.match.catchAllDigital)).toBe(false);
   });
 });
 
@@ -79,16 +86,28 @@ describe("classifyProduct", () => {
       .toBe("return_protection");
   });
 
-  // Everything has to land somewhere, but a fallback that reports identically
-  // to a real match is undetectable.
-  it("claims an untyped untracked product as digital, and says it was a fallback", () => {
-    const m = matchProduct(p("Travel Log Printable", "", false));
-    expect(m?.rule.id).toBe("digital");
-    expect(m?.matchedBy).toBe("fallback");
-  });
-
   it("reports a named type match as a rule, not a fallback", () => {
     expect(matchProduct(p("Printable pack", "Digital", false))?.matchedBy).toBe("rule");
+  });
+
+  // An untyped product is a test listing, a never-launched one, or something
+  // discontinued years ago. Excluded entirely rather than absorbed — but the
+  // exclusion is reported, never silent.
+  it("excludes a product with no type on the live product record", () => {
+    expect(matchProduct(p("Color Happy Test Variants | DO NOT BUY", "", false))).toBeNull();
+  });
+
+  // Plan changes carry no type and no inventory row. Matched by name rather
+  // than by "untyped with no inventory row", which would also swallow the test
+  // variants above.
+  it("classifies a prorated plan change as subscription", () => {
+    expect(classifyProduct(p("RAD Studio Upgrade: Spark → Studio (6 months prorated)", "", false))?.id)
+      .toBe("subscription");
+  });
+
+  it("classifies a subscription gift as subscription", () => {
+    expect(classifyProduct(p("Gift Really Awesome Doodles (with Tiers)", "", false))?.id)
+      .toBe("subscription");
   });
 
   // Order matters: a calendar must not be caught by a broader rule first.
@@ -107,6 +126,36 @@ describe("classifyProduct", () => {
 
   it("is case-insensitive about titles", () => {
     expect(classifyProduct(p("2026 WALL CALENDAR", ""))?.id).toBe("wall_calendars");
+  });
+});
+
+describe("effectiveProductType", () => {
+  // `product_type` on a line item is a snapshot taken when it was bought and
+  // does not change when the product is retyped. It is blank on 2,135
+  // historical line items whose product has a type — which is what #43
+  // actually was: the classifier reading the snapshot, not 30 untyped
+  // products.
+  it("prefers the live product type over the order snapshot", () => {
+    expect(effectiveProductType(live("2026 Wall Calendar", "", "Stationery"))).toBe("Stationery");
+  });
+
+  it("falls back to the snapshot when the product no longer exists", () => {
+    expect(effectiveProductType(live("Discontinued thing", "Planners", null))).toBe("Planners");
+  });
+
+  it("is empty when neither has one", () => {
+    expect(effectiveProductType(live("Test listing", "", null))).toBe("");
+  });
+
+  // Chosen so the answer differs by source: read from the live type this is a
+  // digital product; read from the blank snapshot it is untyped and untracked,
+  // and would be excluded as a test listing.
+  it("classifies a stale blank snapshot from the live type", () => {
+    expect(classifyProduct(live("Monthly Pages", "", "Pages", false))?.id).toBe("digital");
+  });
+
+  it("would exclude that same product if it read the stale snapshot", () => {
+    expect(classifyProduct(p("Monthly Pages", "", false))).toBeNull();
   });
 });
 
@@ -201,9 +250,18 @@ describe("assignOrderToLine", () => {
   it("counts revenue that arrived via a fallback separately", () => {
     const a = assignOrderToLine([
       item("2026 Dated 8x10 Planner", "Planners", 4200),
-      item("Travel Log Printable", "", 900, false),
+      item("Some untyped physical thing", "", 900, true),
     ]);
     expect(a.fallbackCents).toBe(900);
+  });
+
+  it("counts an excluded test product as unassigned revenue", () => {
+    const a = assignOrderToLine([
+      item("2026 Dated 8x10 Planner", "Planners", 4200),
+      item("Color Happy Test Variants | DO NOT BUY", "", 500, false),
+    ]);
+    expect(a.unassignedCents).toBe(500);
+    expect(a.lineId).toBe("planners");
   });
 
   it("counts nothing as fallback when every item matched a named rule", () => {

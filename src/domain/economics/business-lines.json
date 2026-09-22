@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Declared product lines for unit economics (#34). Rules are evaluated in order and the FIRST match wins, so a more specific line must appear above a broader one. Every shipped product must match a rule; anything left over is reported, never defaulted.",
+  "note": "Declared product lines for unit economics (#34). Rules are evaluated in order and the FIRST match wins, so a more specific line must appear above a broader one. Every shipped product must match a rule; anything left over is reported, never defaulted. Classification reads the LIVE product type from shopify_inventory, not the snapshot copied onto the order line \u2014 the snapshot is blank on 2,135 historical line items whose product is typed.",
   "lines": [
     {
       "id": "wall_calendars",
@@ -34,10 +34,14 @@
       "label": "RAD subscription",
       "parent": "subscription",
       "advertised": true,
-      "why": "Really Awesome Doodles. Digital: recurring orders ship nothing, and only some initial orders carry a physical welcome item.",
+      "why": "Really Awesome Doodles. Digital: recurring orders ship nothing, and only some initial orders carry a physical welcome item. Plan changes and gifts are matched by title because they carry no product type and no inventory row \u2014 they were never products. They are named explicitly rather than inferred from 'untyped with no inventory row', which would also swallow 'Color Happy Test Variants | DO NOT BUY'.",
       "match": {
         "productType": [
           "Subscription"
+        ],
+        "titleContains": [
+          "rad studio upgrade",
+          "really awesome doodles"
         ]
       }
     },
@@ -59,8 +63,15 @@
       "label": "Other physical",
       "parent": "physical",
       "advertised": false,
-      "why": "Notepads, stationery, markers, ties. Not advertised \u2014 a $19 notepad does not carry an ad budget \u2014 but its costs are real and must land somewhere rather than being dropped.",
+      "why": "Notepads, stationery, markers, ties \u2014 anything physical the named lines did not claim. Matches the live product type, plus a stock count as a fallback, because a variant with inventory is a physical thing whatever its type says.",
       "match": {
+        "productType": [
+          "Stationery",
+          "Markers",
+          "Mens Ties",
+          "Halloween Bags",
+          "Activity Books"
+        ],
         "catchAllPhysical": true
       }
     },
@@ -69,7 +80,7 @@
       "label": "Digital printables",
       "parent": "digital",
       "advertised": false,
-      "why": "Terminal rule. Matches the known digital types, and otherwise claims any remaining product with no stock count \u2014 the same fallback the coarse classifier in classify.ts uses. Revenue arriving via the fallback rather than a type is reported separately, so a mis-typed physical product cannot hide in it as a printable with no shipping cost (#43).",
+      "why": "Matched by type only. There is no digital catch-all: a product with no type on the live product record is excluded from every calculation, per Matt \u2014 it means a test listing, a never-launched product, or something discontinued years ago. Excluding it is reported with its revenue, never silent.",
       "match": {
         "productType": [
           "Digital",
@@ -77,8 +88,7 @@
           "Class",
           "Gift Card",
           "Pages"
-        ],
-        "catchAllDigital": true
+        ]
       }
     }
   ]
