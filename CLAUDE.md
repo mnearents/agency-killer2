@@ -120,8 +120,20 @@ Ground label — 1,726 of 2,508 over thirteen months — exports as `Label Cost 
 0.00`. BPM is not free; those bill to a separate DHL eCommerce account. They
 are stored with `label_cost_cents = NULL` and `postage_basis = 'unbilled'`,
 never as zero, and `postageCoverage` returns the share that is real (31.0%) as
-a value so no caller can quote the cost without it. **Any physical COD figure
-today is a floor**, and the DHL rate is the outstanding input (#34).
+a value so no caller can quote the cost without it.
+
+`DHL_BPM_GROUND_2026` in `domain/economics/postage-rates.ts` is the client rate
+card for those labels. **BPM is not the cheap service it sounds like**: a 2.5lb
+parcel is $7.08 to zone 1 and $10.74 to zone 8 before fuel, and an estimate of
+"$2.50-4.00 for book rate" was wrong by a factor of three. The card reproduces
+the one known DHL invoice ($103.97) at zone 7.
+
+Rating is per shipment, from the weight and destination postcode already on
+each row — never an average, because BPM parcels run 0.06 to 8.15lb across
+every zone. **The zone chart is the one input still missing**, so postage is a
+band (`rateBand`) rather than a figure: $12,708-$18,441 a year against $6,190
+of BPM shipping collected. Carriers charge the first weight break at or above
+the parcel weight, so rating rounds up, never to nearest.
 
 Other traps:
 
