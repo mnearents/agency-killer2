@@ -122,8 +122,18 @@ are stored with `label_cost_cents = NULL` and `postage_basis = 'unbilled'`,
 never as zero, and `postageCoverage` returns the share that is real (31.0%) as
 a value so no caller can quote the cost without it.
 
+**Fulfilment moved to USPS Media Mail on 2026-09-22.** Media Mail is flat —
+no zones — and applies no dimensional weight, which retires both inputs that
+were outstanding from DHL. Repricing the 1,726 BPM shipments: $12,005 against a
+DHL band of $12,708-$18,441, with the saving concentrated on wall calendars
+($15.37 to $6.65 a shipment). `USPS_MEDIA_MAIL_2026` holds the card, and
+`MEDIA_MAIL_ELIGIBILITY_NOTE` holds the catch: Media Mail covers books and
+similar reading matter, blank planners and calendars are the commonly disputed
+cases, and USPS may inspect and assess postage due. Historical parcels still
+rate on DHL, which is why both cards exist.
+
 `DHL_BPM_GROUND_2026` in `domain/economics/postage-rates.ts` is the client rate
-card for those labels. **BPM is not the cheap service it sounds like**: a 2.5lb
+card for labels shipped before that date. **BPM is not the cheap service it sounds like**: a 2.5lb
 parcel is $7.08 to zone 1 and $10.74 to zone 8 before fuel, and an estimate of
 "$2.50-4.00 for book rate" was wrong by a factor of three. The card reproduces
 the one known DHL invoice ($103.97) at zone 7.
@@ -205,8 +215,20 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- Tools are read-only. Anything that spends money or sends a message needs an
-  explicit write split and is not built yet.
+- **Most tools are read-only; nine are not.** The writers are `calendar_add`,
+  `calendar_update`, `calendar_remove`, `draft_save`, `draft_record_decision`,
+  `experiment_start`, `experiment_record_result`, `pilot_notes_add` and
+  `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+  write tool cannot appear without someone declaring it there.
+- **A write tool records that Claude was the author.** Calendar entries set
+  `aiSuggested` and the caller cannot override it: Tara reads the calendar, and
+  an AI-planned week must not be indistinguishable from one she planned.
+- **What has already happened is not editable.** A calendar entry that is
+  `sent` or `posted` accepts only a note; correcting one marked so by mistake
+  needs `correction:true` and a reason, which is recorded. Without that path,
+  protecting history would have made a data-entry error permanent — and with
+  it, the way back to editing content is two deliberate steps, not one flag.
+- `segment_push` is the only tool that reaches an external service.
 
 Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 

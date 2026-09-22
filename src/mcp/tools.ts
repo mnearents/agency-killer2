@@ -67,7 +67,20 @@ import {
 import POOL_DECLARATION from "@/domain/inventory/inventory-pools.json";
 import { classifyItem } from "@/domain/inventory/checks";
 import { computeDailyVelocity, computeDaysOfCover } from "@/domain/inventory/velocity";
-import { getEntriesByWeek } from "@/domain/calendar/queries";
+import {
+  getEntriesByWeek,
+  createEntry,
+  updateEntry,
+  deleteEntry,
+} from "@/domain/calendar/queries";
+import {
+  CHANNELS as CALENDAR_CHANNELS,
+  STATUSES as CALENDAR_STATUSES,
+  findDuplicate,
+  planUpdate,
+  canRemove,
+  type CalendarEntryFacts,
+} from "@/domain/calendar/writes";
 import { getAllSamples, getAllRules, getAllBannedWords } from "@/domain/voice/queries";
 import {
   foldExperiments,
@@ -779,6 +792,164 @@ const voiceCheckTool: McpTool = {
 const EXPERIMENT_STATUSES = [...OUTCOMES, "running", "awaiting_result", "all"] as const;
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * The calendar around a date, used to spot a slot that is already taken and to
+ * load one entry by id. A day either side covers a caller passing a time.
+ */
+async function calendarNear(ctx: McpToolContext, date: Date): Promise<CalendarEntryFacts[]> {
+  const from = new Date(date.getTime() - 36 * 60 * 60 * 1000);
+  const to = new Date(date.getTime() + 36 * 60 * 60 * 1000);
+  const rows = await getEntriesByWeek(ctx.db, from, to);
+  return rows.map((r) => ({
+    id: r.id, date: r.date, channel: r.channel, title: r.title,
+    status: r.status, notes: r.notes,
+  }));
+}
+
+async function calendarById(ctx: McpToolContext, id: string): Promise<CalendarEntryFacts | null> {
+  // The calendar has no by-id query; a wide window is cheap on a table this
+  // size and avoids adding a second way to read one row.
+  const rows = await getEntriesByWeek(
+    ctx.db,
+    new Date(Date.UTC(2000, 0, 1)),
+    new Date(Date.UTC(2100, 0, 1)),
+  );
+  const found = rows.find((r) => r.id === id);
+  return found
+    ? { id: found.id, date: found.date, channel: found.channel, title: found.title,
+        status: found.status, notes: found.notes }
+    : null;
+}
+
+const describeEntry = (e: CalendarEntryFacts) => ({
+  id: e.id,
+  date: e.date.toISOString(),
+  channel: e.channel,
+  title: e.title,
+  status: e.status,
+  notes: e.notes,
+});
+
+const calendarAdd: McpTool = {
+  name: "calendar_add",
+  title: "Add a calendar entry",
+  description:
+    "Plan one marketing calendar entry. Everything written here is marked as AI-suggested, so Tara can tell what Claude planned from what she planned — that distinction is the point and there is no way to turn it off. " +
+    "Refuses to create a second entry on the same day, channel and title: replanning a week would otherwise double every entry, and a calendar with two of everything reads as a busy week rather than a mistake. It returns the existing entry's id instead, so use calendar_update if the intent was to change it. " +
+    "status defaults to planned; use idea for something not yet committed.",
+  readOnly: false,
+  schema: {
+    date: { type: "date", required: true },
+    channel: { type: "enum", values: CALENDAR_CHANNELS, required: true },
+    title: { type: "string", required: true },
+    status: { type: "enum", values: CALENDAR_STATUSES, default: "planned" },
+    notes: { type: "string" },
+  },
+  async run(ctx, args) {
+    const date = args.date as Date;
+    const channel = args.channel as string;
+    const title = (args.title as string).trim();
+    if (title === "") throw new McpArgumentError("title cannot be blank.");
+
+    const duplicate = findDuplicate(await calendarNear(ctx, date), { date, channel, title });
+    if (duplicate !== null) {
+      return {
+        written: false,
+        reason: "duplicate",
+        existing: describeEntry(duplicate),
+        note:
+          "An entry with this date, channel and title already exists. Nothing was written. " +
+          "Use calendar_update with this id to change it, or a different title to plan a second one.",
+      };
+    }
+
+    const created = await createEntry(ctx.db, {
+      date,
+      channel,
+      title,
+      status: (args.status as string) ?? "planned",
+      notes: (args.notes as string) ?? null,
+      // Never caller-settable: an entry Claude wrote must not be able to
+      // present itself as one Tara wrote.
+      aiSuggested: 1,
+    });
+
+    return { written: true, entry: describeEntry({ ...created, notes: created.notes }), aiSuggested: true };
+  },
+};
+
+const calendarUpdate: McpTool = {
+  name: "calendar_update",
+  title: "Change a calendar entry",
+  description:
+    "Change a planned entry: its date, channel, title, status or notes. Pass only what should change. " +
+    "An entry already `sent` or `posted` records what went out rather than what was planned, so only its notes can change — if it went out differently from the plan, note that rather than restating the plan. `skipped` is reversible and stays fully editable. " +
+    "A call that would change nothing is an error, not a silent success. Returns the fields that actually changed. " +
+    "If an entry was marked sent or posted by mistake, pass correction:true together with notes saying why it did not actually go out — that is the only way to move it back, and it always leaves the reason behind.",
+  readOnly: false,
+  schema: {
+    id: { type: "string", required: true },
+    date: { type: "date" },
+    channel: { type: "enum", values: CALENDAR_CHANNELS },
+    title: { type: "string" },
+    status: { type: "enum", values: CALENDAR_STATUSES },
+    notes: { type: "string" },
+    correction: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const id = args.id as string;
+    const existing = await calendarById(ctx, id);
+    if (existing === null) {
+      return { written: false, reason: "not_found", note: `No calendar entry with id ${id}.` };
+    }
+
+    const plan = planUpdate(existing, {
+      date: args.date as Date | undefined,
+      channel: args.channel as string | undefined,
+      title: args.title as string | undefined,
+      status: args.status as string | undefined,
+      notes: args.notes as string | undefined,
+    }, { correction: args.correction === true });
+    if (!plan.ok) return { written: false, reason: "refused", note: plan.error, entry: describeEntry(existing) };
+
+    const updated = await updateEntry(ctx.db, id, plan.value);
+    if (updated === null) {
+      return { written: false, reason: "not_found", note: `Entry ${id} disappeared before the update.` };
+    }
+    return {
+      written: true,
+      changed: Object.keys(plan.value),
+      before: describeEntry(existing),
+      after: describeEntry({ ...updated, notes: updated.notes }),
+    };
+  },
+};
+
+const calendarRemove: McpTool = {
+  name: "calendar_remove",
+  title: "Remove a calendar entry",
+  description:
+    "Delete a planned entry. Refuses anything already `sent` or `posted`: deleting it does not un-send it, it removes the only record that it happened, and every later report is then computed over a calendar that disagrees with what the audience received. Mark it `skipped` instead, and only if it genuinely did not go out. " +
+    "Returns the deleted entry in full so it can be recreated.",
+  readOnly: false,
+  schema: { id: { type: "string", required: true } },
+  async run(ctx, args) {
+    const id = args.id as string;
+    const existing = await calendarById(ctx, id);
+    if (existing === null) {
+      return { written: false, reason: "not_found", note: `No calendar entry with id ${id}.` };
+    }
+    const plan = canRemove(existing);
+    if (!plan.ok) return { written: false, reason: "refused", note: plan.error, entry: describeEntry(existing) };
+
+    const removed = await deleteEntry(ctx.db, id);
+    return removed
+      ? { written: true, removed: describeEntry(existing),
+          note: "Deleted. The full entry is returned above so it can be recreated with calendar_add." }
+      : { written: false, reason: "not_found", note: `Entry ${id} disappeared before the delete.` };
+  },
+};
 
 const experimentStart: McpTool = {
   name: "experiment_start",
@@ -2401,6 +2572,9 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  calendarAdd,
+  calendarUpdate,
+  calendarRemove,
   brandVoice,
   voiceCheckTool,
   experimentStart,

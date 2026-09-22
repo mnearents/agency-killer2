@@ -150,6 +150,9 @@ describe("the tool catalogue", () => {
     const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name).sort();
     expect(writers).toEqual(
       [
+        "calendar_add",
+        "calendar_remove",
+        "calendar_update",
         "draft_record_decision",
         "draft_save",
         "experiment_record_result",
@@ -158,6 +161,13 @@ describe("the tool catalogue", () => {
         "segment_push",
       ].sort()
     );
+  });
+
+  // Every calendar write is attributable. An entry Claude planned and one
+  // Tara planned must not be indistinguishable in the thing she looks at.
+  it("never lets a caller decide whether a calendar entry looks AI-written", () => {
+    const add = ALL_TOOLS.find((t) => t.name === "calendar_add")!;
+    expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
   it("names tools in the snake_case MCP convention", () => {
