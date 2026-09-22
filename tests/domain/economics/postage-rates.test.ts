@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   DHL_BPM_GROUND_2026,
+  USPS_MEDIA_MAIL_2026,
+  MEDIA_MAIL_ELIGIBILITY_NOTE,
   rateShipment,
   rateBand,
   dimensionalWeightLb,
@@ -194,5 +196,70 @@ describe("billableWeightLb", () => {
   it("refuses when neither is available rather than returning zero", () => {
     expect(billableWeightLb(null, { lengthIn: null, widthIn: null, heightIn: null }, 166))
       .toEqual({ ok: false, reason: "no_weight" });
+  });
+});
+
+describe("USPS_MEDIA_MAIL_2026", () => {
+  it("prices a single zone, because Media Mail is not zoned", () => {
+    expect(USPS_MEDIA_MAIL_2026.zones).toEqual([1]);
+  });
+
+  it("carries no fuel surcharge — the card is a total per piece", () => {
+    for (const b of USPS_MEDIA_MAIL_2026.breaks) {
+      expect(b.fuelSurchargeCents, `break ${b.weightLb}lb`).toBe(0);
+    }
+  });
+
+  it("has a break for every pound to 30", () => {
+    expect(USPS_MEDIA_MAIL_2026.breaks.map((b) => b.weightLb)).toEqual(
+      Array.from({ length: 30 }, (_, i) => i + 1),
+    );
+  });
+
+  it("never gets cheaper as the parcel gets heavier", () => {
+    const b = USPS_MEDIA_MAIL_2026.breaks;
+    for (let i = 1; i < b.length; i++) {
+      expect(b[i].zoneRatesCents[0]).toBeGreaterThan(b[i - 1].zoneRatesCents[0]);
+    }
+  });
+
+  it("prices the first pound at the published rate", () => {
+    expect(rateShipment(USPS_MEDIA_MAIL_2026, 1, null)).toEqual({
+      ok: true, cents: 549, breakWeightLb: 1, zone: 1,
+    });
+  });
+
+  // A one-zone card is zoneless: there is no zone for the caller to be
+  // missing, so refusing without one would block every rating.
+  it("rates without being given a zone", () => {
+    expect(rateShipment(USPS_MEDIA_MAIL_2026, 2.35, null).ok).toBe(true);
+  });
+
+  // A zoned card must still refuse a missing zone — the special case is for
+  // cards that genuinely have one zone, not a licence to guess.
+  it("does not extend that licence to a zoned card", () => {
+    expect(rateShipment(DHL_BPM_GROUND_2026, 2.35, null)).toEqual({
+      ok: false, reason: "unknown_zone",
+    });
+  });
+
+  // The whole reason for the switch: dimensional weight does not apply, so a
+  // 1.45lb wall calendar rates on its weight rather than its footprint.
+  it("rates a wall calendar at its actual weight", () => {
+    const r = rateShipment(USPS_MEDIA_MAIL_2026, 1.45, null);
+    expect(r).toEqual({ ok: true, cents: 641, breakWeightLb: 2, zone: 1 });
+  });
+
+  it("refuses a parcel over 30lb rather than pricing it at the top break", () => {
+    expect(rateShipment(USPS_MEDIA_MAIL_2026, 31, null)).toEqual({
+      ok: false, reason: "over_max_weight",
+    });
+  });
+
+  // The rate card alone makes the switch look purely like a win. It is not
+  // unconditional: Media Mail is restricted to reading matter, and blank
+  // planners and calendars are the disputed cases.
+  it("ships with the eligibility constraint recorded alongside the rates", () => {
+    expect(MEDIA_MAIL_ELIGIBILITY_NOTE).toMatch(/postage due/i);
   });
 });

@@ -66,6 +66,81 @@ export const DHL_BPM_GROUND_2026: RateCard = {
   ],
 };
 
+/**
+ * USPS Media Mail, client rates 2026.
+ *
+ * Flat: no zones and no dimensional weight. Media Mail is priced on actual
+ * weight alone, which is why switching to it removes both of the inputs that
+ * were outstanding from DHL — the zone chart and the DIM divisor — and why it
+ * is dramatically cheaper for a large light parcel. A 1.45lb wall calendar
+ * rates at the 2lb break, $6.41, against $15.37 billed today.
+ *
+ * Modelled with a single zone. `rateShipment` treats a one-zone card as
+ * zoneless and does not require a zone to be supplied.
+ *
+ * **Eligibility is a real constraint, not a formality** — see
+ * MEDIA_MAIL_ELIGIBILITY_NOTE.
+ */
+export const USPS_MEDIA_MAIL_2026: RateCard = {
+  carrier: "usps",
+  service: "USPS Media Mail",
+  effectiveFrom: "2026-01-01",
+  zones: [1],
+  breaks: [
+    { weightLb: 1, fuelSurchargeCents: 0, zoneRatesCents: [549] },
+    { weightLb: 2, fuelSurchargeCents: 0, zoneRatesCents: [641] },
+    { weightLb: 3, fuelSurchargeCents: 0, zoneRatesCents: [733] },
+    { weightLb: 4, fuelSurchargeCents: 0, zoneRatesCents: [825] },
+    { weightLb: 5, fuelSurchargeCents: 0, zoneRatesCents: [918] },
+    { weightLb: 6, fuelSurchargeCents: 0, zoneRatesCents: [1010] },
+    { weightLb: 7, fuelSurchargeCents: 0, zoneRatesCents: [1101] },
+    { weightLb: 8, fuelSurchargeCents: 0, zoneRatesCents: [1194] },
+    { weightLb: 9, fuelSurchargeCents: 0, zoneRatesCents: [1286] },
+    { weightLb: 10, fuelSurchargeCents: 0, zoneRatesCents: [1378] },
+    { weightLb: 11, fuelSurchargeCents: 0, zoneRatesCents: [1470] },
+    { weightLb: 12, fuelSurchargeCents: 0, zoneRatesCents: [1563] },
+    { weightLb: 13, fuelSurchargeCents: 0, zoneRatesCents: [1654] },
+    { weightLb: 14, fuelSurchargeCents: 0, zoneRatesCents: [1746] },
+    { weightLb: 15, fuelSurchargeCents: 0, zoneRatesCents: [1839] },
+    { weightLb: 16, fuelSurchargeCents: 0, zoneRatesCents: [1930] },
+    { weightLb: 17, fuelSurchargeCents: 0, zoneRatesCents: [2023] },
+    { weightLb: 18, fuelSurchargeCents: 0, zoneRatesCents: [2115] },
+    { weightLb: 19, fuelSurchargeCents: 0, zoneRatesCents: [2206] },
+    { weightLb: 20, fuelSurchargeCents: 0, zoneRatesCents: [2299] },
+    { weightLb: 21, fuelSurchargeCents: 0, zoneRatesCents: [2391] },
+    { weightLb: 22, fuelSurchargeCents: 0, zoneRatesCents: [2483] },
+    { weightLb: 23, fuelSurchargeCents: 0, zoneRatesCents: [2575] },
+    { weightLb: 24, fuelSurchargeCents: 0, zoneRatesCents: [2668] },
+    { weightLb: 25, fuelSurchargeCents: 0, zoneRatesCents: [2759] },
+    { weightLb: 26, fuelSurchargeCents: 0, zoneRatesCents: [2851] },
+    { weightLb: 27, fuelSurchargeCents: 0, zoneRatesCents: [2944] },
+    { weightLb: 28, fuelSurchargeCents: 0, zoneRatesCents: [3036] },
+    { weightLb: 29, fuelSurchargeCents: 0, zoneRatesCents: [3128] },
+    { weightLb: 30, fuelSurchargeCents: 0, zoneRatesCents: [3220] },
+  ],
+};
+
+/**
+ * Media Mail is restricted content, and the restriction is enforced.
+ *
+ * USPS limits it to books of at least 8 printed pages, printed music, sound
+ * recordings, play scripts, printed educational reference charts and similar
+ * *reading matter*. Items with blank pages to write in, and calendars, are the
+ * usual disputed cases — a dated planner is largely blank by design, and a
+ * wall calendar is not reading matter.
+ *
+ * USPS may inspect Media Mail, and the remedy is postage due at the Ground
+ * Advantage rate or refusal, assessed against the sender. At 1,726 parcels a
+ * year that is not a rounding error, so eligibility is worth confirming in
+ * writing with the 3PL before the saving is treated as banked. This note is
+ * here because the rate card alone makes the switch look purely like a win.
+ */
+export const MEDIA_MAIL_ELIGIBILITY_NOTE =
+  "USPS Media Mail is limited to books and similar reading matter. Planners with " +
+  "blank pages and wall calendars are commonly held ineligible; USPS may inspect " +
+  "and assess postage due at the Ground Advantage rate. Confirm eligibility per " +
+  "product before relying on these rates.";
+
 export type RateOutcome =
   | { ok: true; cents: number; breakWeightLb: number; zone: number }
   | { ok: false; reason: "over_max_weight" | "unknown_zone" | "no_weight" };
@@ -82,9 +157,12 @@ export function rateShipment(card: RateCard, weightLb: number | null, zone: numb
   if (weightLb === null || !Number.isFinite(weightLb) || weightLb <= 0) {
     return { ok: false, reason: "no_weight" };
   }
-  if (zone === null) return { ok: false, reason: "unknown_zone" };
+  // A single-zone card is zoneless — USPS Media Mail is priced on weight
+  // alone — so there is no zone for the caller to be missing.
+  const effectiveZone = zone === null && card.zones.length === 1 ? card.zones[0] : zone;
+  if (effectiveZone === null) return { ok: false, reason: "unknown_zone" };
 
-  const zoneIndex = card.zones.indexOf(zone);
+  const zoneIndex = card.zones.indexOf(effectiveZone);
   if (zoneIndex === -1) return { ok: false, reason: "unknown_zone" };
 
   // Carriers charge the first break at or above the actual weight.
@@ -95,7 +173,7 @@ export function rateShipment(card: RateCard, weightLb: number | null, zone: numb
     ok: true,
     cents: chargedBreak.zoneRatesCents[zoneIndex] + chargedBreak.fuelSurchargeCents,
     breakWeightLb: chargedBreak.weightLb,
-    zone,
+    zone: effectiveZone,
   };
 }
 
