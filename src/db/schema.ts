@@ -1747,6 +1747,16 @@ export const threeplShipments = pgTable(
     shippingMethod: text("shipping_method"),
     trackingNumber: text("tracking_number"),
     weightLb: real("weight_lb"),
+    /**
+     * Parcel dimensions. Carriers bill large light parcels on dimensional
+     * weight: of the shipments whose cost is known, 22-23in parcels average
+     * 1.61lb and $16.48 against 12-14in parcels at 2.40lb and $12.51 —
+     * heavier and cheaper. 353 BPM parcels are 23in at 1.30lb, and rating
+     * those on weight alone understates them several-fold.
+     */
+    lengthIn: real("length_in"),
+    widthIn: real("width_in"),
+    heightIn: real("height_in"),
 
     /** What the customer paid for shipping. */
     shippingChargedCents: integer("shipping_charged_cents"),

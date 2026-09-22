@@ -136,3 +136,51 @@ export function rateBand(card: RateCard, weightLb: number | null): RateBand | { 
     breakWeightLb: rated[0].outcome.breakWeightLb,
   };
 }
+
+/**
+ * Dimensional weight — what a carrier bills a large, light parcel on.
+ *
+ * `divisor` is required and has no default on purpose. It is carrier- and
+ * contract-specific (commonly 139, 166 or 194 for domestic ground), and the
+ * difference between 139 and 194 is 40% of the billed weight. Guessing it
+ * would produce a confident number that nobody could check, which is worse
+ * here than having no number.
+ *
+ * The carrier charges the greater of actual and dimensional weight, which is
+ * what `billableWeightLb` returns.
+ */
+export function dimensionalWeightLb(
+  lengthIn: number | null,
+  widthIn: number | null,
+  heightIn: number | null,
+  divisor: number,
+): number | null {
+  if (lengthIn === null || widthIn === null || heightIn === null) return null;
+  if (!(lengthIn > 0 && widthIn > 0 && heightIn > 0) || !(divisor > 0)) return null;
+  return (lengthIn * widthIn * heightIn) / divisor;
+}
+
+export type BillableWeight =
+  | { ok: true; weightLb: number; basis: "actual" | "dimensional" }
+  | { ok: false; reason: "no_weight" | "no_dimensions" };
+
+/**
+ * The weight a parcel is actually rated on.
+ *
+ * Returns which basis won, because "this calendar is billed as 4.3lb though it
+ * weighs 1.3lb" is the fact that explains the bill, and a bare number hides it.
+ */
+export function billableWeightLb(
+  actualLb: number | null,
+  dims: { lengthIn: number | null; widthIn: number | null; heightIn: number | null },
+  divisor: number,
+): BillableWeight {
+  const dim = dimensionalWeightLb(dims.lengthIn, dims.widthIn, dims.heightIn, divisor);
+  if (actualLb === null || !(actualLb > 0)) {
+    return dim === null ? { ok: false, reason: "no_weight" } : { ok: true, weightLb: dim, basis: "dimensional" };
+  }
+  if (dim === null) return { ok: true, weightLb: actualLb, basis: "actual" };
+  return dim > actualLb
+    ? { ok: true, weightLb: dim, basis: "dimensional" }
+    : { ok: true, weightLb: actualLb, basis: "actual" };
+}

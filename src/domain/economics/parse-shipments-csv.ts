@@ -31,6 +31,16 @@ export interface ShipmentRow {
   shippingMethod: string | null;
   trackingNumber: string | null;
   weightLb: number | null;
+  /**
+   * Parcel dimensions. Carried because carriers bill large light parcels on
+   * dimensional weight, not actual weight: among the shipments whose cost we
+   * know, 22-23in parcels average 1.61lb and $16.48 while 12-14in parcels
+   * average 2.40lb and $12.51 — heavier and cheaper. Rating a 23in wall
+   * calendar on its 1.3lb would understate it by roughly a factor of three.
+   */
+  lengthIn: number | null;
+  widthIn: number | null;
+  heightIn: number | null;
   /** What the customer paid for shipping on this order. */
   shippingChargedCents: number | null;
   /**
@@ -88,6 +98,7 @@ const KNOWN_COLUMNS = new Set([
   "Shipping Label ID", "Order Number", "Order date", "Created at", "Carrier",
   "Shipping Method", "Tracking Number", "Weight (lb)", "Total Shipping Charged",
   "Label Cost", "State", "Country", "Zip",
+  "Length (in)", "Width (in)", "Height (in)",
 ]);
 
 function splitRecords(content: string): string[][] {
@@ -203,6 +214,9 @@ export function parseShipmentsCsv(content: string): ShipmentParseResult {
       shippingMethod: method,
       trackingNumber: g("Tracking Number"),
       weightLb: toNumber(g("Weight (lb)")),
+      lengthIn: toNumber(g("Length (in)")),
+      widthIn: toNumber(g("Width (in)")),
+      heightIn: toNumber(g("Height (in)")),
       shippingChargedCents: toCents(g("Total Shipping Charged")),
       labelCostCents,
       postageBasis,

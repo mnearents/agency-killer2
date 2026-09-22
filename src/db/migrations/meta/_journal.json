@@ -260,6 +260,13 @@
       "when": 1790098761361,
       "tag": "0036_motionless_gambit",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790101224212,
+      "tag": "0037_milky_magdalene",
+      "breakpoints": true
     }
   ]
 }

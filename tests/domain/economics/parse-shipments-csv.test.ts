@@ -8,7 +8,8 @@ import {
 
 const HEADER =
   "Shipping Label ID,Order Number,Order date,Created at,Carrier,Shipping Method," +
-  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Zip,Country";
+  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Zip,Country," +
+  "Length (in),Width (in),Height (in)";
 
 interface Spec {
   id?: string; order?: string; created?: string; carrier?: string; method?: string;
@@ -23,6 +24,7 @@ function csv(specs: Spec[]): string {
         s.id ?? "L1", s.order ?? "RH354748", "2026-09-01", s.created ?? "2026-09-04 11:09:07",
         s.carrier ?? "dhl_ecommerce", s.method ?? "DHL BPM Ground", "TRK1",
         s.weight ?? "2.35", s.charged ?? "4.50", s.cost ?? "0.00", "UT", "84043", "US",
+        "23.00", "17.50", "1.50",
       ].join(","),
     ),
   ].join("\n");
@@ -87,6 +89,14 @@ describe("parseShipmentsCsv", () => {
   // wrong.
   it("keeps the destination postcode, which is what zones are derived from", () => {
     expect(parseShipmentsCsv(csv([{}])).rows[0].postalCode).toBe("84043");
+  });
+
+  // A 23in parcel at 1.3lb bills several times its weight-rated price, which
+  // is what makes the wall calendars expensive. Dropping dimensions would
+  // understate exactly the shipments that matter most.
+  it("keeps the parcel dimensions", () => {
+    const r = parseShipmentsCsv(csv([{}])).rows[0];
+    expect([r.lengthIn, r.widthIn, r.heightIn]).toEqual([23, 17.5, 1.5]);
   });
 
   it("keeps what the customer was charged separate from what the label cost", () => {

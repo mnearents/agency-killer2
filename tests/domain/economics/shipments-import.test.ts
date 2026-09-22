@@ -4,7 +4,8 @@ import { parseShipmentsCsv } from "@/domain/economics/parse-shipments-csv";
 
 const HEADER =
   "Shipping Label ID,Order Number,Order date,Created at,Carrier,Shipping Method," +
-  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Zip,Country";
+  "Tracking Number,Weight (lb),Total Shipping Charged,Label Cost,State,Zip,Country," +
+  "Length (in),Width (in),Height (in)";
 
 interface Spec { id?: string; order?: string; created?: string; method?: string; cost?: string }
 
@@ -16,7 +17,7 @@ const csv = (specs: Spec[]) =>
         s.id ?? `L${i + 1}`, s.order ?? "RH354748", "2026-09-01",
         s.created ?? "2026-09-04 11:09:07", "dhl_ecommerce",
         s.method ?? "USPS Ground Advantage", `TRK${i}`, "2.35", "4.50",
-        s.cost ?? "10.00", "UT", "84043", "US",
+        s.cost ?? "10.00", "UT", "84043", "US", "23.00", "17.50", "1.50",
       ].join(","),
     ),
   ].join("\n");
@@ -84,7 +85,7 @@ describe("planShipmentImport", () => {
   });
 
   it("refuses rows with no label id, which could not converge on re-import", () => {
-    const content = [HEADER, `,RH354748,2026-09-01,2026-09-04,dhl,USPS Ground Advantage,T,1,1.00,1.00,UT,84043,US`].join("\n");
+    const content = [HEADER, `,RH354748,2026-09-01,2026-09-04,dhl,USPS Ground Advantage,T,1,1.00,1.00,UT,84043,US,23,17.5,1.5`].join("\n");
     const r = planShipmentImport({ parsed: parseShipmentsCsv(content), knownOrderNumbers: ["RH354748"] });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/no label id/);
@@ -101,6 +102,11 @@ describe("planShipmentImport", () => {
   it("carries the destination postcode onto the row it will insert", () => {
     const r = plan([{}]);
     if (r.ok) expect(r.plan.values[0].postalCode).toBe("84043");
+  });
+
+  it("carries the parcel dimensions onto the row it will insert", () => {
+    const r = plan([{}]);
+    if (r.ok) expect([r.plan.values[0].lengthIn, r.plan.values[0].heightIn]).toEqual([23, 1.5]);
   });
 
   it("carries a real cost through unchanged", () => {

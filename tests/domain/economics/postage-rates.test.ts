@@ -3,6 +3,8 @@ import {
   DHL_BPM_GROUND_2026,
   rateShipment,
   rateBand,
+  dimensionalWeightLb,
+  billableWeightLb,
   type RateCard,
 } from "@/domain/economics/postage-rates";
 
@@ -139,5 +141,58 @@ describe("a card with a gap", () => {
   it("prices only the zone it has", () => {
     expect(rateShipment(broken, 1, 1).ok).toBe(true);
     expect(rateShipment(broken, 1, 2)).toEqual({ ok: false, reason: "unknown_zone" });
+  });
+});
+
+describe("dimensionalWeightLb", () => {
+  it("is volume over the divisor", () => {
+    expect(dimensionalWeightLb(23, 17.5, 1.5, 166)).toBeCloseTo(3.637, 3);
+  });
+
+  // The divisor is carrier- and contract-specific, and 139 vs 194 is 40% of
+  // the billed weight. A default would be a confident number nobody can check.
+  it("takes the divisor as a required input", () => {
+    expect(dimensionalWeightLb(23, 17.5, 1.5, 139)).toBeGreaterThan(
+      dimensionalWeightLb(23, 17.5, 1.5, 194)!,
+    );
+  });
+
+  it("returns null when a dimension is missing", () => {
+    expect(dimensionalWeightLb(23, null, 1.5, 166)).toBeNull();
+  });
+
+  it("returns null for a zero dimension rather than a zero weight", () => {
+    expect(dimensionalWeightLb(23, 17.5, 0, 166)).toBeNull();
+  });
+});
+
+describe("billableWeightLb", () => {
+  const CALENDAR = { lengthIn: 23, widthIn: 17.5, heightIn: 1.5 };
+
+  // The fact that explains the bill: a 1.3lb wall calendar rates as ~3.6lb.
+  it("uses dimensional weight when it exceeds actual, and says so", () => {
+    const r = billableWeightLb(1.3, CALENDAR, 166);
+    expect(r.ok && r.basis).toBe("dimensional");
+    expect(r.ok && r.weightLb).toBeCloseTo(3.637, 3);
+  });
+
+  it("uses actual weight when it is the greater", () => {
+    const r = billableWeightLb(10, CALENDAR, 166);
+    expect(r).toEqual({ ok: true, weightLb: 10, basis: "actual" });
+  });
+
+  it("falls back to dimensional when actual weight is missing", () => {
+    const r = billableWeightLb(null, CALENDAR, 166);
+    expect(r.ok && r.basis).toBe("dimensional");
+  });
+
+  it("uses actual weight when dimensions are missing", () => {
+    const r = billableWeightLb(2, { lengthIn: null, widthIn: null, heightIn: null }, 166);
+    expect(r).toEqual({ ok: true, weightLb: 2, basis: "actual" });
+  });
+
+  it("refuses when neither is available rather than returning zero", () => {
+    expect(billableWeightLb(null, { lengthIn: null, widthIn: null, heightIn: null }, 166))
+      .toEqual({ ok: false, reason: "no_weight" });
   });
 });
