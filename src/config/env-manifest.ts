@@ -123,6 +123,20 @@ export const ENV_MANIFEST: EnvVariable[] = [
       "Search Console cannot be queried even with valid credentials: the property has to be named, and its form must match the property exactly.",
   },
   {
+    name: "COST_FORM_USER",
+    surfaces: ["web"],
+    severity: "degraded",
+    impact:
+      "The cost entry form at /costs refuses every request, so recurring overhead cannot be recorded. Nothing else on the dashboard is affected.",
+  },
+  {
+    name: "COST_FORM_PASSWORD",
+    surfaces: ["web"],
+    severity: "degraded",
+    impact:
+      "Same as the user: the form fails closed without both, which is deliberate — an auth check that switches itself off when unset leaves a write surface that still looks protected.",
+  },
+  {
     name: "ATTENTIVE_API_KEY",
     surfaces: ["mcp"],
     severity: "degraded",
