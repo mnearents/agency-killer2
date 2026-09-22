@@ -32,7 +32,9 @@ Slack + dashboard — she needs layman-friendly language, never terminal output.
 
 Two Railway services from one repo, different start commands:
 
-- **Web** (`next start`): Dashboard pages. Pure read-only UI. No heavy processing.
+- **Web** (`next start`): Dashboard pages. Read-only except `/costs`, which
+  records recurring overhead behind Basic auth (#34) — the one write surface,
+  and the one place a credential exists. No heavy processing.
 - **Worker** (`tsx src/worker/index.ts`): Long-running process. Runs scheduled
   tasks via node-cron AND the Slack bot via Bolt socket mode. All "agency" logic
   executes here.
@@ -93,6 +95,51 @@ first. If a new page stops exporting, look for an overlay before anything else.
 The session does not currently persist (#95): `context.cookies()` saves zero
 httpOnly cookies, so each run logs in afresh and needs a 2FA code answered over
 Slack. The sync is not unattended until that is fixed.
+
+### 3PL cost data — three files, none of them sufficient alone
+
+Fulfilment is Evobox (Lehi, UT), running ShipHero. Cost of delivery for the
+physical line is assembled from three exports, and the reconciliation between
+them is a feature rather than a check someone remembered to do.
+
+| File | Grain | Table | Authority on |
+|---|---|---|---|
+| charge ledger CSV | one row per charge | `threepl_charges` | what each charge was *for* |
+| shipment CSV | one row per label | `threepl_shipments` | postage per order |
+| invoice PDF | five category totals | — | what was actually *charged* |
+
+**The charge ledger is not the whole bill.** Against bill 720698 it sums to
+$681.60 and the invoice to $811.28. The gap is entirely in `Order charges` and
+is postage, which the ledger does not itemise — confirmed exactly: the shipment
+export's label costs for that window sum to $129.74, matching to the cent. So
+`reconcileInvoice` runs on every import, because a category that stops being
+itemised looks identical to one that stopped being charged.
+
+**69% of shipments have no postage cost anywhere we can see.** Every DHL BPM
+Ground label — 1,726 of 2,508 over thirteen months — exports as `Label Cost =
+0.00`. BPM is not free; those bill to a separate DHL eCommerce account. They
+are stored with `label_cost_cents = NULL` and `postage_basis = 'unbilled'`,
+never as zero, and `postageCoverage` returns the share that is real (31.0%) as
+a value so no caller can quote the cost without it. **Any physical COD figure
+today is a floor**, and the DHL rate is the outstanding input (#34).
+
+Other traps:
+
+- The charge CSV has **newlines inside quoted fields** — 204 physical lines for
+  202 records. Splitting on newlines before honouring quotes shreds records
+  into fragments that still parse, and it was understating the bill by $8.19.
+- **Two columns can carry the order reference.** In the observed export it is
+  `Order # (shipment)`; `ORDER NUMBER` is entirely empty. The parser picks by
+  measuring both against the live `RH######` shape rather than by name.
+- **Bills are biweekly**, not monthly, so a year is ~28 files of each kind.
+- Storage is **57% of a typical bill** and attributable per SKU, so slow-moving
+  physical inventory carries real cost in a month it sells nothing.
+- Recurring software the 3PL bills (`API CONNECTION`, $125/period) goes to
+  `recurring_costs`, **never into COD** — a fixed fee folded into a per-order
+  cost makes COD% move with volume, and break-even aMER is 1/(1-COD%).
+
+Import with `pnpm threepl:import <file|directory>`; it detects which kind of
+file it was given and writes nothing without `--write`.
 
 Statlas (CTC) has no API. Its data is imported manually.
 
@@ -228,7 +275,7 @@ src/
 │   ├── meta/               # Ad performance analysis, recommendations
 │   ├── shopify/            # Orders, products, customers, segments
 │   ├── subscriptions/      # Seal facts, LTV, tier movement
-│   ├── economics/          # COD, contribution margin, target CPA, aMER
+│   ├── economics/          # COD, contribution margin, target CPA, aMER, 3PL costs
 │   ├── email/              # Email/SMS campaigns, creative generation
 │   ├── attentive/          # Scraped report import and queries
 │   ├── social/             # Organic IG/FB analytics, reel creation
@@ -280,7 +327,8 @@ src/
 └── lib/                    # Shared utilities (dates, formatting, etc.)
 
 scripts/
-└── build-mcp.ts            # Bundles the MCP server for another machine
+├── build-mcp.ts            # Bundles the MCP server for another machine
+└── import-threepl.ts       # Imports 3PL charges, shipments and invoices
 
 app/                        # Next.js App Router (dashboard)
 templates/email/            # HTML/CSS email templates (Playwright renders)
