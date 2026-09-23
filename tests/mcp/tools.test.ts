@@ -170,6 +170,34 @@ describe("the tool catalogue", () => {
     expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
+  it("exposes the fulfilment cost surface", () => {
+    const names = ALL_TOOLS.map((t) => t.name);
+    for (const n of ["fulfilment_costs", "shipping_costs", "recurring_costs"]) {
+      expect(names, `${n} is not registered`).toContain(n);
+    }
+  });
+
+  it("keeps the fulfilment cost tools read-only", () => {
+    for (const n of ["fulfilment_costs", "shipping_costs", "recurring_costs"]) {
+      expect(ALL_TOOLS.find((t) => t.name === n)!.readOnly, n).toBe(true);
+    }
+  });
+
+  // The ledger itemises handling and omits postage, so a caller summing it as
+  // "what fulfilment cost" is short by the largest component. The description
+  // has to say so, because the number alone looks complete.
+  it("warns in fulfilment_costs that the ledger excludes postage", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "fulfilment_costs")!;
+    expect(tool.description).toMatch(/does NOT include postage/i);
+  });
+
+  // 69% of shipments have postage billed elsewhere. A total over the rest is a
+  // floor, and the tool must not let that be quoted without the coverage.
+  it("warns in shipping_costs that postage coverage is partial", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "shipping_costs")!;
+    expect(tool.description).toMatch(/postageCoverage/);
+  });
+
   it("names tools in the snake_case MCP convention", () => {
     for (const tool of ALL_TOOLS) {
       expect(tool.name).toMatch(/^[a-z][a-z0-9_]*$/);

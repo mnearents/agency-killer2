@@ -74,6 +74,15 @@ import {
   deleteEntry,
 } from "@/domain/calendar/queries";
 import {
+  getChargePeriods,
+  getChargeBreakdown,
+  getPostageByMethod,
+  getShipmentWindow,
+  getShipmentCostByProduct,
+  getRecurringCosts,
+  monthlyEquivalentCents,
+} from "@/domain/economics/fulfilment-queries";
+import {
   CHANNELS as CALENDAR_CHANNELS,
   STATUSES as CALENDAR_STATUSES,
   findDuplicate,
@@ -830,6 +839,197 @@ const describeEntry = (e: CalendarEntryFacts) => ({
   status: e.status,
   notes: e.notes,
 });
+
+const isoDayString = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * Postage coverage, attached to every fulfilment figure.
+ *
+ * 69% of shipments bill to a carrier account the 3PL does not invoice, so a
+ * postage total is a total over the ones that have a cost. The share is
+ * returned as a value rather than mentioned in a description, because a
+ * caller can quote the number without ever reading the description.
+ */
+const coverageOf = (billed: number, unbilled: number) => ({
+  shipmentsWithKnownPostage: billed,
+  shipmentsWithPostageBilledElsewhere: unbilled,
+  postageCoverage: billed + unbilled === 0 ? 0 : Number((billed / (billed + unbilled)).toFixed(4)),
+  note:
+    unbilled > 0
+      ? `Postage is known for ${billed} of ${billed + unbilled} shipments. The rest bill to a carrier account the 3PL does not invoice, so any cost here is a floor, not a total.`
+      : "Postage is known for every shipment in this window.",
+});
+
+const fulfilmentCosts: McpTool = {
+  name: "fulfilment_costs",
+  title: "3PL fulfilment charges",
+  description:
+    "What the 3PL charged, broken down by category and fee — storage, order (pick and pack), returns, recurring, ad hoc. " +
+    "IMPORTANT: this ledger itemises handling and does NOT include postage, which the invoice bundles into its `Order charges` line. A period total here is less than what was invoiced; use shipping_costs for postage. " +
+    "`periodsLoaded` lists the bills actually imported — a period that was never loaded looks exactly like a period that cost nothing, so check it before reading a low total as a quiet month.",
+  readOnly: true,
+  schema: {
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+  },
+  async run(ctx, args) {
+    const range =
+      args.startDate instanceof Date && args.endDate instanceof Date
+        ? { from: isoDayString(args.startDate), to: isoDayString(args.endDate) }
+        : undefined;
+
+    const [periods, breakdown] = await Promise.all([
+      getChargePeriods(ctx.db),
+      getChargeBreakdown(ctx.db, range),
+    ]);
+
+    const totalCents = breakdown.reduce((sum, b) => sum + b.totalCents, 0);
+    return {
+      range: range ?? null,
+      totalDollars: dollars(totalCents),
+      byCategory: breakdown.map((b) => ({
+        category: b.category,
+        fee: b.fee,
+        rows: b.rows,
+        totalDollars: dollars(b.totalCents),
+      })),
+      periodsLoaded: periods.map((p) => ({
+        billNumber: p.billNumber,
+        periodStart: p.periodStart,
+        periodEnd: p.periodEnd,
+        rows: p.rows,
+        totalDollars: dollars(p.totalCents),
+      })),
+      excludesPostage: true,
+      note:
+        "Handling only. Postage is billed separately and is not in this ledger — " +
+        "the invoice folds it into Order charges. See shipping_costs.",
+    };
+  },
+};
+
+const shippingCosts: McpTool = {
+  name: "shipping_costs",
+  title: "Postage and what was charged for it",
+  description:
+    "Postage per shipment against what the customer paid, by shipping method. " +
+    "Labels billed to a separate carrier account export at $0.00 and are stored as unknown, never as free — so `postageCoverage` says what share of the postage is actually known and any total is a floor below 1.0. " +
+    "Pass productTitle to see what shipping one product costs; note a parcel is per order, so an order holding two products counts its box against both and the per-product figures must not be summed.",
+  readOnly: true,
+  schema: {
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+    productTitle: { type: "string" },
+    limit: { type: "integer", min: 1, max: 100, default: 20 },
+  },
+  async run(ctx, args) {
+    const range =
+      args.startDate instanceof Date && args.endDate instanceof Date
+        ? { from: isoDayString(args.startDate), to: isoDayString(args.endDate) }
+        : undefined;
+
+    if (typeof args.productTitle === "string" && args.productTitle.trim() !== "") {
+      const { rows, matched } = await getShipmentCostByProduct(ctx.db, {
+        titleLike: args.productTitle.trim(),
+        limit: args.limit as number,
+      });
+      return {
+        productTitle: args.productTitle,
+        productsMatched: matched,
+        productsReturned: rows.length,
+        perParcelWarning:
+          "A parcel belongs to an order, not a product. An order holding two products counts its box against both, so these rows must not be summed.",
+        products: rows.map((r) => ({
+          title: r.title,
+          shipments: r.shipments,
+          ...coverageOf(r.billed, r.shipments - r.billed),
+          knownPostageDollars: dollars(r.knownCostCents),
+          avgKnownPostageDollars: r.billed > 0 ? dollars(Math.round(r.knownCostCents / r.billed)) : null,
+          shippingChargedDollars: dollars(r.chargedCents),
+          avgWeightLb: r.avgWeightLb === null ? null : Number(r.avgWeightLb),
+          avgLongestSideIn: r.avgLongestSideIn === null ? null : Number(r.avgLongestSideIn),
+        })),
+      };
+    }
+
+    const [window, byMethod] = await Promise.all([
+      getShipmentWindow(ctx.db, range),
+      getPostageByMethod(ctx.db, range),
+    ]);
+
+    return {
+      range: range ?? null,
+      shipments: window.shipments,
+      firstShipment: window.firstShipment,
+      lastShipment: window.lastShipment,
+      ...coverageOf(window.billed, window.unbilled),
+      knownPostageDollars: dollars(window.knownCostCents),
+      shippingChargedDollars: dollars(window.chargedCents),
+      // Stated rather than left to be computed: the gap is the point.
+      knownShortfallDollars: dollars(window.knownCostCents - window.chargedCents),
+      byMethod: byMethod.map((m) => ({
+        shippingMethod: m.shippingMethod,
+        shipments: m.shipments,
+        ...coverageOf(m.billed, m.unbilled),
+        knownPostageDollars: dollars(m.knownCostCents),
+        avgKnownPostageDollars: m.billed > 0 ? dollars(Math.round(m.knownCostCents / m.billed)) : null,
+        shippingChargedDollars: dollars(m.chargedCents),
+        avgWeightLb: m.avgWeightLb === null ? null : Number(m.avgWeightLb),
+      })),
+    };
+  },
+};
+
+const recurringCostsTool: McpTool = {
+  name: "recurring_costs",
+  title: "Fixed overhead",
+  description:
+    "Software and subscriptions that do not vary with orders. These are deliberately NOT part of cost of delivery: COD is a per-order variable cost, and folding a fixed fee into it would make COD% move with volume — which lands straight in break-even aMER and every target CPA. " +
+    "Costs the 3PL bills are recorded automatically with source `threepl`; the rest are entered by hand at /costs and carry source `manual`. " +
+    "Rates are effective-dated: a change closes the previous row rather than overwriting it, so a margin computed for an earlier month still uses that month's cost. Pass openOnly false to see closed rows too.",
+  readOnly: true,
+  schema: { openOnly: { type: "boolean", default: true } },
+  async run(ctx, args) {
+    const rows = await getRecurringCosts(ctx.db, { openOnly: args.openOnly as boolean });
+    const open = rows.filter((r) => r.effectiveTo === null);
+
+    let monthlyTotalCents = 0;
+    const uncountable: string[] = [];
+    for (const r of open) {
+      const monthly = monthlyEquivalentCents(r.amountCents, r.cadence);
+      if (monthly === null) uncountable.push(`${r.name} (${r.cadence})`);
+      else monthlyTotalCents += monthly;
+    }
+
+    return {
+      returned: rows.length,
+      openRows: open.length,
+      monthlyTotalDollars: dollars(monthlyTotalCents),
+      // A cadence nobody normalised would otherwise vanish from the total
+      // while the total still looked complete.
+      excludedFromTotal: uncountable,
+      costs: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        vendor: r.vendor,
+        amountDollars: dollars(r.amountCents),
+        cadence: r.cadence,
+        monthlyEquivalentDollars:
+          monthlyEquivalentCents(r.amountCents, r.cadence) === null
+            ? null
+            : dollars(monthlyEquivalentCents(r.amountCents, r.cadence) as number),
+        effectiveFrom: r.effectiveFrom,
+        effectiveTo: r.effectiveTo,
+        open: r.effectiveTo === null,
+        source: r.source,
+      })),
+      note:
+        open.length === 0
+          ? "No open recurring costs recorded. That is not the same as having none — app subscriptions are entered by hand at /costs and none have been."
+          : undefined,
+    };
+  },
+};
 
 const calendarAdd: McpTool = {
   name: "calendar_add",
@@ -2572,6 +2772,9 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  fulfilmentCosts,
+  shippingCosts,
+  recurringCostsTool,
   calendarAdd,
   calendarUpdate,
   calendarRemove,
