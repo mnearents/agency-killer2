@@ -27,6 +27,7 @@ import { envChecks, syncRuns } from "@/db/schema";
 // auth-failed / api-error) is about syncs, not about Meta. A non-Meta error
 // classifies as api-error, which is the right answer for a scrape failure.
 import { classifyOutcome } from "@/domain/meta/outcomes";
+import { runWithSyncRecord, type TaskOutcome } from "@/db/sync-runs";
 import { checkEnv, formatEnvCheck, toStoredVariables } from "@/config/env-manifest";
 import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
 
@@ -327,6 +328,24 @@ async function main() {
     : null;
 
   // ─── Register task handlers ─────────────────────────────────────────
+
+  /**
+   * Wraps a sync so the attempt is recorded whatever happens — including the
+   * skip. A task that returned early on missing config wrote nothing at all,
+   * so a sync that never ran looked exactly like a table nobody had updated
+   * (#54). `data_freshness` reads these rows to say WHY a table looks the way
+   * it does, and for seven of nine syncs it had nothing to read.
+   */
+  const recorded = (task: string, run: () => Promise<TaskOutcome>): Promise<void> =>
+    runWithSyncRecord(
+      task,
+      () => new Date(),
+      async (row) => {
+        await db.insert(syncRuns).values(row);
+      },
+      run,
+    ).then(() => undefined);
+
   const handlerFns: Record<string, () => Promise<void>> = {
     "sync:meta": async () => {
       if (!metaClient || !metaAccountId) {
@@ -346,231 +365,281 @@ async function main() {
       }
     },
 
-    "sync:sessions": async () => {
-      if (!shopifyClient) {
-        console.error(
-          "[sync:sessions] NOT CONFIGURED — SHOPIFY_ACCESS_TOKEN is not set. " +
-            "No session data is being collected, which is the one feed that answers whether anyone arrived."
-        );
-        return;
-      }
-
-      const analytics = createShopifyAnalyticsClient({
-        storeDomain: getEnv("SHOPIFY_STORE_DOMAIN"),
-        accessToken: getEnv("SHOPIFY_ACCESS_TOKEN"),
-      });
-
-      const now = new Date();
-      const latest = await getLatestSessionDate(db);
-      const startDate = plannedSessionsStart(latest, now);
-
-      const result = await syncWebSessions({ client: analytics, db, now, startDate });
-
-      if (!result.ok) {
-        console.error(
-          `[sync:sessions] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
-        );
-        return;
-      }
-
-      console.log(
-        `[sync:sessions] ${result.window.startDate}..${result.window.endDate} ` +
-          `(previously held through ${latest ?? "nothing"}): ${result.rows} rows — ` +
-          Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
-          (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
-      );
-
-      if (result.problem) {
-        console.error(`[sync:sessions] PROBLEM — ${result.problem}`);
-      }
-    },
-
-    "sync:gsc": async () => {
-      if (!searchConsoleClient) {
-        const missing = !gscCredentials ? "GOOGLE_SERVICE_ACCOUNT_JSON" : "GSC_SITE_URL";
-        console.error(`[sync:gsc] NOT CONFIGURED — ${missing} is not set. No search data is being collected.`);
-        return;
-      }
-
-      const now = new Date();
-      const latest = await getLatestGscDate(db);
-      const days = plannedGscDays(latest, now);
-
-      const result = await syncSearchConsole({ client: searchConsoleClient, db, now, days });
-
-      if (!result.ok) {
-        // Search Console retains a rolling window and loses a day every day, so
-        // a failed run has a cost that a failed Shopify sync does not.
-        console.error(
-          `[sync:gsc] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
-        );
-        return;
-      }
-
-      console.log(
-        `[sync:gsc] ${result.window.startDate}..${result.window.endDate} ` +
-          `(${days} days, previously held through ${latest ?? "nothing"}): ` +
-          `${result.rows} rows — ` +
-          Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
-          (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
-      );
-
-      if (result.problem) {
-        console.error(`[sync:gsc] PROBLEM — ${result.problem}`);
-      }
-    },
-
-    "sync:shopify": async () => {
-      if (!shopifyClient) {
-        console.log("[sync:shopify] Skipped — SHOPIFY_ACCESS_TOKEN not set");
-        return;
-      }
-      const result = await syncOrders({ client: shopifyClient, db });
-      console.log(`[sync:shopify] Done: ${result.orders} orders, ${result.lineItems} line items`);
-      if (result.errors.length > 0) {
-        console.error("[sync:shopify] Errors:", result.errors);
-      }
-    },
-
-    "sync:seal": async () => {
-      if (!sealClient) {
-        console.log("[sync:seal] Skipped — SEAL_API_TOKEN not set");
-        return;
-      }
-      const result = await syncSubscriptions({ client: sealClient, db }, new Date());
-      const s = result.summary;
-      console.log(
-        `[sync:seal] Done: ${result.subscriptions} subscriptions, ${result.snapshots} snapshots, ` +
-          `${result.tierChangeEvents} tier changes, ` +
-          `${s.inDunning} in dunning, ${s.unknownTier} unmapped, ${s.priceAnomalies} price anomalies`
-      );
-      if (result.errors.length > 0) {
-        console.error("[sync:seal] Errors:", result.errors);
-      }
-    },
-
-    "sync:inventory": async () => {
-      if (!shopifyClient) {
-        console.log("[sync:inventory] Skipped — SHOPIFY_ACCESS_TOKEN not set");
-        return;
-      }
-      const result = await syncInventory({ client: shopifyClient, db });
-      console.log(`[sync:inventory] Done: ${result.variants} variants, ${result.pruned} pruned`);
-
-      // Both populations, never one blended percentage. 18% across everything
-      // and 82% across physical goods are the same catalogue described two
-      // ways, and only the second is a data-quality signal (#34).
-      const { cost } = result;
-      console.log(
-        `[sync:inventory] Landed cost recorded on ${cost.physicalWithCost}/${cost.physicalTotal} ` +
-          `physical variants` +
-          (cost.physicalTotal > 0
-            ? ` (${Math.round((100 * cost.physicalWithCost) / cost.physicalTotal)}%)`
-            : "") +
-          `, ${cost.withCost}/${cost.total} overall — the rest are digital, gift cards, ` +
-          `subscriptions and classes, which correctly have none.`
-      );
-      if (cost.physicalTotal > 0 && cost.physicalWithCost < cost.physicalTotal) {
-        // Not an error: partial coverage is the normal state and a margin can
-        // still be computed for what is covered. But a COD over the uncovered
-        // ones is a guess, and that has to be visible before it is quoted.
-        console.error(
-          `[sync:inventory] ${cost.physicalTotal - cost.physicalWithCost} physical variant(s) have ` +
-            `no landed cost. Any cost-of-delivery figure covering them is a guess until ` +
-            `"Cost per item" is filled in on Shopify.`
-        );
-      }
-      if (result.errors.length > 0) {
-        console.error("[sync:inventory] Errors:", result.errors);
-      }
-    },
-
-    "sync:customers": async () => {
-      if (!shopifyClient) {
-        console.log("[sync:customers] Skipped — SHOPIFY_ACCESS_TOKEN not set");
-        return;
-      }
-      const result = await syncCustomers({ client: shopifyClient, db });
-      // Reported separately, and the rollup line is not printed when it did not
-      // run. Folding both into one "Done" would let a sync that wrote customers
-      // and then failed to roll them up read as a clean run.
-      console.log(`[sync:customers] Customers written: ${result.customers}`);
-      if (result.rollup) {
-        console.log(
-          `[sync:customers] Rollup: ${result.rollup.updated} updated, ` +
-            `${result.rollup.withOrders} with orders, ${result.rollup.subscribers} subscribers`
-        );
-        // Seeds first. `seedSegments` was defined, tested and called from
-        // nowhere (#50), so the table was empty and this line read
-        // `0 evaluated, 0 failed` every day — which is also what a healthy run
-        // prints. The count alone cannot tell those apart, so `problem` does.
-        const segmentResult = await prepareAndEvaluateSegments(db, new Date());
-        console.log(
-          `[sync:customers] Segments: ${segmentResult.evaluated} of ` +
-            `${segmentResult.defined} defined evaluated, ${segmentResult.failed} failed`
-        );
-        if (segmentResult.problem) {
-          // A different channel, deliberately. A fault logged the way a success
-          // is logged reads as routine.
-          console.error(`[sync:customers] Segments PROBLEM — ${segmentResult.problem}`);
+    "sync:sessions": async () =>
+      recorded("sync:sessions", async () => {
+        if (!shopifyClient) {
+          console.error(
+            "[sync:sessions] NOT CONFIGURED — SHOPIFY_ACCESS_TOKEN is not set. " +
+              "No session data is being collected, which is the one feed that answers whether anyone arrived."
+          );
+          return { configured: false, rowsWritten: 0 };
         }
-      } else {
-        // Segments are counted over the derived columns, so sizing them against
-        // a rollup that did not run produces numbers describing the previous run.
-        console.error(
-          "[sync:customers] Rollup did NOT run — derived fields are stale, segments not re-counted"
-        );
-      }
-      if (result.errors.length > 0) {
-        console.error("[sync:customers] Errors:", result.errors);
-      }
-    },
 
-    "sync:knowledge-base": async () => {
-      if (!dropboxClient) {
-        console.log("[sync:kb] Skipped — DROPBOX credentials not set");
-        return;
-      }
-      const existingHashes = await getExistingHashes(db);
-      const result = await syncKnowledgeBase(
-        dropboxClient,
-        dropboxKbRoot,
-        new Map(), // TODO: track Dropbox revisions in DB
-        existingHashes
-      );
-      console.log(
-        `[sync:kb] Done: ${result.totalFiles} files (${result.newFiles} new, ${result.changedFiles} changed, ${result.unchangedFiles} unchanged)`
-      );
+        const analytics = createShopifyAnalyticsClient({
+          storeDomain: getEnv("SHOPIFY_STORE_DOMAIN"),
+          accessToken: getEnv("SHOPIFY_ACCESS_TOKEN"),
+        });
 
-      // Embed new chunks
-      const allChunks = result.ingestionResults.flatMap((r) => r.rows);
-      if (embeddingClient && allChunks.some((c) => c.needsEmbedding)) {
-        const embeddingResult = await embedChunks(allChunks, embeddingClient);
+        const now = new Date();
+        const latest = await getLatestSessionDate(db);
+        const startDate = plannedSessionsStart(latest, now);
+
+        const result = await syncWebSessions({ client: analytics, db, now, startDate });
+
+        if (!result.ok) {
+          console.error(
+            `[sync:sessions] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
+          );
+          return { configured: false, rowsWritten: 0 };
+        }
+
         console.log(
-          `[sync:kb] Embedding: ${embeddingResult.embedded} embedded, ${embeddingResult.skipped} skipped, ${embeddingResult.failed} failed`
+          `[sync:sessions] ${result.window.startDate}..${result.window.endDate} ` +
+            `(previously held through ${latest ?? "nothing"}): ${result.rows} rows — ` +
+            Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
+            (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
         );
 
-        // Store to DB
-        const storageResult = await storeChunks(db, embeddingResult.chunks);
+        if (result.problem) {
+          console.error(`[sync:sessions] PROBLEM — ${result.problem}`);
+        }
+        return { configured: true, rowsWritten: result.rows, errorMessage: result.problem ?? null };
+      }),
+
+    "sync:gsc": async () =>
+      recorded("sync:gsc", async () => {
+        if (!searchConsoleClient) {
+          const missing = !gscCredentials ? "GOOGLE_SERVICE_ACCOUNT_JSON" : "GSC_SITE_URL";
+          console.error(`[sync:gsc] NOT CONFIGURED — ${missing} is not set. No search data is being collected.`);
+          return { configured: false, rowsWritten: 0 };
+        }
+
+        const now = new Date();
+        const latest = await getLatestGscDate(db);
+        const days = plannedGscDays(latest, now);
+
+        const result = await syncSearchConsole({ client: searchConsoleClient, db, now, days });
+
+        if (!result.ok) {
+          // Search Console retains a rolling window and loses a day every day, so
+          // a failed run has a cost that a failed Shopify sync does not.
+          console.error(
+            `[sync:gsc] FAILED for ${result.window.startDate}..${result.window.endDate}: ${result.error}`
+          );
+          return { configured: false, rowsWritten: 0 };
+        }
+
         console.log(
-          `[sync:kb] Storage: ${storageResult.stored} stored, ${storageResult.skipped} skipped, ${storageResult.failed} failed`
+          `[sync:gsc] ${result.window.startDate}..${result.window.endDate} ` +
+            `(${days} days, previously held through ${latest ?? "nothing"}): ` +
+            `${result.rows} rows — ` +
+            Object.entries(result.byDimension).map(([k, v]) => `${k} ${v}`).join(", ") +
+            (result.skipped > 0 ? `, ${result.skipped} skipped` : "")
         );
-      }
-    },
 
-    "sync:social": async () => {
-      if (!igClient || !igUserId) {
-        console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
-        return;
-      }
-      const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
-      console.log(
-        `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed)`
-      );
-      if (result.errors.length > 0) {
-        console.error("[sync:social] Errors:", result.errors);
-      }
-    },
+        if (result.problem) {
+          console.error(`[sync:gsc] PROBLEM — ${result.problem}`);
+        }
+        return { configured: true, rowsWritten: result.rows, errorMessage: result.problem ?? null };
+      }),
+
+    "sync:shopify": async () =>
+      recorded("sync:shopify", async () => {
+        if (!shopifyClient) {
+          console.log("[sync:shopify] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncOrders({ client: shopifyClient, db });
+        console.log(`[sync:shopify] Done: ${result.orders} orders, ${result.lineItems} line items`);
+        if (result.errors.length > 0) {
+          console.error("[sync:shopify] Errors:", result.errors);
+        }
+        return {
+          configured: true,
+          rowsWritten: result.orders,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
+      }),
+
+    "sync:seal": async () =>
+      recorded("sync:seal", async () => {
+        if (!sealClient) {
+          console.log("[sync:seal] Skipped — SEAL_API_TOKEN not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncSubscriptions({ client: sealClient, db }, new Date());
+        const s = result.summary;
+        console.log(
+          `[sync:seal] Done: ${result.subscriptions} subscriptions, ${result.snapshots} snapshots, ` +
+            `${result.tierChangeEvents} tier changes, ` +
+            `${s.inDunning} in dunning, ${s.unknownTier} unmapped, ${s.priceAnomalies} price anomalies`
+        );
+        if (result.errors.length > 0) {
+          console.error("[sync:seal] Errors:", result.errors);
+        }
+        return {
+          configured: true,
+          rowsWritten: result.subscriptions,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
+      }),
+
+    "sync:inventory": async () =>
+      recorded("sync:inventory", async () => {
+        if (!shopifyClient) {
+          console.log("[sync:inventory] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncInventory({ client: shopifyClient, db });
+        console.log(`[sync:inventory] Done: ${result.variants} variants, ${result.pruned} pruned`);
+
+        // Both populations, never one blended percentage. 18% across everything
+        // and 82% across physical goods are the same catalogue described two
+        // ways, and only the second is a data-quality signal (#34).
+        const { cost } = result;
+        console.log(
+          `[sync:inventory] Landed cost recorded on ${cost.physicalWithCost}/${cost.physicalTotal} ` +
+            `physical variants` +
+            (cost.physicalTotal > 0
+              ? ` (${Math.round((100 * cost.physicalWithCost) / cost.physicalTotal)}%)`
+              : "") +
+            `, ${cost.withCost}/${cost.total} overall — the rest are digital, gift cards, ` +
+            `subscriptions and classes, which correctly have none.`
+        );
+        if (cost.physicalTotal > 0 && cost.physicalWithCost < cost.physicalTotal) {
+          // Not an error: partial coverage is the normal state and a margin can
+          // still be computed for what is covered. But a COD over the uncovered
+          // ones is a guess, and that has to be visible before it is quoted.
+          console.error(
+            `[sync:inventory] ${cost.physicalTotal - cost.physicalWithCost} physical variant(s) have ` +
+              `no landed cost. Any cost-of-delivery figure covering them is a guess until ` +
+              `"Cost per item" is filled in on Shopify.`
+          );
+        }
+        if (result.errors.length > 0) {
+          console.error("[sync:inventory] Errors:", result.errors);
+        }
+        return {
+          configured: true,
+          rowsWritten: result.variants,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
+      }),
+
+    "sync:customers": async () =>
+      recorded("sync:customers", async () => {
+        if (!shopifyClient) {
+          console.log("[sync:customers] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncCustomers({ client: shopifyClient, db });
+        // Reported separately, and the rollup line is not printed when it did not
+        // run. Folding both into one "Done" would let a sync that wrote customers
+        // and then failed to roll them up read as a clean run.
+        console.log(`[sync:customers] Customers written: ${result.customers}`);
+        if (result.rollup) {
+          console.log(
+            `[sync:customers] Rollup: ${result.rollup.updated} updated, ` +
+              `${result.rollup.withOrders} with orders, ${result.rollup.subscribers} subscribers`
+          );
+          // Seeds first. `seedSegments` was defined, tested and called from
+          // nowhere (#50), so the table was empty and this line read
+          // `0 evaluated, 0 failed` every day — which is also what a healthy run
+          // prints. The count alone cannot tell those apart, so `problem` does.
+          const segmentResult = await prepareAndEvaluateSegments(db, new Date());
+          console.log(
+            `[sync:customers] Segments: ${segmentResult.evaluated} of ` +
+              `${segmentResult.defined} defined evaluated, ${segmentResult.failed} failed`
+          );
+          if (segmentResult.problem) {
+            // A different channel, deliberately. A fault logged the way a success
+            // is logged reads as routine.
+            console.error(`[sync:customers] Segments PROBLEM — ${segmentResult.problem}`);
+          }
+        } else {
+          // Segments are counted over the derived columns, so sizing them against
+          // a rollup that did not run produces numbers describing the previous run.
+          console.error(
+            "[sync:customers] Rollup did NOT run — derived fields are stale, segments not re-counted"
+          );
+        }
+        if (result.errors.length > 0) {
+          console.error("[sync:customers] Errors:", result.errors);
+        }
+        return {
+          configured: true,
+          rowsWritten: result.customers,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
+      }),
+
+    "sync:knowledge-base": async () =>
+      recorded("sync:knowledge-base", async () => {
+        if (!dropboxClient) {
+          console.log("[sync:kb] Skipped — DROPBOX credentials not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const existingHashes = await getExistingHashes(db);
+        const result = await syncKnowledgeBase(
+          dropboxClient,
+          dropboxKbRoot,
+          new Map(), // TODO: track Dropbox revisions in DB
+          existingHashes
+        );
+        console.log(
+          `[sync:kb] Done: ${result.totalFiles} files (${result.newFiles} new, ${result.changedFiles} changed, ${result.unchangedFiles} unchanged)`
+        );
+
+        // Embed new chunks
+        const allChunks = result.ingestionResults.flatMap((r) => r.rows);
+        let stored = 0;
+        let failures: string | null = null;
+        if (embeddingClient && allChunks.some((c) => c.needsEmbedding)) {
+          const embeddingResult = await embedChunks(allChunks, embeddingClient);
+          console.log(
+            `[sync:kb] Embedding: ${embeddingResult.embedded} embedded, ${embeddingResult.skipped} skipped, ${embeddingResult.failed} failed`
+          );
+
+          // Store to DB
+          const storageResult = await storeChunks(db, embeddingResult.chunks);
+          console.log(
+            `[sync:kb] Storage: ${storageResult.stored} stored, ${storageResult.skipped} skipped, ${storageResult.failed} failed`
+          );
+          stored = storageResult.stored;
+          // A chunk that failed to embed is stored unsearchable, which is the
+          // state 85 Instagram transcripts are already in. Recorded here so a
+          // run that half-worked is not filed as a clean one.
+          if (embeddingResult.failed > 0 || storageResult.failed > 0) {
+            failures = `${embeddingResult.failed} chunk(s) failed to embed, ${storageResult.failed} failed to store`;
+          }
+        } else if (!embeddingClient) {
+          failures = "OPENAI_API_KEY not set — new chunks stored without embeddings are unsearchable";
+        }
+
+        // Unchanged files are the normal steady state, so rows written counts
+        // what actually moved: nothing new is `no-data`, which is correct.
+        return { configured: true, rowsWritten: stored, errorMessage: failures };
+      }),
+
+    "sync:social": async () =>
+      recorded("sync:social", async () => {
+        if (!igClient || !igUserId) {
+          console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
+        console.log(
+          `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed)`
+        );
+        if (result.errors.length > 0) {
+          console.error("[sync:social] Errors:", result.errors);
+        }
+        return {
+          configured: true,
+          rowsWritten: result.posts,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
+      }),
 
     "sync:attentive": async () => {
       const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
