@@ -9,6 +9,7 @@ export function createMockShopifyApiClient(
     getCustomersWithEnrollments: vi.fn().mockResolvedValue([]),
     getCustomerProfiles: vi.fn().mockResolvedValue([]),
     getInventory: vi.fn().mockResolvedValue([]),
+    getProducts: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }

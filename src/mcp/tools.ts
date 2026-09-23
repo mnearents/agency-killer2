@@ -74,6 +74,17 @@ import {
   deleteEntry,
 } from "@/domain/calendar/queries";
 import {
+  findProducts,
+  allProductsForAudit,
+  getProductCoverage,
+} from "@/domain/shopify/product-queries";
+import {
+  auditProductSeo,
+  findDuplicateDescriptions,
+  htmlToText,
+  PRODUCT_METAFIELD_KEYS,
+} from "@/domain/shopify/products";
+import {
   getFootageCoverage,
   listFootage,
   getFootageTags,
@@ -893,6 +904,115 @@ const coverageOf = (billed: number, unbilled: number) => ({
       ? `Postage is known for ${billed} of ${billed + unbilled} shipments. The rest bill to a carrier account the 3PL does not invoice, so any cost here is a floor, not a total.`
       : "Postage is known for every shipment in this window.",
 });
+
+const productCopy: McpTool = {
+  name: "product_copy",
+  title: "Product copy, SEO fields and metafields",
+  description:
+    "The actual copy on a Shopify product: description, SEO title and meta description, handle, tags, and the custom metafields (overview_description, previous_description, faqs, features, class_overview). Search by title or handle. " +
+    "Every text field is null when it was NEVER SET — nothing here substitutes an empty string for a missing one, because a blank meta description and an absent one need different work. " +
+    "`descriptionText` is the description with markup stripped, which is what a word count should be read from. Use product_seo_audit to find gaps across the catalogue rather than one product at a time.",
+  readOnly: true,
+  schema: {
+    search: { type: "string" },
+    status: { type: "enum", values: ["ACTIVE", "DRAFT", "ARCHIVED"] },
+    limit: { type: "integer", min: 1, max: 50, default: 10 },
+  },
+  async run(ctx, args) {
+    const coverage = await getProductCoverage(ctx.db);
+    if (coverage.products === 0) {
+      return {
+        coverage,
+        error:
+          "No products stored. The product sync has not run — check data_freshness for sync:products. This is an empty table, not a catalogue with no copy.",
+      };
+    }
+
+    const { rows, matched } = await findProducts(ctx.db, {
+      search: typeof args.search === "string" ? args.search : undefined,
+      status: typeof args.status === "string" ? args.status : undefined,
+      limit: args.limit as number,
+    });
+
+    return {
+      coverage,
+      matched,
+      returned: rows.length,
+      metafieldsSynced: PRODUCT_METAFIELD_KEYS,
+      products: rows.map((p) => ({
+        id: p.id,
+        title: p.title,
+        handle: p.handle,
+        status: p.status,
+        productType: p.productType,
+        vendor: p.vendor,
+        tags: p.tags,
+        seoTitle: p.seoTitle,
+        seoDescription: p.seoDescription,
+        descriptionText: p.descriptionHtml === null ? null : htmlToText(p.descriptionHtml),
+        descriptionHtml: p.descriptionHtml,
+        metafields: p.metafields ?? {},
+      })),
+      note:
+        "Only the five metafields listed in metafieldsSynced are fetched. Shopify does not return all metafields, so any other namespace is absent from this system rather than empty in it.",
+    };
+  },
+};
+
+const productSeoAudit: McpTool = {
+  name: "product_seo_audit",
+  title: "Find product SEO gaps",
+  description:
+    "Audits every product for SEO problems and returns them as named issues rather than a score: no-seo-title, no-seo-description, seo-title-too-long, seo-description-too-long, seo-description-too-short, no-description, handle-mismatch. " +
+    "A score would collapse 'no meta description at all' and 'a meta description four characters too long' into one number, and only one of those is worth an afternoon. " +
+    "Also reports which of the five custom metafields each product is missing, and products sharing identical description copy — usually a paste that stuck. " +
+    "Length limits are advisory: Google truncates a long title, it does not reject it.",
+  readOnly: true,
+  schema: {
+    issue: { type: "string" },
+    activeOnly: { type: "boolean", default: true },
+    limit: { type: "integer", min: 1, max: 200, default: 50 },
+  },
+  async run(ctx, args) {
+    const coverage = await getProductCoverage(ctx.db);
+    if (coverage.products === 0) {
+      return {
+        error:
+          "No products stored. The product sync has not run — check data_freshness for sync:products.",
+      };
+    }
+
+    const all = await allProductsForAudit(ctx.db);
+    const scope = (args.activeOnly as boolean) ? all.filter((p) => p.status === "ACTIVE") : all;
+    const audits = scope.map((p) => auditProductSeo(p));
+
+    const wanted = typeof args.issue === "string" ? args.issue : undefined;
+    const withIssues = audits.filter((a) =>
+      wanted ? a.issues.includes(wanted as never) : a.issues.length > 0,
+    );
+
+    const issueCounts: Record<string, number> = {};
+    for (const a of audits) for (const i of a.issues) issueCounts[i] = (issueCounts[i] ?? 0) + 1;
+
+    const metafieldGaps: Record<string, number> = {};
+    for (const key of PRODUCT_METAFIELD_KEYS) {
+      metafieldGaps[key] = audits.filter((a) => a.metafieldsMissing.includes(key)).length;
+    }
+
+    return {
+      productsAudited: audits.length,
+      activeOnly: args.activeOnly,
+      clean: audits.length - audits.filter((a) => a.issues.length > 0).length,
+      issueCounts,
+      metafieldsMissingCount: metafieldGaps,
+      duplicateDescriptions: findDuplicateDescriptions(scope).slice(0, 10),
+      matched: withIssues.length,
+      returned: Math.min(withIssues.length, args.limit as number),
+      products: withIssues.slice(0, args.limit as number),
+      lastSyncedAt: coverage.lastSyncedAt,
+    };
+  },
+};
 
 const footageTool: McpTool = {
   name: "footage",
@@ -3108,6 +3228,8 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  productCopy,
+  productSeoAudit,
   footageTool,
   kbSearch,
   kbDocumentsTool,

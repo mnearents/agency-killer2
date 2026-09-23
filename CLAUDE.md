@@ -318,7 +318,7 @@ absolute — re-run `node install.mjs` after a move.
 src/
 ├── domain/                 # Business logic — the core
 │   ├── meta/               # Ad performance analysis, recommendations
-│   ├── shopify/            # Orders, products, customers, segments
+│   ├── shopify/            # Orders, products, customers, segments, product copy/SEO
 │   ├── subscriptions/      # Seal facts, LTV, tier movement
 │   ├── economics/          # COD, contribution margin, target CPA, aMER, 3PL costs
 │   ├── email/              # Email/SMS campaigns, creative generation

@@ -170,6 +170,25 @@ describe("the tool catalogue", () => {
     expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
+  it("exposes the product copy surface", () => {
+    const names = ALL_TOOLS.map((t) => t.name);
+    expect(names).toContain("product_copy");
+    expect(names).toContain("product_seo_audit");
+  });
+
+  // Only five metafields are fetched. A caller assuming it sees all of them
+  // would read an absent namespace as an empty one.
+  it("declares that only the named metafields are synced", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "product_copy")!.description)
+      .toMatch(/does not return all metafields/i);
+  });
+
+  // A blank meta description and an absent one need different work.
+  it("declares that null means never set, not blank", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "product_copy")!.description)
+      .toMatch(/NEVER SET/);
+  });
+
   it("exposes the footage surface", () => {
     expect(ALL_TOOLS.map((t) => t.name)).toContain("footage");
     expect(ALL_TOOLS.find((t) => t.name === "footage")!.readOnly).toBe(true);

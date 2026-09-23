@@ -281,6 +281,13 @@
       "when": 1790188903053,
       "tag": "0039_narrow_lyja",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790191283651,
+      "tag": "0040_powerful_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

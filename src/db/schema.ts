@@ -941,6 +941,53 @@ export type VoiceSample = typeof voiceSamples.$inferSelect;
 export type VoiceRule = typeof voiceRules.$inferSelect;
 export type VoiceBannedWord = typeof voiceBannedWords.$inferSelect;
 
+/**
+ * Product-level copy, SEO fields and metafields.
+ *
+ * `shopify_inventory` is variant-grained and carries only id, title, status
+ * and type — there is nowhere in it for a description. So nothing in this
+ * system could see a word of product copy until this table existed, and
+ * questions like "which products have no meta description" were unanswerable
+ * rather than answered badly.
+ *
+ * Every text field is nullable and NULL means never set, not blank. The sync
+ * drops empty strings for the same reason: a product whose SEO description was
+ * deliberately cleared and one that never had it written need different
+ * answers, and Shopify returns "" for both.
+ */
+export const shopifyProducts = pgTable(
+  "shopify_products",
+  {
+    /** Shopify product GID. */
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    /** The URL slug. Joins a Search Console `page` row to a product. */
+    handle: text("handle").notNull(),
+    status: text("status").notNull(),
+    productType: text("product_type"),
+    vendor: text("vendor"),
+    tags: jsonb("tags").$type<string[]>(),
+
+    descriptionHtml: text("description_html"),
+    seoTitle: text("seo_title"),
+    seoDescription: text("seo_description"),
+
+    /** Keyed `namespace.key`. Only the identifiers the sync asks for appear. */
+    metafields: jsonb("metafields").$type<Record<string, string>>(),
+
+    productUpdatedAt: timestamp("product_updated_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("shopify_products_handle_idx").on(table.handle),
+    index("shopify_products_status_idx").on(table.status),
+    index("shopify_products_type_idx").on(table.productType),
+  ]
+);
+
+export type ShopifyProductRow = typeof shopifyProducts.$inferSelect;
+export type NewShopifyProductRow = typeof shopifyProducts.$inferInsert;
+
 // ─── Footage ─────────────────────────────────────────────────────────
 
 /**

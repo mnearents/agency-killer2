@@ -106,6 +106,27 @@ export interface ShopifyApiVariant {
   } | null;
 }
 
+/**
+ * Product-level copy and SEO. Separate from ShopifyApiVariant because that is
+ * variant-grained and has nowhere to put a description.
+ */
+export interface ShopifyApiProduct {
+  id: string;
+  title: string;
+  handle: string;
+  status: string;
+  productType: string | null;
+  vendor: string | null;
+  tags: string[];
+  descriptionHtml: string | null;
+  /** The storefront meta title and description. Null when never set. */
+  seoTitle: string | null;
+  seoDescription: string | null;
+  /** Keyed `namespace.key`. Only the identifiers asked for appear. */
+  metafields: Record<string, string>;
+  updatedAt: string;
+}
+
 export interface ShopifyApiClient {
   getOrders(params: {
     since?: string;
@@ -122,6 +143,17 @@ export interface ShopifyApiClient {
     limit?: number;
   }): Promise<ShopifyApiCustomerProfile[]>;
   getInventory(params?: { limit?: number }): Promise<ShopifyApiVariant[]>;
+  /**
+   * Products with their copy, SEO fields and the named metafields.
+   *
+   * Metafields must be requested by identifier — Shopify will not return "all
+   * of them" — so the caller names them and anything unnamed is simply absent
+   * rather than silently empty.
+   */
+  getProducts(params: {
+    metafieldIdentifiers: { namespace: string; key: string }[];
+    limit?: number;
+  }): Promise<ShopifyApiProduct[]>;
 }
 
 const ORDERS_QUERY = `
@@ -209,6 +241,27 @@ const INVENTORY_QUERY = `
         price
         inventoryItem { id tracked unitCost { amount } }
         product { id title status productType }
+      }
+    }
+  }
+`;
+
+const PRODUCTS_QUERY = `
+  query GetProducts($first: Int!, $after: String, $identifiers: [HasMetafieldsIdentifier!]!) {
+    products(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        title
+        handle
+        status
+        productType
+        vendor
+        tags
+        descriptionHtml
+        updatedAt
+        seo { title description }
+        metafields(identifiers: $identifiers) { namespace key value }
       }
     }
   }
@@ -395,6 +448,64 @@ export function createShopifyApiClient(
           ? data.customers.pageInfo.endCursor
           : null;
       } while (after);
+
+      return all;
+    },
+
+    async getProducts(params) {
+      const limit = params.limit ?? 100;
+      const identifiers = params.metafieldIdentifiers;
+      const all: ShopifyApiProduct[] = [];
+      let after: string | null = null;
+
+      interface RawProduct {
+        id: string;
+        title: string;
+        handle: string;
+        status: string;
+        productType: string | null;
+        vendor: string | null;
+        tags: string[] | null;
+        descriptionHtml: string | null;
+        updatedAt: string;
+        seo: { title: string | null; description: string | null } | null;
+        metafields: ({ namespace: string; key: string; value: string } | null)[] | null;
+      }
+
+      do {
+        const data: { products: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: RawProduct[] } } =
+          await graphql(PRODUCTS_QUERY, { first: limit, after, identifiers });
+
+        for (const node of data.products.nodes) {
+          const metafields: Record<string, string> = {};
+          // Shopify returns a null in the array for an identifier the product
+          // does not have, keeping positions aligned. A null is "not set" and
+          // is left out rather than stored as an empty string, so "never
+          // written" stays distinct from "written blank".
+          for (const mf of node.metafields ?? []) {
+            if (mf && typeof mf.value === "string" && mf.value !== "") {
+              metafields[`${mf.namespace}.${mf.key}`] = mf.value;
+            }
+          }
+
+          all.push({
+            id: node.id,
+            title: node.title,
+            handle: node.handle,
+            status: node.status,
+            productType: node.productType && node.productType !== "" ? node.productType : null,
+            vendor: node.vendor && node.vendor !== "" ? node.vendor : null,
+            tags: node.tags ?? [],
+            descriptionHtml: node.descriptionHtml && node.descriptionHtml !== "" ? node.descriptionHtml : null,
+            seoTitle: node.seo?.title && node.seo.title !== "" ? node.seo.title : null,
+            seoDescription: node.seo?.description && node.seo.description !== "" ? node.seo.description : null,
+            metafields,
+            updatedAt: node.updatedAt,
+          });
+        }
+
+        after = data.products.pageInfo.hasNextPage ? data.products.pageInfo.endCursor : null;
+      } while (after !== null);
 
       return all;
     },

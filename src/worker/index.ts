@@ -52,6 +52,7 @@ import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { syncFootage } from "@/domain/footage/sync";
+import { syncProducts } from "@/domain/shopify/product-sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
 import { getTopProducts, getOrderSummary } from "@/domain/shopify/queries";
@@ -621,6 +622,29 @@ async function main() {
         // Unchanged files are the normal steady state, so rows written counts
         // what actually moved: nothing new is `no-data`, which is correct.
         return { configured: true, rowsWritten: stored, errorMessage: failures };
+      }),
+
+    "sync:products": async () =>
+      recorded("sync:products", async () => {
+        if (!shopifyClient) {
+          console.log("[sync:products] Skipped — SHOPIFY_ACCESS_TOKEN not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncProducts({ client: shopifyClient, db });
+        console.log(
+          `[sync:products] ${result.products} products: ${result.withDescription} with a description, ` +
+            `${result.withSeoTitle} with an SEO title, ${result.withSeoDescription} with an SEO description`
+        );
+        console.log(
+          `[sync:products] metafields: ` +
+            Object.entries(result.metafieldCoverage).map(([k, v]) => `${k} ${v}`).join(", ")
+        );
+        if (result.errors.length > 0) console.error("[sync:products] Errors:", result.errors);
+        return {
+          configured: true,
+          rowsWritten: result.products,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
       }),
 
     "sync:footage": async () =>

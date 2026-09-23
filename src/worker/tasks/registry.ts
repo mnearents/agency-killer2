@@ -54,6 +54,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "products-sync",
+      name: "Shopify Product Copy and SEO",
+      schedule: { type: "daily", hour: 13, minute: 15 },
+      enabled: true,
+    },
+    {
       id: "footage-sync",
       name: "Dropbox Footage Transcription",
       schedule: { type: "daily", hour: 14, minute: 10 },
@@ -142,6 +148,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "customers-sync": "sync:customers",
     "social-sync": "sync:social",
     "footage-sync": "sync:footage",
+    "products-sync": "sync:products",
     "gsc-sync": "sync:gsc",
     "sessions-sync": "sync:sessions",
     "inventory-sync": "sync:inventory",
