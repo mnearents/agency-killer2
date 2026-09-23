@@ -238,11 +238,22 @@ Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_conf
     "rad-and-happy": {
       "command": "/usr/local/bin/pnpm",
       "args": ["--silent", "--dir", "/Users/matthewnearents/agency-killer2", "mcp"],
-      "env": { "DATABASE_URL": "<Railway DATABASE_PUBLIC_URL>" }
+      "env": {
+        "DATABASE_URL": "<Railway DATABASE_PUBLIC_URL>",
+        "ANALYTICS_DATABASE_URL": "<claude_readonly URL>",
+        "ATTENTIVE_API_KEY": "<key>",
+        "OPENAI_API_KEY": "<key>"
+      }
     }
   }
 }
 ```
+
+Only `DATABASE_URL` is required. Each of the others degrades one thing and says
+so: without `ANALYTICS_DATABASE_URL` the `query` tool reports itself
+unavailable, without `ATTENTIVE_API_KEY` the segment push tools do, and without
+`OPENAI_API_KEY` `kb_search` falls back to literal substring matching and
+labels itself `text` rather than passing a worse search off as the semantic one.
 
 `--silent` is load-bearing: without it pnpm prints its `> tsx src/mcp/index.ts`
 banner to **stdout**, which is the JSON-RPC channel, and the handshake fails.
@@ -315,7 +326,7 @@ src/
 │   ├── social/             # Organic IG/FB analytics, reel creation
 │   ├── blog/               # SEO/GEO article generation
 │   ├── seo/                # Search Console and web sessions sync + queries
-│   ├── knowledge/          # RAG retrieval, document ingestion, chunking
+│   ├── knowledge/          # RAG retrieval, document ingestion, chunking, queries
 │   ├── voice/              # Brand voice prompt assembly, validation
 │   ├── inventory/          # Stock monitoring, alerts, bundling
 │   ├── segments/           # Segment definitions and the Attentive push

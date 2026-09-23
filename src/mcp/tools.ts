@@ -74,6 +74,14 @@ import {
   deleteEntry,
 } from "@/domain/calendar/queries";
 import {
+  getKbCoverage,
+  searchKbByVector,
+  searchKbByText,
+  listKbDocuments,
+  searchableShare,
+} from "@/domain/knowledge/queries";
+import type { EmbeddingClient } from "@/integrations/openai";
+import {
   GSC_DIMENSIONS,
   SESSION_DIMENSIONS,
   SESSION_MEASUREMENT_BREAK,
@@ -201,6 +209,13 @@ export interface McpToolContext {
    * through to a no-op that reads like a push that happened.
    */
   attentive?: AttentiveWriteClient;
+  /**
+   * Embeddings for knowledge-base search. Absent when OPENAI_API_KEY is unset,
+   * in which case `kb_search` falls back to literal text matching and SAYS SO
+   * in `searchMode` — a worse search returning plausible results under the
+   * same name as the good one is the failure that field exists to prevent.
+   */
+  embeddings?: EmbeddingClient;
 }
 
 export interface McpTool {
@@ -872,6 +887,124 @@ const coverageOf = (billed: number, unbilled: number) => ({
       ? `Postage is known for ${billed} of ${billed + unbilled} shipments. The rest bill to a carrier account the 3PL does not invoice, so any cost here is a floor, not a total.`
       : "Postage is known for every shipment in this window.",
 });
+
+const kbSearch: McpTool = {
+  name: "kb_search",
+  title: "Search the knowledge base",
+  description:
+    "Search brand documents, strategy notes, meeting notes, creative briefs and social transcripts by meaning. " +
+    "`searchMode` says which search ran: `semantic` uses embeddings; `text` is a literal substring fallback used when OPENAI_API_KEY is not set on this server, and it finds nothing by meaning — treat its misses as uninformative. " +
+    "`searchable` reports how much of the scope a semantic search can actually reach: chunks without an embedding are invisible to it however relevant they are, and against production a large share of social-transcript is in that state. " +
+    "An embedding failure is returned as an error, never as an empty result — no matches and a broken search need opposite responses.",
+  readOnly: true,
+  schema: {
+    query: { type: "string", required: true },
+    category: { type: "string" },
+    limit: { type: "integer", min: 1, max: 25, default: 5 },
+  },
+  async run(ctx, args) {
+    const query = (args.query as string).trim();
+    if (query === "") throw new McpArgumentError("query cannot be blank.");
+    const category = typeof args.category === "string" ? args.category : undefined;
+    const limit = args.limit as number;
+
+    const coverage = await getKbCoverage(ctx.db);
+    if (category !== undefined && !coverage.some((c) => c.category === category)) {
+      return {
+        error: `No such category "${category}".`,
+        categoriesAvailable: coverage.map((c) => c.category),
+      };
+    }
+    const searchable = searchableShare(coverage, category);
+
+    if (ctx.embeddings === undefined) {
+      const hits = await searchKbByText(ctx.db, query, { category, limit });
+      return {
+        searchMode: "text",
+        query,
+        category: category ?? null,
+        returned: hits.length,
+        searchable: { ...searchable, note: "A text search reads every chunk, embedded or not." },
+        hits,
+        note:
+          "OPENAI_API_KEY is not set on this MCP server, so this was a literal substring match, " +
+          "not a semantic search. It will miss anything phrased differently from the query.",
+      };
+    }
+
+    let embedding: number[];
+    try {
+      ({ embedding } = await ctx.embeddings.embed(query));
+    } catch (err) {
+      // Returned, not thrown, and never beside partial results: an empty list
+      // would read as "the knowledge base has nothing on this".
+      return {
+        error: `Embedding the query failed, so no semantic search ran: ${err instanceof Error ? err.message : String(err)}`,
+        searchMode: "failed",
+        query,
+      };
+    }
+
+    const hits = await searchKbByVector(ctx.db, embedding, { category, limit });
+    return {
+      searchMode: "semantic",
+      query,
+      category: category ?? null,
+      returned: hits.length,
+      searchable: {
+        ...searchable,
+        note:
+          searchable.embedded < searchable.chunks
+            ? `${searchable.chunks - searchable.embedded} of ${searchable.chunks} chunks in scope have no embedding and cannot be found by this search at all.`
+            : "Every chunk in scope is embedded.",
+      },
+      hits,
+    };
+  },
+};
+
+const kbDocumentsTool: McpTool = {
+  name: "kb_documents",
+  title: "Browse the knowledge base",
+  description:
+    "What is in the knowledge base, by document, with its category, source file and chunk count. " +
+    "`embedded` against `chunks` says how much of each document a semantic search can reach — a document with chunks and no embeddings is present and unfindable by kb_search. " +
+    "Use this to see what exists; use kb_search to find something by meaning.",
+  readOnly: true,
+  schema: {
+    category: { type: "string" },
+    limit: { type: "integer", min: 1, max: 100, default: 30 },
+  },
+  async run(ctx, args) {
+    const category = typeof args.category === "string" ? args.category : undefined;
+    const coverage = await getKbCoverage(ctx.db);
+
+    if (category !== undefined && !coverage.some((c) => c.category === category)) {
+      return {
+        error: `No such category "${category}".`,
+        categoriesAvailable: coverage.map((c) => c.category),
+      };
+    }
+
+    const { rows, matched } = await listKbDocuments(ctx.db, { category, limit: args.limit as number });
+    const totals = searchableShare(coverage, category);
+
+    return {
+      category: category ?? null,
+      documentsMatched: matched,
+      documentsReturned: rows.length,
+      chunks: totals.chunks,
+      chunksEmbedded: totals.embedded,
+      searchableShare: totals.share,
+      byCategory: coverage,
+      documents: rows,
+      note:
+        totals.embedded < totals.chunks
+          ? `${totals.chunks - totals.embedded} chunks have no embedding. They are listed here and cannot be returned by kb_search.`
+          : undefined,
+    };
+  },
+};
 
 /** Default window for the SEO tools when none is given. */
 const SEO_DEFAULT_DAYS = 90;
@@ -2914,6 +3047,8 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  kbSearch,
+  kbDocumentsTool,
   searchPerformance,
   webTraffic,
   fulfilmentCosts,

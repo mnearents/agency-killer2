@@ -60,9 +60,10 @@ export const ENV_MANIFEST: EnvVariable[] = [
   },
   {
     name: "OPENAI_API_KEY",
-    surfaces: ["worker"],
+    surfaces: ["worker", "mcp"],
     severity: "degraded",
-    impact: "Knowledge-base embeddings stop, so RAG retrieval degrades to whatever is already indexed.",
+    impact:
+      "Knowledge-base embeddings stop, so RAG retrieval degrades to whatever is already indexed. On the MCP surface `kb_search` falls back to literal substring matching and labels itself `text` rather than passing a worse search off as the semantic one.",
   },
   {
     name: "SHOPIFY_ACCESS_TOKEN",

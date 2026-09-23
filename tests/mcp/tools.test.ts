@@ -170,6 +170,32 @@ describe("the tool catalogue", () => {
     expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
+  it("exposes the knowledge base surface", () => {
+    const names = ALL_TOOLS.map((t) => t.name);
+    expect(names).toContain("kb_search");
+    expect(names).toContain("kb_documents");
+  });
+
+  it("keeps the knowledge base tools read-only", () => {
+    for (const n of ["kb_search", "kb_documents"]) {
+      expect(ALL_TOOLS.find((t) => t.name === n)!.readOnly, n).toBe(true);
+    }
+  });
+
+  // A literal substring search returning plausible results under the same name
+  // as the semantic one is the failure searchMode exists to prevent.
+  it("declares that kb_search reports which search actually ran", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "kb_search")!;
+    expect(tool.description).toMatch(/searchMode/);
+    expect(tool.description).toMatch(/semantic/);
+    expect(tool.description).toMatch(/text/);
+  });
+
+  // Chunks with no embedding are invisible to a vector search however relevant.
+  it("declares that kb_search reports what share of the scope it can reach", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "kb_search")!.description).toMatch(/searchable/);
+  });
+
   it("exposes the organic search surface", () => {
     const names = ALL_TOOLS.map((t) => t.name);
     expect(names).toContain("search_performance");

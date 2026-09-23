@@ -15,6 +15,7 @@ import { createDb } from "@/db/client";
 import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 import { createAttentiveWriteClient } from "@/integrations/attentive-write";
+import { createEmbeddingClient } from "@/integrations/openai";
 import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 
 async function main() {
@@ -51,11 +52,20 @@ async function main() {
     console.error("[mcp] ATTENTIVE_API_KEY not set — the segment push tools will be unavailable");
   }
 
+  // Knowledge-base search. Absent is supported: kb_search falls back to a
+  // literal text match and labels itself `text` rather than presenting a worse
+  // search under the same name as the good one.
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!openaiKey) {
+    console.error("[mcp] OPENAI_API_KEY not set — kb_search will fall back to literal text matching");
+  }
+
   const server = createMcpServer({
     db: createDb(databaseUrl),
     now: () => new Date(),
     analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
     attentive: attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
+    embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
   });
 
   await server.connect(new StdioServerTransport());
