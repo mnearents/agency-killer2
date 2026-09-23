@@ -115,6 +115,35 @@ describe("planThreeplImport", () => {
     }
   });
 
+  // This is the call site. `reconcileRecurringCost` existed, was covered by
+  // its own tests, and nothing called it — so recurring_costs stayed empty
+  // while every import reported the charge it had found. A unit test over a
+  // function wired to nothing passes forever; this one goes red if the
+  // planning is dropped.
+  it("plans a recurring_costs row for each recurring charge", () => {
+    const result = plan(
+      [{ category: "recurring", fee: "API CONNECTION", total: "125.00" }, { order: "RH354748" }],
+      ["RH354748"],
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.plan.recurringInputs).toEqual([
+        { name: "API CONNECTION", amountCents: 12500, effectiveFrom: "2026-08-22",
+          cadence: "per_bill_period", vendor: "3PL" },
+      ]);
+    }
+  });
+
+  it("dates the recurring cost from the bill period, not from today", () => {
+    const result = plan([{ category: "recurring", fee: "API CONNECTION", total: "125.00", start: "2026-07-11" }]);
+    if (result.ok) expect(result.plan.recurringInputs[0].effectiveFrom).toBe("2026-07-11");
+  });
+
+  it("plans nothing recurring for a bill that has none", () => {
+    const result = plan([{ order: "RH354748" }], ["RH354748"]);
+    if (result.ok) expect(result.plan.recurringInputs).toEqual([]);
+  });
+
   it("surfaces recurring charges as candidates for recurring_costs", () => {
     const result = plan(
       [{ category: "recurring", fee: "API CONNECTION", total: "125.00" }, { order: "RH354748" }],

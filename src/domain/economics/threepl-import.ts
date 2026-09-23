@@ -46,6 +46,8 @@ export interface ThreeplImportResult {
   unknownColumns: string[];
   /** Recurring charges found in the bill — candidates for `recurring_costs`. */
   recurringFound: { fee: string; cents: number }[];
+  /** What was actually done with them. Reported so "found" and "recorded" stay distinct. */
+  recurringRecorded: { name: string; action: RecurringCostPlan["action"]; cents: number }[];
   /** Non-fatal observations worth surfacing to whoever ran the import. */
   warnings: string[];
 }
@@ -223,11 +225,28 @@ export function planThreeplImport(args: {
     sourceFile: args.sourceFile ?? null,
   }));
 
+  const recurringFound = rows
+    .filter((r) => r.category === "recurring")
+    .map((r) => ({ fee: r.fee ?? "(unnamed)", cents: r.totalCents ?? 0 }));
+
+  const periodStart = rows.find((r) => r.periodStart !== null)?.periodStart ?? null;
+  const recurringInputs: RecurringCostInput[] =
+    periodStart === null
+      ? []
+      : recurringFound.map((r) => ({
+          name: r.fee,
+          amountCents: r.cents,
+          effectiveFrom: periodStart,
+          cadence: "per_bill_period",
+          vendor: "3PL",
+        }));
+
   return {
     ok: true,
     plan: {
       billNumber,
       values,
+      recurringInputs,
       result: {
         billNumber,
         periodStart: rows.find((r) => r.periodStart !== null)?.periodStart ?? null,
@@ -240,9 +259,8 @@ export function planThreeplImport(args: {
         orderColumn,
         orders,
         unknownColumns,
-        recurringFound: rows
-          .filter((r) => r.category === "recurring")
-          .map((r) => ({ fee: r.fee ?? "(unnamed)", cents: r.totalCents ?? 0 })),
+        recurringFound,
+        recurringRecorded: [],
         warnings,
       },
     },
@@ -252,6 +270,14 @@ export function planThreeplImport(args: {
 export interface ImportPlan {
   billNumber: string;
   values: NewThreeplChargeDbRow[];
+  /**
+   * Recurring charges to fold into `recurring_costs`, decided here rather than
+   * in the IO wrapper so the decision is testable and the call site cannot be
+   * dropped without a test going red. It was dropped once: the function
+   * existed, was covered, and nothing called it, so the table stayed empty
+   * while every import cheerfully reported the charge it had found.
+   */
+  recurringInputs: RecurringCostInput[];
   result: ThreeplImportResult;
 }
 
@@ -302,7 +328,16 @@ export async function importThreeplCharges(
   }
   await db.insert(threeplCharges).values(planned.plan.values);
 
-  return planned.plan.result;
+  // The recurring charges the bill disclosed. Without this the table stayed
+  // empty while the import reported the charge it had found on every run —
+  // "found" and "recorded" reading identically is the whole failure.
+  const recurringRecorded: ThreeplImportResult["recurringRecorded"] = [];
+  for (const input of planned.plan.recurringInputs) {
+    const outcome = await reconcileRecurringCost(db, input);
+    recurringRecorded.push({ name: input.name, action: outcome.action, cents: input.amountCents });
+  }
+
+  return { ...planned.plan.result, recurringRecorded };
 }
 
 /**
