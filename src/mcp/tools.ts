@@ -971,7 +971,7 @@ const productSearchPerformance: McpTool = {
   description:
     "Joins Search Console to the catalogue on the URL handle, so each product page's clicks, impressions, CTR and average position sit beside its SEO title, meta description and description copy. This is the pairing that says which pages EARN traffic and whether their copy was ever written for it.\n" +
     "Average position is a rank — LOWER is better. CTR is computed from totals and position is impression-weighted, so a quiet day does not count like a busy one.\n" +
-    "`productFound: false` means a URL ranks for a handle no product has — usually renamed or deleted, and a live ranking pointing at nothing. `productsWithNoImpressions` counts active products Search Console never showed at all, which is a different problem from ranking badly.\n" +
+    "A renamed product keeps its OLD url in Search Console, so this follows recorded 301s: `redirectsTo` names the handle a ranking URL actually lands on, and the copy shown is that product's. `productFound: false` means the handle matched nothing even after following the redirect — its SEO fields come back null meaning UNKNOWN, never false, because nothing was looked at. `productsWithNoImpressions` counts active products Search Console never showed at all, which is a different problem from ranking badly.\n" +
     "Unaffected by the 2025-12-31 Shopify session break, since both sides come from Search Console and Shopify's catalogue rather than its session counter.",
   readOnly: true,
   schema: {
@@ -1017,11 +1017,16 @@ const productSearchPerformance: McpTool = {
         impressions: r.impressions,
         ctr: r.ctr === null ? null : Number(r.ctr),
         averagePosition: r.position === null ? null : Number(r.position),
+        // Null when no product could be found even through a redirect. The
+        // fields are then UNKNOWN, not absent — reporting false would say a
+        // page has no meta description when nothing was ever looked at.
+        redirectsTo: r.redirectsTo,
+        redirectStatus: r.redirectStatus,
         seoTitle: r.seoTitle,
         seoDescription: r.seoDescription,
-        hasSeoTitle: r.seoTitle !== null,
-        hasSeoDescription: r.seoDescription !== null,
-        descriptionWords: wordCountOf(r.descriptionHtml),
+        hasSeoTitle: r.productFound ? r.seoTitle !== null : null,
+        hasSeoDescription: r.productFound ? r.seoDescription !== null : null,
+        descriptionWords: r.productFound ? wordCountOf(r.descriptionHtml) : null,
       })),
     };
   },

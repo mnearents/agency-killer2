@@ -988,6 +988,35 @@ export const shopifyProducts = pgTable(
 export type ShopifyProductRow = typeof shopifyProducts.$inferSelect;
 export type NewShopifyProductRow = typeof shopifyProducts.$inferInsert;
 
+/**
+ * Where a product URL that no longer maps to a product actually goes.
+ *
+ * Search Console reports the URL it INDEXED, which for a renamed product is
+ * the old path. Without this, that traffic joins to no product and gets
+ * reported as a page with no SEO copy — which is how
+ * `/products/color-happy-subscription`, at 189,381 impressions, was written up
+ * as the biggest organic asset with no meta description. It is a 301 to
+ * `really-awesome-doodles`, which has both.
+ *
+ * `to_handle` NULL with a 3xx status means it redirects somewhere that is not
+ * a product; with a 404 it means the URL is genuinely dead. Those need
+ * different responses and are not collapsed.
+ */
+export const shopifyRedirects = pgTable(
+  "shopify_redirects",
+  {
+    /** The handle Search Console still has indexed. */
+    fromHandle: text("from_handle").primaryKey(),
+    toHandle: text("to_handle"),
+    statusCode: integer("status_code").notNull(),
+    finalUrl: text("final_url"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("shopify_redirects_to_idx").on(table.toHandle)]
+);
+
+export type ShopifyRedirectRow = typeof shopifyRedirects.$inferSelect;
+
 // ─── Footage ─────────────────────────────────────────────────────────
 
 /**

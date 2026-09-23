@@ -32,6 +32,10 @@ export interface ProductSearchRow {
   descriptionHtml: string | null;
   /** False when the URL ranks but no product in the catalogue has that handle. */
   productFound: boolean;
+  /** Set when this URL 301s and the figures belong to the product it lands on. */
+  redirectsTo: string | null;
+  /** The status a resolver actually observed, when the handle matched nothing. */
+  redirectStatus: number | null;
 }
 
 export interface ProductSearchSummary {
@@ -73,19 +77,26 @@ export async function getProductSearchPerformance(
     )
     select
       p.handle,
-      sp.title,
-      sp.status,
+      coalesce(direct.title, via.title) as title,
+      coalesce(direct.status, via.status) as status,
       p.clicks,
       p.impressions,
       case when p.impressions > 0
            then round((p.clicks::numeric / p.impressions), 4) else null end as ctr,
       p.position,
-      sp.seo_title as "seoTitle",
-      sp.seo_description as "seoDescription",
-      sp.description_html as "descriptionHtml",
-      (sp.id is not null) as "productFound"
+      coalesce(direct.seo_title, via.seo_title) as "seoTitle",
+      coalesce(direct.seo_description, via.seo_description) as "seoDescription",
+      coalesce(direct.description_html, via.description_html) as "descriptionHtml",
+      (direct.id is not null or via.id is not null) as "productFound",
+      case when direct.id is null then r.to_handle else null end as "redirectsTo",
+      case when direct.id is null then r.status_code else null end as "redirectStatus"
     from pages p
-    left join shopify_products sp on sp.handle = p.handle
+    left join shopify_products direct on direct.handle = p.handle
+    -- A renamed product keeps its old URL in Search Console. Following the
+    -- recorded redirect attributes its traffic to the product that actually
+    -- serves it, instead of reporting a page with no copy.
+    left join shopify_redirects r on r.from_handle = p.handle
+    left join shopify_products via on via.handle = r.to_handle
     where p.handle is not null
     order by p.clicks desc, p.impressions desc
     limit ${limit}
@@ -102,10 +113,15 @@ export async function getProductSearchPerformance(
     select
       (select count(*)::int from pages) as "urlsWithTraffic",
       (select count(*)::int from pages where handle is not null) as "productUrls",
-      (select count(*)::int from pages p join shopify_products sp on sp.handle = p.handle) as "matchedToProduct",
+      (select count(*)::int from pages p
+        where exists (select 1 from shopify_products sp where sp.handle = p.handle)
+           or exists (select 1 from shopify_redirects r join shopify_products sp2 on sp2.handle = r.to_handle
+                      where r.from_handle = p.handle)) as "matchedToProduct",
       (select count(*)::int from shopify_products sp
         where sp.status = 'ACTIVE'
-          and not exists (select 1 from pages p where p.handle = sp.handle)) as "productsWithNoImpressions"
+          and not exists (select 1 from pages p where p.handle = sp.handle)
+          and not exists (select 1 from pages p join shopify_redirects r on r.from_handle = p.handle
+                          where r.to_handle = sp.handle)) as "productsWithNoImpressions"
   `) as unknown as ProductSearchSummary[];
 
   const unmatched = await db.execute(sql`
@@ -117,7 +133,9 @@ export async function getProductSearchPerformance(
     )
     select p.handle from pages p
     left join shopify_products sp on sp.handle = p.handle
-    where p.handle is not null and sp.id is null
+    left join shopify_redirects r on r.from_handle = p.handle
+    left join shopify_products via on via.handle = r.to_handle
+    where p.handle is not null and sp.id is null and via.id is null
     limit 15
   `);
 
