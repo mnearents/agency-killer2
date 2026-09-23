@@ -7,6 +7,7 @@ export function createMockDropboxClient(
   return {
     listFolder: vi.fn().mockResolvedValue([]),
     downloadText: vi.fn().mockResolvedValue(""),
+    getTemporaryLink: vi.fn().mockResolvedValue("https://dl.dropboxusercontent.com/test.mp4"),
     ...overrides,
   };
 }

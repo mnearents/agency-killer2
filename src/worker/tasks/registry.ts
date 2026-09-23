@@ -54,6 +54,12 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "footage-sync",
+      name: "Dropbox Footage Transcription",
+      schedule: { type: "daily", hour: 14, minute: 10 },
+      enabled: true,
+    },
+    {
       id: "social-sync",
       name: "Instagram Social Sync",
       schedule: { type: "daily", hour: 13, minute: 30 },
@@ -135,6 +141,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "seal-sync": "sync:seal",
     "customers-sync": "sync:customers",
     "social-sync": "sync:social",
+    "footage-sync": "sync:footage",
     "gsc-sync": "sync:gsc",
     "sessions-sync": "sync:sessions",
     "inventory-sync": "sync:inventory",

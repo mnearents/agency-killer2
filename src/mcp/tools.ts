@@ -74,6 +74,11 @@ import {
   deleteEntry,
 } from "@/domain/calendar/queries";
 import {
+  getFootageCoverage,
+  listFootage,
+  getFootageTags,
+} from "@/domain/footage/queries";
+import {
   getKbCoverage,
   searchKbByVector,
   searchKbByText,
@@ -888,6 +893,58 @@ const coverageOf = (billed: number, unbilled: number) => ({
       ? `Postage is known for ${billed} of ${billed + unbilled} shipments. The rest bill to a carrier account the 3PL does not invoice, so any cost here is a floor, not a total.`
       : "Postage is known for every shipment in this window.",
 });
+
+const footageTool: McpTool = {
+  name: "footage",
+  title: "Raw footage in Dropbox",
+  description:
+    "Video and audio in Dropbox /RAD/Footage, with what was said in each clip and the tags derived from it. Filter by tag or by transcription status, or call with no arguments for the tag vocabulary and the coverage.\n" +
+    "IMPORTANT: tags come from the TRANSCRIPT, not from the picture. A clip with `no-audio` is silent b-roll — it is known, listed, and untagged because there are no words to tag it from, NOT because anything failed. Tagging silent footage needs frame extraction and vision, which is not built (#13).\n" +
+    "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`.",
+  readOnly: true,
+  schema: {
+    tag: { type: "string" },
+    status: { type: "enum", values: ["ok", "no-audio", "error", "unknown"] },
+    limit: { type: "integer", min: 1, max: 100, default: 25 },
+  },
+  async run(ctx, args) {
+    const coverage = await getFootageCoverage(ctx.db);
+    if (coverage.total === 0) {
+      return {
+        coverage,
+        note:
+          "No footage recorded. That is an empty folder or a sync that has not run — check data_freshness for sync:footage before reading it as nothing having been uploaded.",
+      };
+    }
+
+    const [{ rows, matched }, tags] = await Promise.all([
+      listFootage(ctx.db, {
+        tag: typeof args.tag === "string" ? args.tag : undefined,
+        status: typeof args.status === "string" ? args.status : undefined,
+        limit: args.limit as number,
+      }),
+      getFootageTags(ctx.db),
+    ]);
+
+    return {
+      coverage: {
+        ...coverage,
+        note:
+          coverage.silent > 0
+            ? `${coverage.silent} of ${coverage.total} clips have no speech. That is ordinary for b-roll — they are listed and untagged because tags come from the transcript, and tagging them needs vision over frames, which is not built.`
+            : undefined,
+      },
+      tagVocabulary: tags,
+      filter: { tag: args.tag ?? null, status: args.status ?? null },
+      matched,
+      returned: rows.length,
+      clips: rows.map((r) => ({
+        ...r,
+        sizeMb: Math.round((r.sizeBytes / 1_048_576) * 10) / 10,
+      })),
+    };
+  },
+};
 
 const kbSearch: McpTool = {
   name: "kb_search",
@@ -3051,6 +3108,7 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  footageTool,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

@@ -51,6 +51,7 @@ import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
+import { syncFootage } from "@/domain/footage/sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
 import { getTopProducts, getOrderSummary } from "@/domain/shopify/queries";
@@ -228,6 +229,7 @@ async function main() {
   const metaAccountId = getEnvOptional("META_AD_ACCOUNT_ID");
   const igUserId = getEnvOptional("INSTAGRAM_BUSINESS_ACCOUNT_ID");
   const dropboxKbRoot = getEnvOptional("DROPBOX_KB_ROOT") ?? "/RAD/Agency";
+  const dropboxFootageRoot = getEnvOptional("DROPBOX_FOOTAGE_ROOT") ?? "/RAD/Footage";
   const slackReportChannel = getEnvOptional("SLACK_REPORT_CHANNEL");
 
   // Proactive Slack messaging — set after Slack app starts
@@ -619,6 +621,34 @@ async function main() {
         // Unchanged files are the normal steady state, so rows written counts
         // what actually moved: nothing new is `no-data`, which is correct.
         return { configured: true, rowsWritten: stored, errorMessage: failures };
+      }),
+
+    "sync:footage": async () =>
+      recorded("sync:footage", async () => {
+        if (!dropboxClient) {
+          console.log("[sync:footage] Skipped — DROPBOX credentials not set");
+          return { configured: false, rowsWritten: 0 };
+        }
+        const result = await syncFootage({
+          dropbox: dropboxClient,
+          db,
+          rootPath: dropboxFootageRoot,
+          transcriber: assemblyAiClient ?? undefined,
+          anthropic: anthropicClient ?? undefined,
+          embeddingClient: embeddingClient ?? undefined,
+        });
+        console.log(
+          `[sync:footage] ${result.mediaFiles} media file(s): ${result.transcribed} transcribed, ` +
+            `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged`
+        );
+        if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
+        return {
+          configured: result.configured,
+          // Silent b-roll is a real outcome, so it counts as work done —
+          // otherwise a folder of wordless clips reports as `no-data`.
+          rowsWritten: result.transcribed + result.silent,
+          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+        };
       }),
 
     "sync:social": async () =>

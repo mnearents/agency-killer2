@@ -170,6 +170,20 @@ describe("the tool catalogue", () => {
     expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
+  it("exposes the footage surface", () => {
+    expect(ALL_TOOLS.map((t) => t.name)).toContain("footage");
+    expect(ALL_TOOLS.find((t) => t.name === "footage")!.readOnly).toBe(true);
+  });
+
+  // Tags come from the transcript. A silent clip is known and untagged, not
+  // failed, and a model told otherwise would report an ordinary b-roll folder
+  // as broken.
+  it("declares that footage tags come from the transcript, not the picture", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "footage")!;
+    expect(tool.description).toMatch(/not from the picture/i);
+    expect(tool.description).toMatch(/NOT because anything failed/);
+  });
+
   it("exposes the knowledge base surface", () => {
     const names = ALL_TOOLS.map((t) => t.name);
     expect(names).toContain("kb_search");

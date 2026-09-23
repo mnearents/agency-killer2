@@ -1,6 +1,8 @@
 /**
  * Dropbox API client — the seam.
- * Used for syncing knowledge base documents and video footage.
+ *
+ * Reads knowledge base markdown and issues temporary links for footage, which
+ * a transcriber fetches directly. Nothing downloads video through here.
  *
  * Uses the Dropbox HTTP API with refresh token auth (long-lived).
  */
@@ -16,6 +18,15 @@ export interface DropboxFileEntry {
 export interface DropboxClient {
   listFolder(path: string): Promise<DropboxFileEntry[]>;
   downloadText(path: string): Promise<string>;
+  /**
+   * A direct, time-limited URL for a file.
+   *
+   * Video is never downloaded through this process — a transcriber is handed
+   * the link and fetches it itself, which keeps a 2GB camera file out of the
+   * worker's memory entirely. Dropbox expires these after about four hours,
+   * so the link is fetched per attempt and never stored.
+   */
+  getTemporaryLink(path: string): Promise<string>;
 }
 
 interface DropboxTokenState {
@@ -130,6 +141,28 @@ export function createDropboxClient(
       }
 
       return allEntries;
+    },
+
+    async getTemporaryLink(path) {
+      const token = await getAccessToken();
+      const response = await fetch("https://api.dropboxapi.com/2/files/get_temporary_link", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Dropbox temporary link failed for ${path}: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (typeof data.link !== "string" || data.link === "") {
+        throw new Error(`Dropbox returned no link for ${path}`);
+      }
+      return data.link;
     },
 
     async downloadText(path) {

@@ -941,6 +941,60 @@ export type VoiceSample = typeof voiceSamples.$inferSelect;
 export type VoiceRule = typeof voiceRules.$inferSelect;
 export type VoiceBannedWord = typeof voiceBannedWords.$inferSelect;
 
+// ─── Footage ─────────────────────────────────────────────────────────
+
+/**
+ * Raw video in Dropbox `/RAD/Footage` — b-roll, clips, takes (#13).
+ *
+ * One row per file. The transcript itself goes to `kb_documents` under
+ * category `footage`, so `kb_search` finds a clip by what was said in it
+ * without a second search path existing.
+ *
+ * Video is never downloaded into this process: the transcriber is handed a
+ * temporary Dropbox link and fetches it itself, which keeps a 2GB camera file
+ * out of the worker's memory.
+ *
+ * **Silence is the common case here and is not a failure.** B-roll has no
+ * speech, so `no-audio` is an ordinary outcome rather than a fault — it means
+ * there is nothing to transcribe, and tagging such a clip needs vision over
+ * extracted frames, which is not built. A row with `transcription_status =
+ * 'no-audio'` is a known, listed, untagged clip; it is not a clip that failed.
+ */
+export const footage = pgTable(
+  "footage",
+  {
+    /** Dropbox path, lowercased — its identity and its natural key. */
+    path: text("path").primaryKey(),
+    name: text("name").notNull(),
+    /** Dropbox revision. A changed rev means the file was replaced. */
+    rev: text("rev").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+
+    /** ok | no-audio | error | unknown — the same vocabulary social uses. */
+    transcriptionStatus: text("transcription_status"),
+    transcriptionAttempts: integer("transcription_attempts").notNull().default(0),
+    transcriptionAttemptedAt: timestamp("transcription_attempted_at", { withTimezone: true }),
+    /** Why there is no transcript, when there is a reason worth keeping. */
+    transcriptionDetail: text("transcription_detail"),
+
+    /** Derived from the transcript by Claude. Empty for silent footage. */
+    tags: jsonb("tags").$type<string[]>(),
+    summary: text("summary"),
+    /** Set when tags were generated, so a retag is distinguishable from a first pass. */
+    taggedAt: timestamp("tagged_at", { withTimezone: true }),
+
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("footage_status_idx").on(table.transcriptionStatus),
+    index("footage_name_idx").on(table.name),
+  ]
+);
+
+export type FootageRow = typeof footage.$inferSelect;
+export type NewFootageRow = typeof footage.$inferInsert;
+
 // ─── Marketing Calendar ──────────────────────────────────────────────
 
 export const calendarEntries = pgTable(

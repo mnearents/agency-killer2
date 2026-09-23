@@ -326,6 +326,7 @@ src/
 │   ├── social/             # Organic IG/FB analytics, reel creation
 │   ├── blog/               # SEO/GEO article generation
 │   ├── seo/                # Search Console and web sessions sync + queries
+│   ├── footage/            # Dropbox video: transcribe, tag, index
 │   ├── knowledge/          # RAG retrieval, document ingestion, chunking, queries
 │   ├── voice/              # Brand voice prompt assembly, validation
 │   ├── inventory/          # Stock monitoring, alerts, bundling
@@ -381,8 +382,13 @@ tests/                      # Mirrors src/ structure
 tests/evals/                # LLM evals (tier 1 only)
 ```
 
-Two integrations named in the Stack table have no file here. **Shotstack** is
-not built — the video pipeline is deferred (#13). **Playwright** has no wrapper
+**Shotstack** is not built. Half of #13 now is: `/RAD/Footage` is synced,
+transcribed by AssemblyAI and tagged by Claude from the transcript, and each
+clip's words land in the knowledge base under category `footage` so `kb_search`
+finds it. What is NOT built is anything that looks at the picture — scene
+detection, frame extraction, vision tagging, edit decision lists, rendering.
+So **silent b-roll is listed, marked `no-audio` and untagged**: there are no
+words to tag it from, and that is an ordinary outcome rather than a failure. **Playwright** has no wrapper
 module; it is used directly by `integrations/attentive-agent.ts` and
 `domain/email/renderer.ts`.
 

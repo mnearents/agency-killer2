@@ -208,7 +208,14 @@ export const ENV_MANIFEST: EnvVariable[] = [
     name: "ASSEMBLYAI_API_KEY",
     surfaces: ["worker"],
     severity: "degraded",
-    impact: "Video transcription is unavailable. The video pipeline is not built yet (#13), so nothing calls it today.",
+    impact:
+      "Nothing is transcribed: Instagram reels and stories lose their transcripts, and /RAD/Footage is listed but never processed. Both feed the knowledge base, so `kb_search` stops finding anything said on camera.",
+  },
+  {
+    name: "DROPBOX_FOOTAGE_ROOT",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Falls back to /RAD/Footage. Only matters if the folder moves.",
   },
   {
     name: "VOICE_API_KEY",
