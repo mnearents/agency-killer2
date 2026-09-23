@@ -79,6 +79,7 @@ import {
   searchKbByText,
   listKbDocuments,
   searchableShare,
+  judgeRelevance,
 } from "@/domain/knowledge/queries";
 import type { EmbeddingClient } from "@/integrations/openai";
 import {
@@ -895,7 +896,8 @@ const kbSearch: McpTool = {
     "Search brand documents, strategy notes, meeting notes, creative briefs and social transcripts by meaning. " +
     "`searchMode` says which search ran: `semantic` uses embeddings; `text` is a literal substring fallback used when OPENAI_API_KEY is not set on this server, and it finds nothing by meaning — treat its misses as uninformative. " +
     "`searchable` reports how much of the scope a semantic search can actually reach: chunks without an embedding are invisible to it however relevant they are, and against production a large share of social-transcript is in that state. " +
-    "An embedding failure is returned as an error, never as an empty result — no matches and a broken search need opposite responses.",
+    "An embedding failure is returned as an error, never as an empty result — no matches and a broken search need opposite responses. " +
+    "`relevance` judges the result set: a vector search always returns its limit however off-topic the query, so `weak` means these are the closest chunks rather than relevant ones and must not be quoted as what the brand says. `distinctDocuments` says how many sources the hits really came from, since several chunks of one file is one source dressed as several.",
   readOnly: true,
   schema: {
     query: { type: "string", required: true },
@@ -924,6 +926,7 @@ const kbSearch: McpTool = {
         query,
         category: category ?? null,
         returned: hits.length,
+        ...judgeRelevance(hits),
         searchable: { ...searchable, note: "A text search reads every chunk, embedded or not." },
         hits,
         note:
@@ -951,6 +954,7 @@ const kbSearch: McpTool = {
       query,
       category: category ?? null,
       returned: hits.length,
+      ...judgeRelevance(hits),
       searchable: {
         ...searchable,
         note:

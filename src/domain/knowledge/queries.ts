@@ -160,6 +160,80 @@ export async function listKbDocuments(
   return { rows, matched };
 }
 
+/**
+ * Below this cosine similarity, a hit is probably noise.
+ *
+ * A vector search always returns its `limit`, however irrelevant the corpus
+ * is to the query, so an off-topic search produces a full, confident-looking
+ * result set. Measured against this corpus: real questions ("brand voice",
+ * "how should we talk about our brand") score 0.39-0.49 at the top, while
+ * deliberately absurd ones ("the aerodynamics of ptarmigan flight in winter")
+ * score 0.15-0.20. 0.3 sits between them.
+ *
+ * It is a heuristic and it is corpus-specific — a threshold, not a
+ * measurement. It never filters anything out; it only labels, so a caller can
+ * still see a 0.28 hit and judge for itself.
+ */
+export const WEAK_MATCH_SIMILARITY = 0.3;
+
+export type Relevance = "strong" | "weak" | "none";
+
+export interface RelevanceVerdict {
+  relevance: Relevance;
+  topSimilarity: number | null;
+  /** How many distinct documents the hits came from, not how many chunks. */
+  distinctDocuments: number;
+  note?: string;
+}
+
+/**
+ * Judges a result set, so "the knowledge base has nothing on this" is visible
+ * in the payload rather than inferable from a number the caller may not read.
+ *
+ * Also counts distinct documents: three chunks of one file is one source
+ * dressed as three, and a caller counting results would overstate its support.
+ */
+export function judgeRelevance(hits: KbHit[]): RelevanceVerdict {
+  if (hits.length === 0) {
+    return {
+      relevance: "none",
+      topSimilarity: null,
+      distinctDocuments: 0,
+      note: "No chunks matched. The knowledge base has nothing indexed for this.",
+    };
+  }
+
+  const scored = hits.filter((h) => h.similarity !== null);
+  const topSimilarity = scored.length > 0 ? Math.max(...scored.map((h) => h.similarity as number)) : null;
+  const distinctDocuments = new Set(hits.map((h) => h.sourceFile ?? h.title)).size;
+
+  if (topSimilarity === null) {
+    return { relevance: "strong", topSimilarity, distinctDocuments };
+  }
+
+  if (topSimilarity < WEAK_MATCH_SIMILARITY) {
+    return {
+      relevance: "weak",
+      topSimilarity,
+      distinctDocuments,
+      note:
+        `Best match scores ${topSimilarity}, below ${WEAK_MATCH_SIMILARITY}. A vector search always returns its limit, ` +
+        `so these are the closest chunks rather than relevant ones — the knowledge base probably has nothing on this. ` +
+        `Do not quote them as what the brand says.`,
+    };
+  }
+
+  return {
+    relevance: "strong",
+    topSimilarity,
+    distinctDocuments,
+    note:
+      distinctDocuments === 1 && hits.length > 1
+        ? `All ${hits.length} hits are chunks of one document — this is one source, not ${hits.length}.`
+        : undefined,
+  };
+}
+
 /** How much of a search's scope a vector search could actually reach. */
 export function searchableShare(
   coverage: KbCoverage[],
