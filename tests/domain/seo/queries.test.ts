@@ -58,3 +58,46 @@ describe("the dimension vocabularies", () => {
     expect(SESSION_DIMENSIONS).toEqual(["total", "referrer_source", "referrer_name", "landing_page"]);
   });
 });
+
+import { handleFromUrl } from "@/domain/seo/product-search";
+
+describe("handleFromUrl", () => {
+  it("extracts the handle from a product URL", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/color-happy-subscription"))
+      .toBe("color-happy-subscription");
+  });
+
+  it("ignores a query string and fragment", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/rad-club?variant=1#buy")).toBe("rad-club");
+  });
+
+  it("ignores a trailing path segment", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/rad-club/reviews")).toBe("rad-club");
+  });
+
+  it("lowercases, since handles are lowercase", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/Rad-Club")).toBe("rad-club");
+  });
+
+  it("decodes an escaped handle", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/rad%2Dclub")).toBe("rad-club");
+  });
+
+  // Collections, pages, blogs and the home page have no product behind them.
+  // "This product gets no traffic" and "this URL is not a product" are
+  // different answers and must not be the same null.
+  it("returns null for a URL that is not a product page", () => {
+    for (const url of [
+      "https://radandhappy.com/",
+      "https://radandhappy.com/collections/planners",
+      "https://radandhappy.com/pages/coloring-page",
+      "https://radandhappy.com/blogs/news/a-post",
+    ]) {
+      expect(handleFromUrl(url), url).toBeNull();
+    }
+  });
+
+  it("returns null when the path ends at /products/", () => {
+    expect(handleFromUrl("https://radandhappy.com/products/")).toBeNull();
+  });
+});

@@ -11,7 +11,7 @@ import { sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import type { ShopifyApiClient } from "@/integrations/shopify-api";
 import { shopifyProducts } from "@/db/schema";
-import { PRODUCT_METAFIELDS } from "./products";
+import { PRODUCT_METAFIELDS, PRODUCT_METAFIELD_NAMESPACE } from "./products";
 
 export interface SyncProductsResult {
   products: number;
@@ -32,7 +32,7 @@ export async function syncProducts(deps: {
   const errors: string[] = [];
 
   const products = await deps.client.getProducts({
-    metafieldIdentifiers: PRODUCT_METAFIELDS.map((m) => ({ namespace: m.namespace, key: m.key })),
+    metafieldNamespace: PRODUCT_METAFIELD_NAMESPACE,
   });
 
   const metafieldCoverage: Record<string, number> = {};

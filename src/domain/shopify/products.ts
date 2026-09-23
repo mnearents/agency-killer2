@@ -5,11 +5,18 @@
  */
 
 /**
- * The metafields worth syncing, named by Matt.
+ * The namespace fetched. Everything in it is stored.
  *
- * Shopify will not return "all metafields" — the API takes identifiers — so a
- * namespace absent from this list is absent from the database, not empty in
- * it. Adding one here is what makes it visible anywhere.
+ * Shopify returns metafields one namespace at a time, so a namespace other
+ * than this one is absent from the database rather than empty in it.
+ */
+export const PRODUCT_METAFIELD_NAMESPACE = "custom";
+
+/**
+ * The keys Matt named, which the audit expects every product to have.
+ *
+ * The sync stores the whole namespace, so a product may carry more than these.
+ * This list is what counts as MISSING, not what counts as fetched.
  */
 export const PRODUCT_METAFIELDS = [
   { namespace: "custom", key: "overview_description" },

@@ -73,6 +73,7 @@ import {
   updateEntry,
   deleteEntry,
 } from "@/domain/calendar/queries";
+import { getProductSearchPerformance } from "@/domain/seo/product-search";
 import {
   findProducts,
   allProductsForAudit,
@@ -82,6 +83,7 @@ import {
   auditProductSeo,
   findDuplicateDescriptions,
   htmlToText,
+  wordCount,
   PRODUCT_METAFIELD_KEYS,
 } from "@/domain/shopify/products";
 import {
@@ -247,6 +249,8 @@ export interface McpTool {
 // ─── Helpers ──────────────────────────────────────────────────────────
 
 const dollars = (cents: number) => Math.round(Number(cents)) / 100;
+
+const wordCountOf = (html: string | null) => wordCount(htmlToText(html));
 
 function describeRange(range: { startDate: Date; endDate: Date }) {
   return {
@@ -957,6 +961,68 @@ const productCopy: McpTool = {
       })),
       note:
         "Only the five metafields listed in metafieldsSynced are fetched. Shopify does not return all metafields, so any other namespace is absent from this system rather than empty in it.",
+    };
+  },
+};
+
+const productSearchPerformance: McpTool = {
+  name: "product_search_performance",
+  title: "How product pages rank, and what their copy says",
+  description:
+    "Joins Search Console to the catalogue on the URL handle, so each product page's clicks, impressions, CTR and average position sit beside its SEO title, meta description and description copy. This is the pairing that says which pages EARN traffic and whether their copy was ever written for it.\n" +
+    "Average position is a rank — LOWER is better. CTR is computed from totals and position is impression-weighted, so a quiet day does not count like a busy one.\n" +
+    "`productFound: false` means a URL ranks for a handle no product has — usually renamed or deleted, and a live ranking pointing at nothing. `productsWithNoImpressions` counts active products Search Console never showed at all, which is a different problem from ranking badly.\n" +
+    "Unaffected by the 2025-12-31 Shopify session break, since both sides come from Search Console and Shopify's catalogue rather than its session counter.",
+  readOnly: true,
+  schema: {
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+    limit: { type: "integer", min: 1, max: 200, default: 30 },
+  },
+  async run(ctx, args) {
+    const range = seoRange(ctx, args);
+    const coverage = await getProductCoverage(ctx.db);
+    if (coverage.products === 0) {
+      return {
+        error:
+          "No products stored, so nothing can be joined. Check data_freshness for sync:products — this is an empty table, not a catalogue with no traffic.",
+      };
+    }
+
+    const { rows, summary } = await getProductSearchPerformance(ctx.db, range, args.limit as number);
+
+    return {
+      range,
+      summary: {
+        ...summary,
+        note:
+          summary.unmatchedProductUrls.length > 0
+            ? `${summary.unmatchedProductUrls.length} product URL(s) rank for a handle no product has. Those are live rankings pointing at a product that was renamed or removed.`
+            : undefined,
+      },
+      catalogue: {
+        products: coverage.products,
+        active: coverage.active,
+        withSeoTitle: coverage.withSeoTitle,
+        withSeoDescription: coverage.withSeoDescription,
+      },
+      positionNote: "Average position is a rank — lower is better, 1.0 is the top organic result.",
+      returned: rows.length,
+      pages: rows.map((r) => ({
+        handle: r.handle,
+        title: r.title,
+        status: r.status,
+        productFound: r.productFound,
+        clicks: r.clicks,
+        impressions: r.impressions,
+        ctr: r.ctr === null ? null : Number(r.ctr),
+        averagePosition: r.position === null ? null : Number(r.position),
+        seoTitle: r.seoTitle,
+        seoDescription: r.seoDescription,
+        hasSeoTitle: r.seoTitle !== null,
+        hasSeoDescription: r.seoDescription !== null,
+        descriptionWords: wordCountOf(r.descriptionHtml),
+      })),
     };
   },
 };
@@ -3232,6 +3298,7 @@ export const ALL_TOOLS: McpTool[] = [
   calendarEntriesTool,
   productCopy,
   productSeoAudit,
+  productSearchPerformance,
   footageTool,
   kbSearch,
   kbDocumentsTool,

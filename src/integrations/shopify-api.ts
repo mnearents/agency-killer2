@@ -146,12 +146,13 @@ export interface ShopifyApiClient {
   /**
    * Products with their copy, SEO fields and the named metafields.
    *
-   * Metafields must be requested by identifier — Shopify will not return "all
-   * of them" — so the caller names them and anything unnamed is simply absent
-   * rather than silently empty.
+   * Metafields are fetched one namespace at a time. Shopify will not return
+   * every namespace, so one outside the requested namespace is absent from
+   * this system rather than empty in it.
    */
   getProducts(params: {
-    metafieldIdentifiers: { namespace: string; key: string }[];
+    /** The one namespace to fetch. Everything in it is returned. */
+    metafieldNamespace: string;
     limit?: number;
   }): Promise<ShopifyApiProduct[]>;
 }
@@ -246,8 +247,16 @@ const INVENTORY_QUERY = `
   }
 `;
 
+/**
+ * Metafields come back as a connection filtered to one namespace.
+ *
+ * The `metafields(identifiers:)` form does not exist on Product in 2025-04 —
+ * it is a Storefront-era shape and the Admin API rejects it outright, which is
+ * how this was caught. Asking for a namespace returns everything in it, which
+ * is a superset of the five keys that matter and costs nothing extra.
+ */
 const PRODUCTS_QUERY = `
-  query GetProducts($first: Int!, $after: String, $identifiers: [HasMetafieldsIdentifier!]!) {
+  query GetProducts($first: Int!, $after: String, $namespace: String!) {
     products(first: $first, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -261,7 +270,7 @@ const PRODUCTS_QUERY = `
         descriptionHtml
         updatedAt
         seo { title description }
-        metafields(identifiers: $identifiers) { namespace key value }
+        metafields(first: 30, namespace: $namespace) { nodes { namespace key value } }
       }
     }
   }
@@ -454,7 +463,7 @@ export function createShopifyApiClient(
 
     async getProducts(params) {
       const limit = params.limit ?? 100;
-      const identifiers = params.metafieldIdentifiers;
+      const namespace = params.metafieldNamespace;
       const all: ShopifyApiProduct[] = [];
       let after: string | null = null;
 
@@ -469,20 +478,18 @@ export function createShopifyApiClient(
         descriptionHtml: string | null;
         updatedAt: string;
         seo: { title: string | null; description: string | null } | null;
-        metafields: ({ namespace: string; key: string; value: string } | null)[] | null;
+        metafields: { nodes: ({ namespace: string; key: string; value: string } | null)[] } | null;
       }
 
       do {
         const data: { products: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: RawProduct[] } } =
-          await graphql(PRODUCTS_QUERY, { first: limit, after, identifiers });
+          await graphql(PRODUCTS_QUERY, { first: limit, after, namespace });
 
         for (const node of data.products.nodes) {
           const metafields: Record<string, string> = {};
-          // Shopify returns a null in the array for an identifier the product
-          // does not have, keeping positions aligned. A null is "not set" and
-          // is left out rather than stored as an empty string, so "never
+          // An empty value is left out rather than stored as "", so "never
           // written" stays distinct from "written blank".
-          for (const mf of node.metafields ?? []) {
+          for (const mf of node.metafields?.nodes ?? []) {
             if (mf && typeof mf.value === "string" && mf.value !== "") {
               metafields[`${mf.namespace}.${mf.key}`] = mf.value;
             }
