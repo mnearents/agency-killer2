@@ -18,6 +18,11 @@ import type { NewSocialPost } from "@/db/schema";
 import type { Db } from "@/db/client";
 import { socialPosts, kbDocuments } from "@/db/schema";
 import { sql, eq } from "drizzle-orm";
+import {
+  shouldAttemptTranscription,
+  classifyTranscription,
+  type TranscriptionStatus,
+} from "./transcription";
 
 export interface TransformInput {
   media: IgMedia;
@@ -63,6 +68,8 @@ export interface SyncSocialResult {
   insightsFetched: number;
   insightsFailed: number;
   transcribed: number;
+  /** Transcriptions that were second or third attempts at a past failure. */
+  retried: number;
   errors: string[];
 }
 
@@ -176,84 +183,103 @@ export async function syncSocialPosts(
       });
   }
 
-  // Step 4: Transcribe new video posts (reels + stories with audio)
+  // Step 4: Transcribe video posts that still need it.
+  //
+  // Which posts those are is decided from `social_posts.transcription_status`,
+  // not from whether a kb_documents row exists. The old dedupe stored a
+  // placeholder saying "no transcript" so the next run would skip, which made
+  // a transient failure permanent and identical to a genuinely silent video.
   let transcribed = 0;
+  let retried = 0;
   if (deps.transcriber) {
     const videoMedia = mediaList.filter(
       (m) => m.media_url && (m.media_type === "VIDEO" || m.media_product_type === "REELS" || m.media_product_type === "STORY")
     );
 
     for (const media of videoMedia) {
-      // Skip if already transcribed (check KB by source_file = ig:media_id)
-      const sourceKey = `ig:${media.id}`;
-      const existing = await db
-        .select({ id: kbDocuments.id })
-        .from(kbDocuments)
-        .where(eq(kbDocuments.sourceFile, sourceKey))
+      const [state] = await db
+        .select({
+          status: socialPosts.transcriptionStatus,
+          attempts: socialPosts.transcriptionAttempts,
+        })
+        .from(socialPosts)
+        .where(eq(socialPosts.id, media.id))
         .limit(1);
 
-      if (existing.length > 0) continue;
+      const decision = shouldAttemptTranscription({
+        status: (state?.status ?? null) as TranscriptionStatus | null,
+        attempts: state?.attempts ?? 0,
+      });
+      if (!decision.attempt) continue;
+      if (decision.reason === "retryable") retried++;
 
+      const classified = await (async () => {
+        try {
+          return classifyTranscription(await deps.transcriber!.transcribe(media.media_url!));
+        } catch (err) {
+          return classifyTranscription(null, err);
+        }
+      })();
+
+      // The outcome is recorded whatever it was, so the next run knows whether
+      // to try again rather than inferring it from the absence of a document.
+      await db
+        .update(socialPosts)
+        .set({
+          transcriptionStatus: classified.status,
+          transcriptionAttempts: (state?.attempts ?? 0) + 1,
+          transcriptionAttemptedAt: syncedAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(socialPosts.id, media.id));
+
+      if (classified.status !== "ok" || classified.text === null) {
+        if (classified.detail) {
+          console.log(`[sync:social] No transcript for ${media.id} (${classified.status}): ${classified.detail}`);
+        }
+        continue;
+      }
+
+      // Only a real transcript becomes a knowledge base document. A placeholder
+      // is not knowledge: it was listed by kb_documents, counted against
+      // embedding coverage, and could never be returned by a search.
       const caption = media.caption ? media.caption.slice(0, 100) : "untitled";
       const formatLabel = media.media_product_type === "REELS" ? "Reel"
         : media.media_product_type === "STORY" ? "Story"
         : "Video";
       const postedDate = new Date(media.timestamp).toISOString().split("T")[0];
+      const content = `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\nTranscript:\n${classified.text}`;
 
-      let transcriptText: string | null = null;
-      try {
-        const result = await deps.transcriber.transcribe(media.media_url!);
-        if (result.status === "completed" && result.text && result.text.trim().length > 0) {
-          transcriptText = result.text;
-        } else {
-          console.log(`[sync:social] Transcription returned no text for ${media.id} (status: ${result.status})`);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[sync:social] Transcription failed for ${media.id}: ${msg.slice(0, 150)}`);
-      }
-
-      // Always store a KB doc (even without transcript) so we don't retry
-      const content = transcriptText
-        ? `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\nTranscript:\n${transcriptText}`
-        : `[${formatLabel} posted ${postedDate}]\nCaption: ${media.caption ?? "(none)"}\n\n(No audio transcript available)`;
-
-      const row = {
-        title: `${formatLabel}: ${caption} (${postedDate})`,
-        content,
-        category: "social-transcript",
-        sourceFile: sourceKey,
-        contentHash: crypto.randomUUID(),
-        chunkIndex: 0,
-        totalChunks: 1,
-        contextPrefix: `Instagram ${formatLabel} from ${postedDate}`,
-        documentDate: new Date(media.timestamp),
-        embedding: null as number[] | null,
-      };
-
-      // Embed if we have a real transcript
-      if (transcriptText && deps.embeddingClient) {
+      let embedding: number[] | null = null;
+      if (deps.embeddingClient) {
         try {
-          const embResult = await deps.embeddingClient.embed(content);
-          row.embedding = embResult.embedding;
-        } catch {
-          // Non-fatal — stored without embedding
+          embedding = (await deps.embeddingClient.embed(content)).embedding;
+        } catch (err) {
+          // Stored unembedded and therefore unsearchable, which is worth
+          // saying rather than swallowing.
+          console.error(`[sync:social] Embedding failed for ${media.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
       try {
-        await db.insert(kbDocuments).values(row);
-        if (transcriptText) {
-          transcribed++;
-          console.log(`[sync:social] Transcribed ${formatLabel}: ${caption.slice(0, 50)}`);
-        }
+        await db
+          .insert(kbDocuments)
+          .values({
+            title: `${formatLabel}: ${caption} (${postedDate})`,
+            content,
+            category: "social-transcript",
+            sourceFile: `ig:${media.id}`,
+            contentHash: crypto.randomUUID(),
+            chunkIndex: 0,
+            totalChunks: 1,
+            contextPrefix: `Instagram ${formatLabel} from ${postedDate}`,
+            documentDate: new Date(media.timestamp),
+            embedding,
+          });
+        transcribed++;
       } catch (err) {
-        console.error(`[sync:social] Failed to store transcript for ${media.id}:`, err);
+        errors.push(`KB insert failed for ${media.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
-
-    if (transcribed > 0) {
-      console.log(`[sync:social] Transcribed ${transcribed} new video posts`);
     }
   }
 
@@ -262,6 +288,7 @@ export async function syncSocialPosts(
     insightsFetched,
     insightsFailed,
     transcribed,
+    retried,
     errors,
   };
 }

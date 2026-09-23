@@ -617,12 +617,36 @@ export const socialPosts = pgTable(
     plays: integer("plays").notNull().default(0), // video/reel only
     totalInteractions: integer("total_interactions").notNull().default(0),
 
+    /**
+     * Why this post does or does not have a transcript.
+     *
+     * NULL       — never attempted (not a video, or not reached yet)
+     * ok         — transcribed; the text is a kb_documents row
+     * no-audio   — AssemblyAI completed and returned nothing. Terminal: there
+     *              is nothing to get, and retrying spends money to learn that
+     *              again.
+     * error      — the call threw or returned a non-completed status. NOT
+     *              terminal, because a rate limit and a silent video are the
+     *              same absence and were previously written as the same row.
+     * unknown    — backfilled for the 85 posts stored before this column
+     *              existed, where the cause was discarded at the time.
+     *
+     * The distinction is the whole point: a placeholder saying "no transcript"
+     * made a transient failure permanent, because the next run saw a row and
+     * skipped.
+     */
+    transcriptionStatus: text("transcription_status"),
+    /** Bounded so a genuinely unreachable video is not retried forever. */
+    transcriptionAttempts: integer("transcription_attempts").notNull().default(0),
+    transcriptionAttemptedAt: timestamp("transcription_attempted_at", { withTimezone: true }),
+
     postedAt: timestamp("posted_at", { withTimezone: true }).notNull(),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("social_posts_transcription_idx").on(table.transcriptionStatus),
     index("social_posts_posted_idx").on(table.postedAt),
     index("social_posts_media_type_idx").on(table.mediaType),
     index("social_posts_ig_user_idx").on(table.igUserId),

@@ -629,7 +629,8 @@ async function main() {
         }
         const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
         console.log(
-          `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed)`
+          `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed), ` +
+            `${result.transcribed} transcribed${result.retried > 0 ? ` (${result.retried} retries of earlier failures)` : ""}`
         );
         if (result.errors.length > 0) {
           console.error("[sync:social] Errors:", result.errors);
@@ -1342,7 +1343,7 @@ async function main() {
         };
       }
       return {
-        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable${result.transcribed > 0 ? `\n• ${result.transcribed} videos transcribed` : ""}`,
+        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable${result.transcribed > 0 ? `\n• ${result.transcribed} videos transcribed` : ""}${result.retried > 0 ? `\n• ${result.retried} retried after an earlier failure` : ""}`,
         isError: false,
       };
     },
