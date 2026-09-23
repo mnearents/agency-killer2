@@ -911,7 +911,9 @@ const productCopy: McpTool = {
   description:
     "The actual copy on a Shopify product: description, SEO title and meta description, handle, tags, and the custom metafields (overview_description, previous_description, faqs, features, class_overview). Search by title or handle. " +
     "Every text field is null when it was NEVER SET — nothing here substitutes an empty string for a missing one, because a blank meta description and an absent one need different work. " +
-    "`descriptionText` is the description with markup stripped, which is what a word count should be read from. Use product_seo_audit to find gaps across the catalogue rather than one product at a time.",
+    "`descriptionText` is the description with markup stripped, which is what a word count should be read from. " +
+    "Shopify does not return all metafields — only the five in `metafieldsSynced` are fetched, so any other namespace is absent from this system rather than empty in it. " +
+    "Use product_seo_audit to find gaps across the catalogue rather than one product at a time.",
   readOnly: true,
   schema: {
     search: { type: "string" },
