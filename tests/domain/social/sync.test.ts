@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   transformMediaToPost,
+  syncSocialPosts,
+  DEFAULT_MEDIA_LIMIT,
   type TransformInput,
 } from "@/domain/social/sync";
 import type { IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
@@ -156,5 +158,49 @@ describe("transformMediaToPost", () => {
     // Basic engagement from media object is still available
     expect(result.likeCount).toBe(245);
     expect(result.commentsCount).toBe(18);
+  });
+});
+
+describe("DEFAULT_MEDIA_LIMIT", () => {
+  // A rolling window, not a backfill: anything older than this is only stored
+  // if a run caught it at the time. 20 covers a daily run several times over
+  // at 55-56 reels a month, where 50 mostly re-fetched insights for posts
+  // already stored.
+  it("is 20", () => {
+    expect(DEFAULT_MEDIA_LIMIT).toBe(20);
+  });
+
+  it("is what syncSocialPosts asks the client for when no limit is given", async () => {
+    const asked: number[] = [];
+    const client = {
+      getRecentMedia: async (_id: string, limit: number) => {
+        asked.push(limit);
+        return [];
+      },
+      getStories: async () => [],
+      getMediaInsights: async () => {
+        throw new Error("not reached");
+      },
+    } as unknown as Parameters<typeof syncSocialPosts>[0]["client"];
+
+    await syncSocialPosts({ client, db: {} as never, igUserId: "ig1" });
+    expect(asked).toEqual([DEFAULT_MEDIA_LIMIT]);
+  });
+
+  it("still honours an explicit limit, so a backfill can reach further back", async () => {
+    const asked: number[] = [];
+    const client = {
+      getRecentMedia: async (_id: string, limit: number) => {
+        asked.push(limit);
+        return [];
+      },
+      getStories: async () => [],
+      getMediaInsights: async () => {
+        throw new Error("not reached");
+      },
+    } as unknown as Parameters<typeof syncSocialPosts>[0]["client"];
+
+    await syncSocialPosts({ client, db: {} as never, igUserId: "ig1" }, 200);
+    expect(asked).toEqual([200]);
   });
 });

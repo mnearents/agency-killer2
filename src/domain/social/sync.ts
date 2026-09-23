@@ -67,14 +67,25 @@ export interface SyncSocialResult {
 }
 
 /**
- * Sync recent Instagram posts. Default limit is 50 (about 2 weeks
- * of posts for most accounts). For initial backfill, pass a higher
- * limit explicitly. Each post requires one API call for insights,
- * so 50 posts = ~50 API calls, well within IG's hourly rate limit.
+ * Sync recent Instagram posts.
+ *
+ * The default window is 20 posts plus whatever stories are live. At the
+ * current posting rate — 55-56 reels a month — a daily run covers new content
+ * several times over, and the previous default of 50 spent most of its calls
+ * re-fetching insights for posts already stored.
+ *
+ * It is a ROLLING window, not a backfill: anything older than the newest 20 is
+ * only in the database if a run caught it at the time. Pass a higher limit
+ * explicitly to reach further back.
+ *
+ * Each post costs one insights call, throttled to ~2/second, against
+ * Instagram's ~200/hour limit.
  */
+export const DEFAULT_MEDIA_LIMIT = 20;
+
 export async function syncSocialPosts(
   deps: SyncSocialDeps,
-  limit = 50
+  limit = DEFAULT_MEDIA_LIMIT
 ): Promise<SyncSocialResult> {
   const { client, db, igUserId } = deps;
   const syncedAt = new Date();
