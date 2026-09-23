@@ -314,7 +314,7 @@ src/
 │   ├── attentive/          # Scraped report import and queries
 │   ├── social/             # Organic IG/FB analytics, reel creation
 │   ├── blog/               # SEO/GEO article generation
-│   ├── seo/                # Search Console and web sessions sync
+│   ├── seo/                # Search Console and web sessions sync + queries
 │   ├── knowledge/          # RAG retrieval, document ingestion, chunking
 │   ├── voice/              # Brand voice prompt assembly, validation
 │   ├── inventory/          # Stock monitoring, alerts, bundling

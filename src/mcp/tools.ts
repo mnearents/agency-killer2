@@ -74,6 +74,19 @@ import {
   deleteEntry,
 } from "@/domain/calendar/queries";
 import {
+  GSC_DIMENSIONS,
+  SESSION_DIMENSIONS,
+  SESSION_MEASUREMENT_BREAK,
+  crossesSessionBreak,
+  getGscTotals,
+  getGscByDimension,
+  getSessionTotals,
+  getSessionsByDimension,
+  getSessionsVsClicks,
+  type GscDimension,
+  type SessionDimension,
+} from "@/domain/seo/queries";
+import {
   getChargePeriods,
   getChargeBreakdown,
   getPostageByMethod,
@@ -859,6 +872,135 @@ const coverageOf = (billed: number, unbilled: number) => ({
       ? `Postage is known for ${billed} of ${billed + unbilled} shipments. The rest bill to a carrier account the 3PL does not invoice, so any cost here is a floor, not a total.`
       : "Postage is known for every shipment in this window.",
 });
+
+/** Default window for the SEO tools when none is given. */
+const SEO_DEFAULT_DAYS = 90;
+
+function seoRange(ctx: McpToolContext, args: ParsedArgs) {
+  if (args.startDate instanceof Date && args.endDate instanceof Date) {
+    return { from: isoDayString(args.startDate), to: isoDayString(args.endDate) };
+  }
+  const to = ctx.now();
+  const from = new Date(to.getTime() - SEO_DEFAULT_DAYS * 24 * 60 * 60 * 1000);
+  return { from: isoDayString(from), to: isoDayString(to) };
+}
+
+const searchPerformance: McpTool = {
+  name: "search_performance",
+  title: "Organic search performance",
+  description:
+    "Google Search Console: clicks, impressions, CTR and average position, overall or broken out by query, page, device or country. " +
+    "CTR is computed from the totals and position is impression-weighted, so a quiet day does not count the same as a busy one — both differ from averaging the daily figures. " +
+    "Position is a rank: LOWER is better and 1.0 is the top organic result. " +
+    "This series is unaffected by the Shopify session measurement change of " + SESSION_MEASUREMENT_BREAK + ", which makes it the sounder source for anything spanning that date. Defaults to the last 90 days.",
+  readOnly: true,
+  schema: {
+    dimension: { type: "enum", values: GSC_DIMENSIONS, default: "total" },
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+    limit: { type: "integer", min: 1, max: 200, default: 25 },
+  },
+  async run(ctx, args) {
+    const range = seoRange(ctx, args);
+    const dimension = args.dimension as GscDimension;
+    const totals = await getGscTotals(ctx.db, range);
+
+    if (totals.days === 0) {
+      return {
+        range,
+        days: 0,
+        totals: null,
+        note: "No Search Console rows in this window. That is an empty window, not zero traffic — check data_freshness for the gsc_daily sync.",
+      };
+    }
+
+    const base = {
+      range,
+      days: totals.days,
+      firstDate: totals.firstDate,
+      lastDate: totals.lastDate,
+      totals: {
+        clicks: totals.clicks,
+        impressions: totals.impressions,
+        ctr: totals.ctr,
+        averagePosition: totals.position,
+      },
+      positionNote: "Average position is a rank — lower is better, 1.0 is the top organic result.",
+    };
+
+    if (dimension === "total") return base;
+
+    const { rows, matched } = await getGscByDimension(ctx.db, dimension, range, args.limit as number);
+    return {
+      ...base,
+      dimension,
+      matched,
+      returned: rows.length,
+      rows,
+    };
+  },
+};
+
+const webTraffic: McpTool = {
+  name: "web_traffic",
+  title: "Web sessions",
+  description:
+    "Shopify session counts, overall or by referrer source, referrer name or landing page. " +
+    "CRITICAL: Shopify's session counting step-changed on " + SESSION_MEASUREMENT_BREAK + " (#74). Before it, Search Console clicks ran at 82-107% of Shopify search sessions; after, never below ~130% and averaging ~170%. It moved on one day and only one side moved. " +
+    "Any window spanning that date mixes two measurement regimes, and `crossesMeasurementBreak` says so — a year-over-year decline read across it is partly an artefact. Dec 2025 to Jan 2026 is -18% by Search Console clicks and -56% by Shopify sessions; both cannot be right. " +
+    "Use search_performance for anything that has to be comparable across that boundary.",
+  readOnly: true,
+  schema: {
+    dimension: { type: "enum", values: SESSION_DIMENSIONS, default: "total" },
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+    limit: { type: "integer", min: 1, max: 200, default: 25 },
+  },
+  async run(ctx, args) {
+    const range = seoRange(ctx, args);
+    const dimension = args.dimension as SessionDimension;
+    const crosses = crossesSessionBreak(range);
+
+    const [totals, crossCheck] = await Promise.all([
+      getSessionTotals(ctx.db, range),
+      getSessionsVsClicks(ctx.db, range),
+    ]);
+
+    // In the payload, not the description: a caller can quote the number
+    // without ever reading the description.
+    const measurement = {
+      crossesMeasurementBreak: crosses,
+      measurementBreakDate: SESSION_MEASUREMENT_BREAK,
+      searchSessionsVsGscClicks: crossCheck.ratio,
+      warning: crosses
+        ? `This window spans ${SESSION_MEASUREMENT_BREAK}, when Shopify's session counting changed (#74). Sessions before and after are not measured the same way, so a change computed across this window is partly an artefact. Use search_performance for a comparable series.`
+        : crossCheck.ratio !== null && crossCheck.ratio > 1.3
+          ? `Search Console reports ${crossCheck.ratio}x more clicks than Shopify counts search sessions. Sustained above ~1.3 means Shopify is undercounting, which is the post-${SESSION_MEASUREMENT_BREAK} regime (#74).`
+          : null,
+    };
+
+    if (totals.days === 0) {
+      return {
+        range, days: 0, sessions: null, ...measurement,
+        note: "No session rows in this window. That is an empty window, not zero traffic — check data_freshness for the web_sessions sync.",
+      };
+    }
+
+    const base = {
+      range,
+      days: totals.days,
+      firstDate: totals.firstDate,
+      lastDate: totals.lastDate,
+      sessions: totals.sessions,
+      ...measurement,
+    };
+
+    if (dimension === "total") return base;
+
+    const { rows, matched } = await getSessionsByDimension(ctx.db, dimension, range, args.limit as number);
+    return { ...base, dimension, matched, returned: rows.length, rows };
+  },
+};
 
 const fulfilmentCosts: McpTool = {
   name: "fulfilment_costs",
@@ -2772,6 +2914,8 @@ export const ALL_TOOLS: McpTool[] = [
   inventoryStatus,
   inventoryPools,
   calendarEntriesTool,
+  searchPerformance,
+  webTraffic,
   fulfilmentCosts,
   shippingCosts,
   recurringCostsTool,

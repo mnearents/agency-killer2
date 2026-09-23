@@ -170,6 +170,27 @@ describe("the tool catalogue", () => {
     expect(Object.keys(add.schema)).not.toContain("aiSuggested");
   });
 
+  it("exposes the organic search surface", () => {
+    const names = ALL_TOOLS.map((t) => t.name);
+    expect(names).toContain("search_performance");
+    expect(names).toContain("web_traffic");
+  });
+
+  // A session count that looks authoritative and is not is worse than a
+  // missing one. The tool must name the break where a caller will see it.
+  it("names the session measurement break in web_traffic", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "web_traffic")!;
+    expect(tool.description).toContain("2025-12-31");
+    expect(tool.description).toMatch(/crossesMeasurementBreak/);
+  });
+
+  // Position is a rank, and a model told "position improved to 12" without
+  // that would read it as a gain.
+  it("says which way average position runs in search_performance", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "search_performance")!;
+    expect(tool.description).toMatch(/LOWER is better/i);
+  });
+
   it("exposes the fulfilment cost surface", () => {
     const names = ALL_TOOLS.map((t) => t.name);
     for (const n of ["fulfilment_costs", "shipping_costs", "recurring_costs"]) {
