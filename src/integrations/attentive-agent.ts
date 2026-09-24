@@ -323,6 +323,38 @@ export async function exportAttentiveReports(
 
 // ─── Login with 2FA ───────────────────────────────────────────────────
 
+/**
+ * Asks Slack for the code, saying which one to use.
+ *
+ * Two codes arrive with different values — Attentive sends one on reaching the
+ * 2FA page and another when the resend button is clicked — and only the newer
+ * one works. Without the timestamp there is no way to tell them apart from the
+ * phone, which is why the first code sent is usually the one typed back and
+ * why verification then fails.
+ */
+async function askForCode(
+  config: AttentiveAgentConfig,
+  requestedAt: Date,
+  attempt: number,
+): Promise<string | null> {
+  if (!config.askSlack) return null;
+  const time = requestedAt.toLocaleTimeString("en-US", {
+    timeZone: "America/Denver",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const preamble = attempt > 1
+    ? `That code did not work — Attentive has sent a new one (attempt ${attempt}). `
+    : "Attentive needs a 2FA code to finish logging in. ";
+  return config.askSlack(
+    `${preamble}` +
+      `*Use the code that arrives at or after ${time} MT and ignore any earlier one* — ` +
+      `Attentive sends two with different values and only the newer works. ` +
+      `Reply here with the 6 digits.`,
+  );
+}
+
 async function loginWith2FA(page: Page, config: AttentiveAgentConfig): Promise<void> {
   console.log("[attentive-agent] Starting login...");
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -357,72 +389,93 @@ async function loginWith2FA(page: Page, config: AttentiveAgentConfig): Promise<v
       throw new Error("2FA required but no Slack callback configured. Set SLACK_REPORT_CHANNEL and restart.");
     }
 
-    // If it's a 2FA setup page, we need to click through to get to the code entry
-    // First, check if there's a "send code" button to trigger the SMS
+    // Attentive sends a code on arriving at /2fa, and clicking its "Text me"
+    // button sends a SECOND one — which is why two codes arrive with different
+    // values and only the newer works. Rather than try to detect whether one
+    // was already sent, the resend is deliberate and the timestamp of it is
+    // what the message tells Matt to go by. Guessing wrong in the other
+    // direction means no code arrives at all and the run hangs.
     const sendButton = await page.$('button:has-text("Send"), button:has-text("send code"), button:has-text("Text me")');
+    let requestedAt = new Date();
     if (sendButton) {
       await sendButton.click();
-      console.log("[attentive-agent] Triggered SMS code send");
+      requestedAt = new Date();
+      console.log("[attentive-agent] Requested a fresh SMS code");
       await page.waitForTimeout(2000);
     }
 
-    // Ask Slack for the code
-    const code = await config.askSlack(
-      "Attentive needs a 2FA code to complete login. Check your phone for the SMS and reply with the 6-digit code here."
-    );
+    // Up to three attempts. Sending the older of the two codes is the normal
+    // mistake, and failing the whole run for it means waiting until tomorrow
+    // — so a rejected code asks for a fresh one rather than throwing.
+    const MAX_CODE_ATTEMPTS = 3;
+    let verified = false;
 
-    if (!code) {
-      throw new Error("No 2FA code received from Slack (timed out or no reply)");
-    }
-
-    const cleanCode = code.replace(/\D/g, "").slice(0, 6);
-    console.log(`[attentive-agent] Received 2FA code (${cleanCode.length} digits)`);
-
-    // Find the code input and fill it
-    const codeInput = await page.$(
-      '#verificationCode, input[name="verificationCode"], input[placeholder="XXXXXX"], input[name*="code"], input[name*="otp"]'
-    );
-
-    if (codeInput) {
-      await codeInput.fill(cleanCode);
-    } else {
-      // Some 2FA forms use individual digit inputs
-      const digitInputs = await page.$$('input[maxlength="1"]');
-      if (digitInputs.length >= 6) {
-        for (let i = 0; i < 6; i++) {
-          await digitInputs[i].fill(cleanCode[i]);
+    for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS && !verified; attempt++) {
+      if (attempt > 1) {
+        // A new code, so the timestamp in the next message is the new one.
+        const resend = await page.$('button:has-text("Send"), button:has-text("send code"), button:has-text("Text me"), button:has-text("Resend")');
+        if (resend) {
+          await resend.click();
+          requestedAt = new Date();
+          await page.waitForTimeout(2000);
         }
-      } else {
-        throw new Error("Could not find 2FA code input field");
       }
-    }
 
-    // Submit the code — try clicking a button first, then Enter as fallback
-    const submitButton = await page.$(
-      'button[type="submit"], button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue"), button:has-text("Sign in")'
-    );
-    if (submitButton) {
-      const btnText = await submitButton.textContent();
-      console.log(`[attentive-agent] Clicking submit button: "${btnText?.trim()}"`);
-      await submitButton.click();
-    } else {
-      console.log("[attentive-agent] No submit button found, pressing Enter");
-      await page.keyboard.press("Enter");
-    }
+      const code = await askForCode(config, requestedAt, attempt);
+      if (!code) {
+        throw new Error(
+          attempt === 1
+            ? "No 2FA code received from Slack (timed out or no reply)"
+            : `No 2FA code received from Slack on attempt ${attempt}`,
+        );
+      }
 
-    // Wait for navigation past 2FA
-    try {
-      await page.waitForFunction(
-        () => !window.location.pathname.includes("/2fa") && !window.location.pathname.includes("/signin"),
-        { timeout: 30000 }
+      const cleanCode = code.replace(/\D/g, "").slice(0, 6);
+      console.log(`[attentive-agent] Received 2FA code, attempt ${attempt} (${cleanCode.length} digits)`);
+
+      const codeInput = await page.$(
+        '#verificationCode, input[name="verificationCode"], input[placeholder="XXXXXX"], input[name*="code"], input[name*="otp"]'
       );
-      console.log(`[attentive-agent] 2FA complete, URL: ${page.url()}`);
-    } catch {
-      const currentUrl = page.url();
-      const bodyText = await page.textContent("body").catch(() => "");
-      console.error(`[attentive-agent] 2FA verification timed out at: ${currentUrl}`);
-      console.error(`[attentive-agent] Page content: ${bodyText?.slice(0, 300)}`);
-      throw new Error(`2FA verification did not complete — stuck at ${currentUrl}`);
+      if (codeInput) {
+        await codeInput.fill("");
+        await codeInput.fill(cleanCode);
+      } else {
+        const digitInputs = await page.$$('input[maxlength="1"]');
+        if (digitInputs.length >= 6) {
+          for (let i = 0; i < 6; i++) await digitInputs[i].fill(cleanCode[i] ?? "");
+        } else {
+          throw new Error("Could not find 2FA code input field");
+        }
+      }
+
+      const submitButton = await page.$(
+        'button[type="submit"], button:has-text("Verify"), button:has-text("Submit"), button:has-text("Continue"), button:has-text("Sign in")'
+      );
+      if (submitButton) {
+        await submitButton.click();
+      } else {
+        await page.keyboard.press("Enter");
+      }
+
+      try {
+        await page.waitForFunction(
+          () => !window.location.pathname.includes("/2fa") && !window.location.pathname.includes("/signin"),
+          { timeout: 30000 }
+        );
+        verified = true;
+        console.log(`[attentive-agent] 2FA complete on attempt ${attempt}, URL: ${page.url()}`);
+      } catch {
+        const bodyText = (await page.textContent("body").catch(() => "")) ?? "";
+        console.error(
+          `[attentive-agent] Code rejected on attempt ${attempt} at ${page.url()}: ${bodyText.slice(0, 200)}`
+        );
+        if (attempt === MAX_CODE_ATTEMPTS) {
+          throw new Error(
+            `2FA failed after ${MAX_CODE_ATTEMPTS} codes — still at ${page.url()}. ` +
+              `If the codes were being entered correctly this is not a wrong-code problem.`
+          );
+        }
+      }
     }
   }
 

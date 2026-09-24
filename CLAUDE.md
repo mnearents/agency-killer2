@@ -106,6 +106,19 @@ hold a token that neither cookies nor localStorage would show; nothing had
 looked there. It is restored with `addInitScript`, before the app boots, rather
 than by navigating and calling `setItem` afterwards.
 
+**Attentive sends TWO codes with different values and only the newer works.**
+One on reaching `/2fa`, another when the resend button is clicked. From a phone
+they are indistinguishable, so the older one gets typed back and verification
+fails. The Slack message now names the time the resend was requested and says
+to ignore anything earlier, a rejected code asks for a fresh one rather than
+failing the run (three attempts), and the reply window is twenty minutes rather
+than five — this is an interactive step inside a 15:00 cron, and five minutes
+was not long enough to notice a message, find a phone and type six digits.
+
+Attentive offers no authenticator-app 2FA, so SMS is the only option and a
+human stays in the loop for any login. Session persistence is what keeps that
+to the first run rather than every run.
+
 `diagnoseSession` decides whether a capture could authenticate at all, and the
 run says so **before** reusing it rather than after a 2FA prompt ten minutes
 later. If a fresh login still yields nothing usable, that is reported as an

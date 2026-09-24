@@ -238,6 +238,8 @@ async function main() {
 
   // Pending 2FA reply callback — set when agent needs a code
   let pending2faResolve: ((value: string) => void) | null = null;
+  /** How long to wait for a 2FA code in Slack. See createSlackAsker. */
+  const TWO_FA_REPLY_TIMEOUT_MS = 20 * 60 * 1000;
 
   /**
    * Create a function that posts a question to Slack and waits for a human reply.
@@ -249,15 +251,26 @@ async function main() {
 
       await postToSlack(channel, message);
 
-      // Wait for a reply (up to 5 minutes)
+      /**
+       * Twenty minutes, not five.
+       *
+       * This is an interactive step inside a 15:00 cron: the SMS arrives
+       * unannounced and five minutes is not long enough to notice a Slack
+       * message, find the phone and type six digits. Three runs failed this
+       * way in a row while the codes themselves arrived fine.
+       *
+       * The cost of waiting longer is a worker holding a browser open. The
+       * cost of timing out is no Attentive data until tomorrow.
+       */
       return new Promise<string | null>((resolve) => {
         pending2faResolve = resolve;
         setTimeout(() => {
           if (pending2faResolve === resolve) {
             pending2faResolve = null;
+            console.error("[attentive-agent] No 2FA reply within 20 minutes");
             resolve(null);
           }
-        }, 5 * 60 * 1000);
+        }, TWO_FA_REPLY_TIMEOUT_MS);
       });
     };
   }
