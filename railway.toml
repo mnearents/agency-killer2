@@ -3,7 +3,20 @@
 
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium && pnpm build"
+# No browser install here. Nothing the WEB service serves uses Playwright:
+# `attentive-agent.ts` runs on the worker, and `domain/email/renderer.ts` — the
+# only other importer — has no callers at all.
+#
+# It cost twice over. Web builds gate migrations via preDeployCommand, so every
+# schema change waited several minutes on a Chromium download, and the worker
+# meanwhile deployed new code against the old schema. And `playwright install
+# --with-deps` runs apt-get, which failed this build outright when Ubuntu's
+# security mirror was mid-sync:
+#   File has unexpected size (1298218 != 1298210). Mirror sync in progress?
+#
+# The worker still installs it — see worker.railway.toml — because the
+# Attentive scraper genuinely needs a browser.
+buildCommand = "pnpm install --frozen-lockfile && pnpm build"
 
 [deploy]
 preDeployCommand = ["pnpm db:migrate"]
