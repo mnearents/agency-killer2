@@ -488,6 +488,16 @@ export const shopifyInventory = pgTable(
      * 82.4% (42 of 51). Always say which population a coverage number is over.
      */
     unitCostCents: integer("unit_cost_cents"),
+    /** Weight as Shopify holds it. This catalogue mixes GRAMS, POUNDS and OUNCES. */
+    weightValue: real("weight_value"),
+    weightUnit: text("weight_unit"),
+    /**
+     * Derived, in pounds. Media Mail is priced per pound with no zones and no
+     * dimensional weight, so this is what postage rates from. Null where the
+     * unit was one nobody mapped — never a guess, because a 200-gram notepad
+     * read as 200 lb would rate at the top of the card.
+     */
+    weightLb: real("weight_lb"),
     productStatus: text("product_status").notNull(), // ACTIVE, DRAFT, ARCHIVED
     productType: text("product_type"),
     priceCents: bigint("price_cents", { mode: "number" }).notNull(),

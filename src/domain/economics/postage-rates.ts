@@ -262,3 +262,87 @@ export function billableWeightLb(
     ? { ok: true, weightLb: dim, basis: "dimensional" }
     : { ok: true, weightLb: actualLb, basis: "actual" };
 }
+
+export type PostageBasis = "billed" | "derived" | "unknown";
+
+export interface PostageEstimate {
+  cents: number | null;
+  basis: PostageBasis;
+  /** The weight the rate came from, when derived. */
+  ratedWeightLb: number | null;
+  note?: string;
+}
+
+/**
+ * Postage for a parcel, billed where known and derived where not.
+ *
+ * 69% of shipments bill to a carrier account the 3PL does not invoice, so
+ * postage has been a floor. Media Mail changes what is possible: no zones, no
+ * dimensional weight, a published rate card — so a parcel's postage is a pure
+ * function of its weight and can be computed rather than waited for.
+ *
+ * `basis` is the point. A derived figure is an estimate from a rate card, not
+ * a number anyone was charged, and the two must never sum into one total that
+ * reads as billed. A caller that wants only real money filters on `billed`;
+ * one that wants a best estimate takes both and says which is which.
+ *
+ * Deriving is only honest because Media Mail is flat. It would be wrong for
+ * DHL BPM, where the zone is unknown and the answer is a range.
+ */
+export function estimatePostage(
+  billedCents: number | null,
+  weightLb: number | null,
+  card: RateCard = USPS_MEDIA_MAIL_2026,
+): PostageEstimate {
+  if (billedCents !== null) {
+    return { cents: billedCents, basis: "billed", ratedWeightLb: null };
+  }
+
+  const rated = rateShipment(card, weightLb, null);
+  if (rated.ok) {
+    return {
+      cents: rated.cents,
+      basis: "derived",
+      ratedWeightLb: rated.breakWeightLb,
+      note: `Not billed to us. Computed from ${card.service} at the ${rated.breakWeightLb}lb break — an estimate, not a charge.`,
+    };
+  }
+
+  return {
+    cents: null,
+    basis: "unknown",
+    ratedWeightLb: null,
+    note:
+      rated.reason === "no_weight"
+        ? "Not billed to us and no weight recorded, so nothing can be derived."
+        : `Not billed to us and ${card.service} cannot price it (${rated.reason}).`,
+  };
+}
+
+export interface PostageRollup {
+  shipments: number;
+  billedCents: number;
+  derivedCents: number;
+  unknown: number;
+  /** Share of shipments whose postage is a real charge rather than an estimate. */
+  billedShare: number;
+}
+
+/**
+ * Totals postage while keeping billed and derived apart.
+ *
+ * Returned as separate figures rather than one sum, because a total that mixes
+ * them is indistinguishable from a total anyone was charged — which is the
+ * whole reason postage coverage is reported in the first place.
+ */
+export function rollUpPostage(estimates: PostageEstimate[]): PostageRollup {
+  const billed = estimates.filter((e) => e.basis === "billed");
+  const derived = estimates.filter((e) => e.basis === "derived");
+  return {
+    shipments: estimates.length,
+    billedCents: billed.reduce((s, e) => s + (e.cents ?? 0), 0),
+    derivedCents: derived.reduce((s, e) => s + (e.cents ?? 0), 0),
+    unknown: estimates.filter((e) => e.basis === "unknown").length,
+    billedShare: estimates.length === 0 ? 0 : Number((billed.length / estimates.length).toFixed(4)),
+  };
+}

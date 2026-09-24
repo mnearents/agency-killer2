@@ -263,3 +263,59 @@ describe("USPS_MEDIA_MAIL_2026", () => {
     expect(MEDIA_MAIL_ELIGIBILITY_NOTE).toMatch(/postage due/i);
   });
 });
+
+import { estimatePostage, rollUpPostage } from "@/domain/economics/postage-rates";
+
+describe("estimatePostage", () => {
+  it("prefers a real charge over a rate card", () => {
+    expect(estimatePostage(642, 2.35)).toEqual({ cents: 642, basis: "billed", ratedWeightLb: null });
+  });
+
+  // 69% of shipments bill to an account the 3PL does not invoice. Media Mail
+  // is flat, so those can be computed rather than waited for.
+  it("derives from weight when nothing was billed to us", () => {
+    const e = estimatePostage(null, 1.45);
+    expect(e).toMatchObject({ cents: 641, basis: "derived", ratedWeightLb: 2 });
+    expect(e.note).toMatch(/an estimate, not a charge/);
+  });
+
+  it("cannot derive without a weight, and says so", () => {
+    const e = estimatePostage(null, null);
+    expect(e).toMatchObject({ cents: null, basis: "unknown" });
+    expect(e.note).toMatch(/no weight recorded/);
+  });
+
+  it("cannot derive for a parcel over the card, and says why", () => {
+    expect(estimatePostage(null, 99)).toMatchObject({ cents: null, basis: "unknown" });
+  });
+
+  // Deriving is only honest because Media Mail is flat. A zoned card cannot be
+  // rated without knowing the zone.
+  it("will not derive from a zoned card", () => {
+    expect(estimatePostage(null, 2, DHL_BPM_GROUND_2026).basis).toBe("unknown");
+  });
+
+  it("treats a billed zero as billed, not missing", () => {
+    expect(estimatePostage(0, 2).basis).toBe("billed");
+  });
+});
+
+describe("rollUpPostage", () => {
+  // A total mixing the two is indistinguishable from one anyone was charged.
+  it("keeps billed and derived apart", () => {
+    const r = rollUpPostage([
+      estimatePostage(1000, null),
+      estimatePostage(null, 1.45),
+      estimatePostage(null, null),
+    ]);
+    expect(r).toMatchObject({ shipments: 3, billedCents: 1000, derivedCents: 641, unknown: 1 });
+  });
+
+  it("reports what share is a real charge", () => {
+    expect(rollUpPostage([estimatePostage(100, null), estimatePostage(null, 1)]).billedShare).toBe(0.5);
+  });
+
+  it("reports zero share for an empty set rather than dividing by zero", () => {
+    expect(rollUpPostage([]).billedShare).toBe(0);
+  });
+});

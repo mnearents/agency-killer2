@@ -71,6 +71,34 @@ describe("analytics.shopify_inventory", () => {
     expect(comment).toMatch(/untracked/i);
     expect(comment).toMatch(/ACTIVE/);
   });
+
+  // unit_cost_cents was synced all along and absent from the view, so no
+  // column matching '%cost%' existed anywhere in the analytics schema and
+  // margin was unanswerable from SQL.
+  it("exposes unit cost, so margin is computable", () => {
+    expect(latestViewBody("analytics.shopify_inventory")).toMatch(/unit_cost_cents/);
+  });
+
+  // Media Mail is priced per pound with no zones, so weight is a direct input
+  // to per-SKU contribution.
+  it("exposes a normalised weight in pounds", () => {
+    expect(latestViewBody("analytics.shopify_inventory")).toMatch(/weight_lb/);
+  });
+
+  // A margin computed over partial cost data is a floor, and the comment is
+  // the only place a SQL caller will learn that.
+  it("says cost coverage is partial and the margin is a floor", () => {
+    const comment = latestViewComment("analytics.shopify_inventory");
+    expect(comment).toMatch(/COVERAGE IS PARTIAL/i);
+    expect(comment).toMatch(/FLOOR/i);
+  });
+
+  // gross_margin_rate excludes postage, pick and pack, storage, returns and
+  // processing. A SKU at 0.6 there is not 60% contribution.
+  it("says the margin column is product margin only", () => {
+    expect(latestColumnComment("analytics.shopify_inventory.gross_margin_rate"))
+      .toMatch(/PRODUCT margin only/);
+  });
 });
 
 describe("analytics.shopify_orders", () => {

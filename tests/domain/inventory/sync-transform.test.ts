@@ -11,7 +11,7 @@ function raw(overrides: Partial<ShopifyApiVariant> = {}): ShopifyApiVariant {
     sku: "RAD-001",
     inventoryQuantity: 42,
     price: "29.99",
-    inventoryItem: { id: "gid://shopify/InventoryItem/222", tracked: true, unitCost: null },
+    inventoryItem: { id: "gid://shopify/InventoryItem/222", tracked: true, unitCost: null , weightValue: null, weightUnit: null},
     product: {
       id: "gid://shopify/Product/999",
       title: "Really Awesome Doodles",
@@ -42,7 +42,10 @@ describe("transformVariant", () => {
   });
 
   it("stores tracked as 1/0 to match the schema's integer boolean convention", () => {
-    const item = (tracked: boolean) => ({ id: "gid://shopify/InventoryItem/222", tracked, unitCost: null });
+    const item = (tracked: boolean) => ({
+      id: "gid://shopify/InventoryItem/222", tracked, unitCost: null,
+      weightValue: null, weightUnit: null,
+    });
     expect(transformVariant(raw({ inventoryItem: item(true) }), syncedAt).tracked).toBe(1);
     expect(transformVariant(raw({ inventoryItem: item(false) }), syncedAt).tracked).toBe(0);
   });
@@ -72,7 +75,7 @@ describe("transformVariant", () => {
    */
   it("records the inventory item id, which identifies the shared stock pool", () => {
     const row = transformVariant(
-      raw({ inventoryItem: { id: "gid://shopify/InventoryItem/555", tracked: true, unitCost: null } }),
+      raw({ inventoryItem: { id: "gid://shopify/InventoryItem/555", tracked: true, unitCost: null , weightValue: null, weightUnit: null} }),
       syncedAt
     );
     expect(row.inventoryItemId).toBe("gid://shopify/InventoryItem/555");
@@ -130,7 +133,10 @@ describe("transformVariant: cost", () => {
     sku: "SKU1",
     inventoryQuantity: 3,
     price: "45.00",
-    inventoryItem: { id: "gid://shopify/InventoryItem/1", tracked: true, unitCost },
+    inventoryItem: {
+      id: "gid://shopify/InventoryItem/1", tracked: true, unitCost,
+      weightValue: null, weightUnit: null,
+    },
     product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
   });
 
@@ -145,5 +151,60 @@ describe("transformVariant: cost", () => {
   it("records null for a variant with no inventory item at all", () => {
     const v = { ...variant(null), inventoryItem: null };
     expect(transformVariant(v, syncedAt).unitCostCents).toBeNull();
+  });
+});
+
+import { toPounds, weightState } from "@/domain/shopify/weight";
+
+describe("transformVariant: weight", () => {
+  const variant = (weightValue: number | null, weightUnit: string | null) => ({
+    id: "gid://shopify/ProductVariant/1",
+    title: "Default",
+    sku: "SKU1",
+    inventoryQuantity: 3,
+    price: "45.00",
+    inventoryItem: {
+      id: "gid://shopify/InventoryItem/1", tracked: true, unitCost: null, weightValue, weightUnit,
+    },
+    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
+  });
+
+  // The live catalogue mixes all three across 535 variants, so a raw value is
+  // meaningless without its unit and two raw values cannot be compared.
+  it("normalises each unit the catalogue actually uses", () => {
+    expect(transformVariant(variant(2, "POUNDS"), syncedAt).weightLb).toBe(2);
+    expect(transformVariant(variant(16, "OUNCES"), syncedAt).weightLb).toBe(1);
+    expect(transformVariant(variant(817, "GRAMS"), syncedAt).weightLb).toBeCloseTo(1.8012, 3);
+  });
+
+  it("keeps the raw value and unit as Shopify holds them", () => {
+    const row = transformVariant(variant(817, "GRAMS"), syncedAt);
+    expect(row.weightValue).toBe(817);
+    expect(row.weightUnit).toBe("GRAMS");
+  });
+
+  // A unit nobody mapped, treated as pounds, would rate a 200-gram notepad at
+  // the top of the Media Mail card.
+  it("refuses to guess at an unmapped unit", () => {
+    expect(transformVariant(variant(5, "STONES"), syncedAt).weightLb).toBeNull();
+    expect(transformVariant(variant(5, null), syncedAt).weightLb).toBeNull();
+  });
+
+  it("records a missing weight as null", () => {
+    expect(transformVariant(variant(null, "POUNDS"), syncedAt).weightLb).toBeNull();
+  });
+});
+
+describe("toPounds and weightState", () => {
+  it("rejects a negative weight rather than converting it", () => {
+    expect(toPounds(-1, "POUNDS")).toBeNull();
+  });
+
+  // Zero is a real answer for a digital product and must not read as missing.
+  it("keeps zero as zero, distinct from unknown", () => {
+    expect(toPounds(0, "POUNDS")).toBe(0);
+    expect(weightState(0)).toBe("zero");
+    expect(weightState(null)).toBe("unknown");
+    expect(weightState(1.5)).toBe("usable");
   });
 });

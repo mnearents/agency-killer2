@@ -97,6 +97,17 @@ export interface ShopifyApiVariant {
      * quietly optimistic with nothing to notice.
      */
     unitCost: string | null;
+    /**
+     * Shipping weight, from `inventoryItem.measurement.weight`.
+     *
+     * Postage is now USPS Media Mail, which has no zones and no dimensional
+     * weight — the rate is a pure function of pounds. That makes this a direct
+     * input to per-SKU contribution and to whether two products can be bundled
+     * without crossing a rate band.
+     */
+    weightValue: number | null;
+    /** POUNDS | OUNCES | KILOGRAMS | GRAMS, as Shopify reports it. */
+    weightUnit: string | null;
   } | null;
   product: {
     id: string;
@@ -240,7 +251,7 @@ const INVENTORY_QUERY = `
         sku
         inventoryQuantity
         price
-        inventoryItem { id tracked unitCost { amount } }
+        inventoryItem { id tracked unitCost { amount } measurement { weight { value unit } } }
         product { id title status productType }
       }
     }
@@ -532,6 +543,7 @@ export function createShopifyApiClient(
           id: string;
           tracked: boolean;
           unitCost: { amount: string } | null;
+          measurement: { weight: { value: number; unit: string } | null } | null;
         } | null;
       }
 
@@ -558,6 +570,8 @@ export function createShopifyApiClient(
                   // `?? null`, never `?? "0"`. A variant with no cost recorded
                   // and one that genuinely costs nothing are different facts.
                   unitCost: n.inventoryItem.unitCost?.amount ?? null,
+                  weightValue: n.inventoryItem.measurement?.weight?.value ?? null,
+                  weightUnit: n.inventoryItem.measurement?.weight?.unit ?? null,
                 }
               : null,
           }))

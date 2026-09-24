@@ -9,6 +9,7 @@
  */
 
 import type { ShopifyApiVariant } from "@/integrations/shopify-api";
+import { toPounds } from "@/domain/shopify/weight";
 import type { NewShopifyInventoryRow } from "@/db/schema";
 
 function dollarsToCents(value: string | undefined | null): number {
@@ -59,6 +60,15 @@ export function transformVariant(
     // Parsed to cents, and null when nothing is recorded — never 0, which is a
     // real and different answer for a digital product.
     unitCostCents: parseUnitCostCents(raw.inventoryItem?.unitCost ?? null),
+    // Both the raw pair and the derived pounds. The catalogue mixes GRAMS,
+    // POUNDS and OUNCES, so a raw value is meaningless without its unit and
+    // two raw values cannot be compared.
+    weightValue: raw.inventoryItem?.weightValue ?? null,
+    weightUnit: raw.inventoryItem?.weightUnit ?? null,
+    weightLb: toPounds(
+      raw.inventoryItem?.weightValue ?? null,
+      raw.inventoryItem?.weightUnit ?? null,
+    ),
     // No parent product means it isn't sellable — treat it like an archived one.
     productStatus: raw.product?.status ?? "ARCHIVED",
     productType: raw.product?.productType ?? null,
