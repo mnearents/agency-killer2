@@ -104,7 +104,11 @@ export function getPhase1Tasks(): TaskDefinition[] {
     {
       id: "attentive-sync",
       name: "Attentive Email/SMS Sync",
-      schedule: { type: "daily", hour: 15, minute: 0, skipDays: [0] }, // 8:00 AM PT, skip Sunday
+      // 17:00 UTC — 10am Pacific in summer, 9am once DST ends. Schedules are
+      // fixed UTC, so the local time moves twice a year; stated here because
+      // the previous comment claimed "8:00 AM PT" for a slot that was 7am for
+      // half the year. Sunday is skipped.
+      schedule: { type: "daily", hour: 17, minute: 0, skipDays: [0] },
       enabled: true,
     },
     {
