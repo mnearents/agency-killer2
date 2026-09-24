@@ -13,6 +13,13 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import type { Db } from "@/db/client";
 import { agentSessions } from "@/db/schema";
+import {
+  parseStoredSession,
+  serialiseSession,
+  diagnoseSession,
+  type SessionRecord,
+  type SessionDiagnosis,
+} from "./attentive-session";
 import { eq, sql } from "drizzle-orm";
 
 const ATTENTIVE_BASE = "https://ui.attentivemobile.com";
@@ -78,35 +85,24 @@ interface SessionData {
   localStorage?: Record<string, string>;
 }
 
-async function loadSession(db: Db): Promise<SessionData | null> {
+async function loadSession(db: Db): Promise<SessionRecord | null> {
   try {
     const [row] = await db
       .select({ cookiesJson: agentSessions.cookiesJson })
       .from(agentSessions)
       .where(eq(agentSessions.id, SESSION_ID))
       .limit(1);
-
     if (!row) return null;
-    const parsed = JSON.parse(row.cookiesJson);
-
-    // Handle old format (flat cookie array) vs new format ({ cookies, localStorage })
-    if (Array.isArray(parsed)) {
-      return { cookies: parsed, localStorage: undefined };
-    }
-    return {
-      cookies: parsed.cookies ?? [],
-      localStorage: parsed.localStorage,
-    };
+    return parseStoredSession(row.cookiesJson);
   } catch {
     return null;
   }
 }
 
-async function saveSession(db: Db, data: SessionData): Promise<void> {
-  const json = JSON.stringify(data);
+async function saveSession(db: Db, record: SessionRecord): Promise<void> {
   await db
     .insert(agentSessions)
-    .values({ id: SESSION_ID, cookiesJson: json, updatedAt: new Date() })
+    .values({ id: SESSION_ID, cookiesJson: serialiseSession(record), updatedAt: new Date() })
     .onConflictDoUpdate({
       target: agentSessions.id,
       set: {
@@ -114,6 +110,42 @@ async function saveSession(db: Db, data: SessionData): Promise<void> {
         updatedAt: sql`NOW()`,
       },
     });
+}
+
+/**
+ * Snapshots sessionStorage for every origin the context has open.
+ *
+ * `storageState()` does not include it, and it is the one place an SPA can
+ * keep a token that neither cookies nor localStorage would show — which is
+ * the remaining candidate here, since the stored session has no auth cookie
+ * at all.
+ */
+async function captureSessionStorage(
+  pages: { url(): string; evaluate: <T>(fn: () => T) => Promise<T> }[],
+): Promise<Record<string, Record<string, string>>> {
+  const byOrigin: Record<string, Record<string, string>> = {};
+  for (const page of pages) {
+    let origin: string;
+    try {
+      origin = new URL(page.url()).origin;
+    } catch {
+      continue;
+    }
+    if (origin === "null" || byOrigin[origin]) continue;
+    try {
+      byOrigin[origin] = await page.evaluate(() => {
+        const out: Record<string, string> = {};
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i);
+          if (key) out[key] = sessionStorage.getItem(key) ?? "";
+        }
+        return out;
+      });
+    } catch {
+      // A page that navigated away mid-capture is not worth failing the run.
+    }
+  }
+  return byOrigin;
 }
 
 // ─── Main export function ─────────────────────────────────────────────
@@ -139,31 +171,53 @@ export async function exportAttentiveReports(
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
-    const context = await browser.newContext({ acceptDownloads: true });
-
-    // Try saved session (cookies + localStorage) first
-    let authenticated = false;
+    // The saved session is loaded BEFORE the context, because storageState is
+    // consumed at construction. The previous code created a bare context and
+    // then restored localStorage by navigating and calling setItem — which
+    // runs after the app has booted and already read it.
     const savedSession = await loadSession(config.db);
-    if (savedSession && (savedSession.cookies.length > 0 || savedSession.localStorage)) {
-      const httpOnlyCookies = savedSession.cookies.filter((c) => c.httpOnly);
-      console.log(`[attentive-agent] Loading saved session: ${savedSession.cookies.length} cookies (${httpOnlyCookies.length} httpOnly), ${Object.keys(savedSession.localStorage ?? {}).length} localStorage keys`);
-      if (savedSession.cookies.length > 0) {
-        await context.addCookies(savedSession.cookies);
+    let priorDiagnosis: SessionDiagnosis | null = null;
+    if (savedSession) {
+      priorDiagnosis = diagnoseSession(savedSession);
+      console.log(
+        `[attentive-agent] Saved session: ${priorDiagnosis.cookies} cookies ` +
+          `(${priorDiagnosis.httpOnlyCookies} httpOnly), ` +
+          `${priorDiagnosis.localStorageKeys} localStorage, ` +
+          `${priorDiagnosis.sessionStorageKeys} sessionStorage`
+      );
+      // Said plainly rather than inferred from a 2FA prompt ten minutes later.
+      if (!priorDiagnosis.couldAuthenticate) {
+        console.error(`[attentive-agent] Saved session cannot authenticate. ${priorDiagnosis.reason}`);
       }
+    } else {
+      console.log("[attentive-agent] No saved session found");
+    }
 
-      // Test if session is still valid
-      const testPage = await context.newPage();
+    const context = await browser.newContext({
+      acceptDownloads: true,
+      storageState: savedSession ? (savedSession.storageState as never) : undefined,
+    });
 
-      // Restore localStorage before navigation
-      if (savedSession.localStorage && Object.keys(savedSession.localStorage).length > 0) {
-        await testPage.goto(ATTENTIVE_BASE, { waitUntil: "domcontentloaded", timeout: 15000 });
-        await testPage.evaluate((storage) => {
-          for (const [key, value] of Object.entries(storage)) {
-            localStorage.setItem(key, value);
+    // sessionStorage is not part of storageState, so it is injected before any
+    // script runs rather than after the app has booted.
+    const restoredSessionStorage = savedSession?.sessionStorage ?? {};
+    if (Object.keys(restoredSessionStorage).length > 0) {
+      await context.addInitScript((byOrigin: Record<string, Record<string, string>>) => {
+        const store = byOrigin[window.location.origin];
+        if (!store) return;
+        for (const [key, value] of Object.entries(store)) {
+          try {
+            sessionStorage.setItem(key, value);
+          } catch {
+            // A storage quota or a sandboxed origin is not worth failing over.
           }
-        }, savedSession.localStorage);
-      }
+        }
+      }, restoredSessionStorage);
+    }
 
+    let authenticated = false;
+    if (savedSession && priorDiagnosis?.couldAuthenticate) {
+      const testPage = await context.newPage();
       await testPage.goto(CAMPAIGN_PERFORMANCE_URL, {
         waitUntil: "domcontentloaded",
         timeout: 30000,
@@ -179,44 +233,43 @@ export async function exportAttentiveReports(
         console.log("[attentive-agent] Saved session expired, doing fresh login");
       }
       await testPage.close();
-    } else {
-      console.log("[attentive-agent] No saved session found");
     }
 
     if (!authenticated) {
-      // Fresh login with 2FA
       const page = await context.newPage();
       await loginWith2FA(page, config);
 
-      // Save cookies + localStorage for next run
-      const cookies = await context.cookies();
-      const ls = await page.evaluate(() => {
-        const storage: Record<string, string> = {};
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key) storage[key] = localStorage.getItem(key) ?? "";
-        }
-        return storage;
-      });
+      // storageState captures cookies for every domain the context touched,
+      // httpOnly included, plus localStorage per origin. sessionStorage is
+      // captured separately because storageState omits it.
+      const storageState = await context.storageState();
+      const sessionStorage = await captureSessionStorage(context.pages());
 
-      const sessionData: SessionData = {
-        cookies: cookies.map((c) => ({
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path,
-          expires: c.expires,
-          httpOnly: c.httpOnly,
-          secure: c.secure,
-          sameSite: c.sameSite,
-        })),
-        localStorage: ls,
+      const record: SessionRecord = {
+        version: 2,
+        storageState: storageState as never,
+        sessionStorage,
+        capturedAt: new Date().toISOString(),
       };
 
-      const httpOnly = sessionData.cookies.filter((c) => c.httpOnly);
-      await saveSession(config.db, sessionData);
-      console.log(`[attentive-agent] Saved session: ${sessionData.cookies.length} cookies (${httpOnly.length} httpOnly), ${Object.keys(ls).length} localStorage keys`);
-      console.log(`[attentive-agent] localStorage keys: ${Object.keys(ls).join(", ") || "(none)"}`);
+      const diagnosis = diagnoseSession(record);
+      await saveSession(config.db, record);
+
+      console.log(
+        `[attentive-agent] Saved session: ${diagnosis.cookies} cookies ` +
+          `(${diagnosis.httpOnlyCookies} httpOnly), ${diagnosis.localStorageKeys} localStorage, ` +
+          `${diagnosis.sessionStorageKeys} sessionStorage`
+      );
+      console.log(`[attentive-agent] auth-candidate cookies: ${diagnosis.authCandidateCookies.join(", ") || "(none)"}`);
+
+      // The whole point of #95. If this fires, the next run needs a 2FA code
+      // again and we now know that BEFORE it happens rather than after.
+      if (!diagnosis.couldAuthenticate) {
+        const message = `Session captured after login contains nothing that can authenticate. ${diagnosis.reason}`;
+        console.error(`[attentive-agent] ${message}`);
+        errors.push(message);
+      }
+
       await page.close();
     }
 

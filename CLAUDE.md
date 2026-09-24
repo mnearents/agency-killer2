@@ -92,9 +92,24 @@ the button "visible, enabled and stable" while retrying for thirty seconds — s
 the failure is a click timeout that names nothing. `exportReport` clears them
 first. If a new page stops exporting, look for an overlay before anything else.
 
-The session does not currently persist (#95): `context.cookies()` saves zero
-httpOnly cookies, so each run logs in afresh and needs a 2FA code answered over
-Slack. The sync is not unattended until that is fixed.
+The session did not persist (#95), and the stored one says why: **4 cookies,
+none httpOnly, not one of them a session cookie** — `_ga`, `_dd_s`, `AMP_*`,
+all analytics, plus 16 localStorage keys of Amplitude and Pendo. Nothing that
+could authenticate anything. So every run logged in afresh and asked Slack for
+a 2FA code nobody answered.
+
+Capture is now `context.storageState()` — Playwright's own mechanism, which
+returns cookies for every domain the context touched, httpOnly included, and
+is consumed directly by `newContext`. **`sessionStorage` is captured
+separately** because storageState omits it, and it is the one place an SPA can
+hold a token that neither cookies nor localStorage would show; nothing had
+looked there. It is restored with `addInitScript`, before the app boots, rather
+than by navigating and calling `setItem` afterwards.
+
+`diagnoseSession` decides whether a capture could authenticate at all, and the
+run says so **before** reusing it rather than after a 2FA prompt ten minutes
+later. If a fresh login still yields nothing usable, that is reported as an
+error on the run instead of being discovered next time.
 
 ### 3PL cost data — three files, none of them sufficient alone
 
