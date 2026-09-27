@@ -17,6 +17,7 @@ function raw(overrides: Partial<ShopifyApiVariant> = {}): ShopifyApiVariant {
       title: "Really Awesome Doodles",
       status: "ACTIVE",
       productType: "Subscription",
+      vendor: "Rad & Happy",
     },
     ...overrides,
   };
@@ -137,7 +138,7 @@ describe("transformVariant: cost", () => {
       id: "gid://shopify/InventoryItem/1", tracked: true, unitCost,
       weightValue: null, weightUnit: null,
     },
-    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
+    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners", vendor: "Rad & Happy" },
   });
 
   it("carries the cost through to the row", () => {
@@ -166,7 +167,7 @@ describe("transformVariant: weight", () => {
     inventoryItem: {
       id: "gid://shopify/InventoryItem/1", tracked: true, unitCost: null, weightValue, weightUnit,
     },
-    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners" },
+    product: { id: "gid://shopify/Product/1", title: "Planner", status: "ACTIVE", productType: "Planners", vendor: "Rad & Happy" },
   });
 
   // The live catalogue mixes all three across 535 variants, so a raw value is

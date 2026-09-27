@@ -637,7 +637,7 @@ const inventoryStatus: McpTool = {
   name: "inventory_status",
   title: "Inventory status",
   description:
-    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Returns only problems unless includeHealthy is set.",
+    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up), not-our-stock (drop-shipped — sells here but sits on someone else's shelf, so it carries none of our COGS) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Returns only problems unless includeHealthy is set.",
   readOnly: true,
   schema: {
     includeHealthy: { type: "boolean", default: false },
@@ -658,6 +658,7 @@ const inventoryStatus: McpTool = {
         productTitle: item.productTitle,
         variantTitle: item.variantTitle,
         sku: item.sku,
+        vendor: item.vendor ?? null,
         quantity: item.quantity,
         unitsSoldLast30d: item.unitsSoldLast30d,
         dailyVelocity: velocity,
@@ -669,11 +670,31 @@ const inventoryStatus: McpTool = {
     const includeHealthy = args.includeHealthy as boolean;
     const shown = includeHealthy
       ? classified
-      : classified.filter((i) => i.classification !== "healthy" && i.classification !== "ignored");
+      : classified.filter(
+          (i) =>
+            i.classification !== "healthy" &&
+            i.classification !== "ignored" &&
+            i.classification !== "not-our-stock",
+        );
+
+    const notOurs = classified.filter((i) => i.classification === "not-our-stock");
+    const excludedByVendor: Record<string, number> = {};
+    for (const i of notOurs) {
+      const key = (i.vendor ?? "(unknown)").trim();
+      excludedByVendor[key] = (excludedByVendor[key] ?? 0) + 1;
+    }
 
     return {
       variantsChecked: classified.length,
       itemsReturned: shown.length,
+      // Stated rather than silently filtered: a SKU that vanishes from a count
+      // without explanation is how a number quietly changes meaning.
+      excludedNotOurStock: notOurs.length,
+      excludedByVendor,
+      excludedNote:
+        notOurs.length > 0
+          ? "Drop-shipped stock is excluded from cover and stock levels — it sits on someone else's shelf and carries none of our COGS."
+          : undefined,
       items: shown,
     };
   },

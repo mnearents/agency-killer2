@@ -114,6 +114,12 @@ export interface ShopifyApiVariant {
     title: string;
     status: string; // ACTIVE, DRAFT, ARCHIVED
     productType: string | null;
+    /**
+     * Who makes it. `Boon Ties` drop-ships the coloring ties: they occupy no
+     * Rad & Happy shelf and carry no Rad & Happy COGS, so counting them as
+     * inventory overstates both stock on hand and capital tied up.
+     */
+    vendor: string | null;
   } | null;
 }
 
@@ -252,7 +258,7 @@ const INVENTORY_QUERY = `
         inventoryQuantity
         price
         inventoryItem { id tracked unitCost { amount } measurement { weight { value unit } } }
-        product { id title status productType }
+        product { id title status productType vendor }
       }
     }
   }

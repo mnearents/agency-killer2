@@ -38,6 +38,7 @@ export function buildInventoryItemsQuery(db: Db, since: Date) {
       quantity: shopifyInventory.quantity,
       tracked: shopifyInventory.tracked,
       productStatus: shopifyInventory.productStatus,
+      vendor: shopifyInventory.vendor,
       unitsSoldLast30d: sql<number>`COALESCE(${sales.unitsSold}, 0)`,
     })
     .from(shopifyInventory)
@@ -57,6 +58,7 @@ export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
     quantity: r.quantity,
     tracked: r.tracked === 1,
     productStatus: r.productStatus,
+    vendor: r.vendor,
     unitsSoldLast30d: Number(r.unitsSoldLast30d),
   }));
 }
@@ -92,6 +94,7 @@ export async function getPoolVariantRows(db: Db, since: Date) {
       variantTitle: shopifyInventory.variantTitle,
       quantity: shopifyInventory.quantity,
       productStatus: shopifyInventory.productStatus,
+      vendor: shopifyInventory.vendor,
       unitsSoldLast30d: sql<number>`COALESCE(${sales.unitsSold}, 0)`,
     })
     .from(shopifyInventory)

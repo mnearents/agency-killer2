@@ -309,6 +309,13 @@
       "when": 1790276515365,
       "tag": "0043_inventory_cost_weight",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790527094392,
+      "tag": "0044_organic_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

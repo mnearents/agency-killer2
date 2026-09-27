@@ -72,6 +72,7 @@ export function transformVariant(
     // No parent product means it isn't sellable — treat it like an archived one.
     productStatus: raw.product?.status ?? "ARCHIVED",
     productType: raw.product?.productType ?? null,
+    vendor: raw.product?.vendor ?? null,
     priceCents: dollarsToCents(raw.price),
     rawJson: raw,
     syncedAt,

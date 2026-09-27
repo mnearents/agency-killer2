@@ -6,12 +6,16 @@
  */
 
 import { and, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { OWNED_VENDORS } from "@/domain/inventory/ownership";
 import type { Db } from "@/db/client";
 import { metaInsights, rateSettings } from "@/db/schema";
 import type { OrderForEconomics, RateSettings } from "./unit-economics";
 import { classifyBusinessLine, type OrderLineFacts } from "./classify";
 
 /** The business lines #34 insists on keeping apart. */
+/** For inlining into raw SQL — the values are declared, not user input. */
+const OWNED_VENDORS_SQL = OWNED_VENDORS.map((v) => `'${v.replace(/'/g, "''")}'`).join(", ");
+
 export const BUSINESS_LINES = ["subscription", "digital", "physical"] as const;
 export type BusinessLine = (typeof BUSINESS_LINES)[number];
 
@@ -139,6 +143,12 @@ export async function getOrdersForEconomics(
       LEFT JOIN shopify_inventory inv ON inv.id = li.variant_id
       WHERE o.order_created_at >= ${startDate}::date
         AND o.order_created_at < (${endDate}::date + 1)
+        -- Drop-shipped lines leave on BOTH sides. Dropping their cost while
+        -- keeping their revenue would overstate margin, so the whole line goes:
+        -- it is not our product, not our stock and not our margin. A NULL
+        -- vendor stays in, matching isOwnedVendor — every own-brand product
+        -- carries one, so a blank is a gap on something almost certainly ours.
+        AND (inv.vendor IS NULL OR inv.vendor IN (${sql.raw(OWNED_VENDORS_SQL)}))
       GROUP BY o.id, o.total_price_cents, o.total_tax_cents
     )
     SELECT
@@ -303,6 +313,10 @@ export async function getNewCustomerOrders(
       JOIN shopify_orders o ON o.id = fo.id
       JOIN shopify_line_items li ON li.order_id = o.id
       LEFT JOIN shopify_inventory inv ON inv.id = li.variant_id
+      -- Same exclusion as the window query above: a drop-shipped line leaves
+      -- on both sides, or new-customer margin is computed over someone else's
+      -- goods.
+      WHERE inv.vendor IS NULL OR inv.vendor IN (${sql.raw(OWNED_VENDORS_SQL)})
       GROUP BY o.id, o.total_price_cents, o.total_tax_cents, fo.whole_history_held
     )
     SELECT

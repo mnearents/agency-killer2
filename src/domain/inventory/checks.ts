@@ -12,6 +12,7 @@
  */
 
 import type { Alert } from "@/domain/alerts/checks";
+import { isOwnedVendor } from "./ownership";
 import { computeDailyVelocity, computeDaysOfCover } from "./velocity";
 
 const SALES_WINDOW_DAYS = 30;
@@ -26,6 +27,11 @@ export interface InventoryItem {
   quantity: number;
   tracked: boolean;
   productStatus: string;
+  /**
+   * Who makes it. Drop-shipped stock sits on someone else's shelf, so it is
+   * excluded from inventory and cover — see `isOwnedVendor`.
+   */
+  vendor?: string | null;
   unitsSoldLast30d: number;
 }
 
@@ -48,6 +54,14 @@ export interface InventoryCheckOptions {
 
 export type InventoryClassification =
   | "ignored"
+  /**
+   * Drop-shipped: sells here, sits on someone else's shelf. Its own class
+   * rather than `ignored`, because those are excluded for being unreadable
+   * (untracked reports 0) or unsellable (not ACTIVE), and this one is excluded
+   * for not being ours. Collapsing them would hide why a SKU vanished from a
+   * count.
+   */
+  | "not-our-stock"
   | "stockout"
   | "critical-cover"
   | "low-cover"
@@ -66,6 +80,11 @@ export function classifyItem(
   const leadTime = options.reorderLeadTimeDays ?? 45;
   const critical = options.criticalCoverDays ?? 14;
   const slowMoverMin = options.slowMoverMinQuantity ?? 50;
+
+  // Not ours before anything else: a drop-shipped item's stock level, cover
+  // and COGS all describe someone else's business, so no other classification
+  // of it means anything.
+  if (!isOwnedVendor(item.vendor)) return "not-our-stock";
 
   // Untracked variants always read 0; non-active products aren't for sale.
   if (!item.tracked) return "ignored";

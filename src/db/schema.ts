@@ -499,6 +499,13 @@ export const shopifyInventory = pgTable(
      */
     weightLb: real("weight_lb"),
     productStatus: text("product_status").notNull(), // ACTIVE, DRAFT, ARCHIVED
+    /**
+     * Who makes it. `Boon Ties` drop-ships the coloring ties: they sell here
+     * but sit on someone else's shelf, so counting them as inventory
+     * overstates stock on hand and capital tied up, and their COGS is not a
+     * Rad & Happy cost.
+     */
+    vendor: text("vendor"),
     productType: text("product_type"),
     priceCents: bigint("price_cents", { mode: "number" }).notNull(),
     rawJson: jsonb("raw_json"),
