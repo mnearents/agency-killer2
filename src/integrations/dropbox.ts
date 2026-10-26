@@ -8,11 +8,42 @@
  */
 
 export interface DropboxFileEntry {
+  /**
+   * Dropbox's file ID (`id:...`). Unlike the path it survives a move or a
+   * rename, so it is what identifies a file across syncs.
+   */
+  id: string;
   path: string;
   name: string;
   rev: string;
+  /** Dropbox's hash of the bytes. Null for folders. Unchanged by a move. */
+  contentHash: string | null;
   size: number;
   isFolder: boolean;
+}
+
+/** The fields of a Dropbox `list_folder` entry this client reads. */
+interface RawDropboxEntry {
+  ".tag": string;
+  id: string;
+  name: string;
+  path_lower?: string;
+  path_display: string;
+  rev?: string;
+  content_hash?: string;
+  size?: number;
+}
+
+function toEntry(entry: RawDropboxEntry): DropboxFileEntry {
+  return {
+    id: entry.id,
+    path: entry.path_lower ?? entry.path_display,
+    name: entry.name,
+    rev: entry.rev ?? "",
+    contentHash: entry.content_hash ?? null,
+    size: entry.size ?? 0,
+    isFolder: entry[".tag"] === "folder",
+  };
 }
 
 export interface DropboxClient {
@@ -101,13 +132,7 @@ export function createDropboxClient(
 
       let data = await initialResponse.json();
       for (const entry of data.entries) {
-        allEntries.push({
-          path: entry.path_lower ?? entry.path_display,
-          name: entry.name,
-          rev: entry.rev ?? "",
-          size: entry.size ?? 0,
-          isFolder: entry[".tag"] === "folder",
-        });
+        allEntries.push(toEntry(entry));
       }
       hasMore = data.has_more;
       cursor = data.cursor;
@@ -126,15 +151,15 @@ export function createDropboxClient(
           }
         );
 
+        // A page that fails must fail the whole listing. Callers delete what a
+        // listing does not contain, so a partial one would read as deletions.
+        if (!contResponse.ok) {
+          throw new Error(`Dropbox list_folder/continue failed: ${contResponse.status}`);
+        }
+
         data = await contResponse.json();
         for (const entry of data.entries) {
-          allEntries.push({
-            path: entry.path_lower ?? entry.path_display,
-            name: entry.name,
-            rev: entry.rev ?? "",
-            size: entry.size ?? 0,
-            isFolder: entry[".tag"] === "folder",
-          });
+          allEntries.push(toEntry(entry));
         }
         hasMore = data.has_more;
         cursor = data.cursor;

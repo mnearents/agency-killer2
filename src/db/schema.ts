@@ -1056,11 +1056,22 @@ export type ShopifyRedirectRow = typeof shopifyRedirects.$inferSelect;
 export const footage = pgTable(
   "footage",
   {
-    /** Dropbox path, lowercased — its identity and its natural key. */
-    path: text("path").primaryKey(),
+    /**
+     * Dropbox file ID — the clip's identity, because it survives a move or a
+     * rename. Null only on rows recorded before IDs were kept; the sync adopts
+     * or removes those on its next run.
+     */
+    dropboxId: text("dropbox_id").unique("footage_dropbox_id_unique"),
+    /**
+     * Dropbox path, lowercased. Where the clip is now, not what it is: it
+     * changes when the clip moves. Not unique, so two clips swapping names
+     * between syncs cannot collide mid-update.
+     */
+    path: text("path").notNull(),
     name: text("name").notNull(),
-    /** Dropbox revision. A changed rev means the file was replaced. */
     rev: text("rev").notNull(),
+    /** Dropbox content hash. A changed hash means the file was replaced. */
+    contentHash: text("content_hash"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
 
     /** ok | no-audio | error | unknown — the same vocabulary social uses. */
@@ -1082,6 +1093,7 @@ export const footage = pgTable(
   (table) => [
     index("footage_status_idx").on(table.transcriptionStatus),
     index("footage_name_idx").on(table.name),
+    index("footage_path_idx").on(table.path),
   ]
 );
 

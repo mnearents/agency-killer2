@@ -416,7 +416,12 @@ clip's words land in the knowledge base under category `footage` so `kb_search`
 finds it. What is NOT built is anything that looks at the picture — scene
 detection, frame extraction, vision tagging, edit decision lists, rendering.
 So **silent b-roll is listed, marked `no-audio` and untagged**: there are no
-words to tag it from, and that is an ordinary outcome rather than a failure. **Playwright** has no wrapper
+words to tag it from, and that is an ordinary outcome rather than a failure.
+Clips are identified by **Dropbox file ID, not path**: moving or renaming one
+updates its row and document without a second transcription, and a clip that
+leaves the folder is deleted with its transcript and tags on the next run. That
+deletion trusts the listing to be complete, which is why `listFolder` throws on
+a failed page rather than returning what it had. **Playwright** has no wrapper
 module; it is used directly by `integrations/attentive-agent.ts` and
 `domain/email/renderer.ts`.
 

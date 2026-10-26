@@ -1,26 +1,53 @@
 import { describe, it, expect, vi } from "vitest";
 import { syncFootage } from "@/domain/footage/sync";
+import { footageDocument, type StoredFootage } from "@/domain/footage/footage";
+import { footage, kbDocuments } from "@/db/schema";
 import { createMockDropboxClient } from "../../mocks/dropbox";
 import type { DropboxFileEntry } from "@/integrations/dropbox";
 
 const entry = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
-  path: "/RAD/Footage/clip.mp4", name: "clip.mp4", rev: "r1", size: 2_000_000, isFolder: false, ...over,
+  id: "id:clip", path: "/RAD/Footage/clip.mp4", name: "clip.mp4", rev: "r1", contentHash: "h1",
+  size: 2_000_000, isFolder: false, ...over,
 });
 
-/** Just enough Drizzle to observe what the sync would write. */
-function fakeDb() {
+const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
+  dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
+  transcriptionStatus: "ok", transcriptionAttempts: 1, ...over,
+});
+
+interface KbRow { sourceFile: string; content: string }
+
+/**
+ * Just enough Drizzle to observe what the sync would write. It cannot evaluate
+ * a WHERE clause, so it answers every read of a table with all of that table's
+ * rows; which rows a write targets is `reconcileFootage`'s job, tested purely.
+ */
+function fakeDb(seed: { footage?: StoredFootage[]; kb?: KbRow[] } = {}) {
   const inserted: Record<string, unknown>[] = [];
+  const updates: { table: unknown; set: Record<string, unknown> }[] = [];
+  const deletes: { table: unknown }[] = [];
+  const rowsOf = (table: unknown) =>
+    table === footage ? seed.footage ?? [] : table === kbDocuments ? seed.kb ?? [] : [];
+  const read = (table: unknown) => {
+    const rows = rowsOf(table);
+    return { where: async () => rows, then: (ok: (r: unknown) => unknown) => Promise.resolve(rows).then(ok) };
+  };
   const db = {
-    select: () => ({ from: () => ({ where: async () => [] }) }),
+    select: () => ({ from: read }),
     insert: () => ({
       values: (v: Record<string, unknown>) => {
         inserted.push(v);
         return { onConflictDoUpdate: async () => undefined, then: undefined };
       },
     }),
-    delete: () => ({ where: async () => undefined }),
+    update: (table: unknown) => ({
+      set: (set: Record<string, unknown>) => ({
+        where: async () => { updates.push({ table, set }); },
+      }),
+    }),
+    delete: (table: unknown) => ({ where: async () => { deletes.push({ table }); } }),
   };
-  return { db: db as never, inserted };
+  return { db: db as never, inserted, updates, deletes };
 }
 
 describe("syncFootage", () => {
@@ -115,7 +142,7 @@ describe("syncFootage", () => {
     const doc = inserted.find((r) => r.category === "footage");
     expect(doc).toBeDefined();
     expect(String(doc!.content)).toContain("the planner arrived");
-    expect(doc!.sourceFile).toBe("footage:/rad/footage/clip.mp4");
+    expect(doc!.sourceFile).toBe("footage:id:clip");
   });
 
   it("tags a transcribed clip when Anthropic is available", async () => {
@@ -147,5 +174,106 @@ describe("syncFootage", () => {
     expect(result.tagged).toBe(0);
     expect(inserted.some((r) => r.category === "footage")).toBe(true);
     expect(result.errors.join(" ")).toMatch(/Tagging failed/);
+  });
+
+  it("records the Dropbox file ID and content hash on a transcribed clip", async () => {
+    const { db, inserted } = fakeDb();
+    const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+    await syncFootage({
+      dropbox, db, rootPath: "/RAD/Footage",
+      transcriber: { transcribe: vi.fn().mockResolvedValue({ status: "completed", text: "words" }) } as never,
+    });
+    expect(inserted.find((r) => r.category === undefined)).toMatchObject({
+      dropboxId: "id:clip", contentHash: "h1", path: "/rad/footage/clip.mp4",
+    });
+  });
+
+  describe("keeping the database in step with the folder", () => {
+    const oldDoc = footageDocument({
+      name: "clip.mp4", path: "/rad/footage/clip.mp4", summary: "Unboxing", tags: ["unboxing"], transcript: "it arrived",
+    });
+
+    it("moves a renamed clip without transcribing it again", async () => {
+      const { db, updates } = fakeDb({
+        footage: [stored()],
+        kb: [{ sourceFile: "footage:id:clip", content: oldDoc.content }],
+      });
+      const transcribe = vi.fn();
+      const dropbox = createMockDropboxClient({
+        listFolder: vi.fn().mockResolvedValue([entry({ path: "/RAD/Footage/2026/Unboxing.mp4", name: "Unboxing.mp4" })]),
+      });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe } as never,
+      });
+
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ moved: 1, transcribed: 0, removed: 0 });
+      expect(updates.find((u) => u.table === footage)?.set).toMatchObject({
+        path: "/rad/footage/2026/unboxing.mp4", name: "Unboxing.mp4",
+      });
+      expect(String(updates.find((u) => u.table === kbDocuments)?.set.content))
+        .toContain("[Footage /rad/footage/2026/unboxing.mp4]");
+    });
+
+    it("re-embeds a moved clip's document so search reflects the new name", async () => {
+      const { db, updates } = fakeDb({
+        footage: [stored()],
+        kb: [{ sourceFile: "footage:id:clip", content: oldDoc.content }],
+      });
+      const embed = vi.fn().mockResolvedValue({ embedding: [0.5] });
+      const dropbox = createMockDropboxClient({
+        listFolder: vi.fn().mockResolvedValue([entry({ path: "/RAD/Footage/b.mp4", name: "b.mp4" })]),
+      });
+      await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: { transcribe: vi.fn() } as never, embeddingClient: { embed } as never,
+      });
+      expect(embed).toHaveBeenCalledWith(expect.stringContaining("/rad/footage/b.mp4"));
+      expect(updates.find((u) => u.table === kbDocuments)?.set.embedding).toEqual([0.5]);
+    });
+
+    it("deletes a clip that left the folder, with its transcript and tags", async () => {
+      const { db, deletes } = fakeDb({ footage: [stored({ dropboxId: "id:gone" })] });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: { transcribe: vi.fn().mockResolvedValue({ status: "completed", text: "" }) } as never,
+      });
+      expect(result.removed).toBe(1);
+      expect(deletes.some((d) => d.table === footage)).toBe(true);
+      expect(deletes.some((d) => d.table === kbDocuments)).toBe(true);
+    });
+
+    // A partial listing would read as "everything else was deleted". A listing
+    // that fails must therefore delete nothing at all.
+    it("deletes nothing when the folder cannot be listed", async () => {
+      const { db, deletes } = fakeDb({ footage: [stored()] });
+      const dropbox = createMockDropboxClient({
+        listFolder: vi.fn().mockRejectedValue(new Error("Dropbox list_folder/continue failed: 500")),
+      });
+      await expect(syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
+      })).rejects.toThrow("Dropbox list_folder/continue failed: 500");
+      expect(deletes).toEqual([]);
+    });
+
+    // The first run after this change meets 663 rows with no file ID. Adopting
+    // them is what keeps that run from re-transcribing the whole folder.
+    it("adopts a clip recorded before file IDs without transcribing it again", async () => {
+      const { db, updates } = fakeDb({
+        footage: [stored({ dropboxId: null, contentHash: null })],
+        kb: [{ sourceFile: "footage:/rad/footage/clip.mp4", content: oldDoc.content }],
+      });
+      const transcribe = vi.fn();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe } as never,
+      });
+
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ adopted: 1, removed: 0 });
+      expect(updates.find((u) => u.table === footage)?.set).toMatchObject({ dropboxId: "id:clip", contentHash: "h1" });
+      expect(updates.find((u) => u.table === kbDocuments)?.set).toMatchObject({ sourceFile: "footage:id:clip" });
+    });
   });
 });

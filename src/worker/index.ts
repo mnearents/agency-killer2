@@ -676,14 +676,17 @@ async function main() {
         });
         console.log(
           `[sync:footage] ${result.mediaFiles} media file(s): ${result.transcribed} transcribed, ` +
-            `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged`
+            `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged, ` +
+            `${result.moved} moved, ${result.removed} removed` +
+            (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "")
         );
         if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
         return {
           configured: result.configured,
           // Silent b-roll is a real outcome, so it counts as work done —
-          // otherwise a folder of wordless clips reports as `no-data`.
-          rowsWritten: result.transcribed + result.silent,
+          // otherwise a folder of wordless clips reports as `no-data`. So are
+          // moves and removals: a run that only tidied up still wrote rows.
+          rowsWritten: result.transcribed + result.silent + result.moved + result.adopted + result.removed,
           errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
         };
       }),

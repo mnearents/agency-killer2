@@ -13,14 +13,21 @@
  * grading it against brand rules would fail copy that was never meant to be
  * copy.
  *
+ * The folder is the truth. Clips are identified by Dropbox file ID, so moving
+ * or renaming one updates its row and its document in place — no second
+ * transcription — and a clip that leaves the folder is deleted along with its
+ * transcript and tags. Deletion is driven by what the listing does not
+ * contain, which is only safe because `listFolder` throws rather than return a
+ * partial listing.
+ *
  * What this does NOT do: look at the video. Tags come from the transcript, so
  * silent b-roll is listed, marked `no-audio`, and untagged. Tagging it needs
  * frame extraction and vision, which is the deferred half of #13.
  */
 
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import type { DropboxClient } from "@/integrations/dropbox";
+import type { DropboxClient, DropboxFileEntry } from "@/integrations/dropbox";
 import type { AssemblyAiClient } from "@/integrations/assemblyai";
 import type { AnthropicClient } from "@/integrations/anthropic";
 import type { EmbeddingClient } from "@/integrations/openai";
@@ -34,8 +41,12 @@ import {
   planFootage,
   parseTags,
   footageDocument,
+  reconcileFootage,
+  relocateFootageDocument,
+  footageSourceFile,
   TAGGING_INSTRUCTION,
   type FootageTags,
+  type StoredFootage,
 } from "./footage";
 
 export interface SyncFootageDeps {
@@ -58,6 +69,12 @@ export interface SyncFootageResult {
   silent: number;
   failed: number;
   tagged: number;
+  /** Clips found at a new path or name and updated without re-transcribing. */
+  moved: number;
+  /** Rows from before file IDs were kept, matched to their file this run. */
+  adopted: number;
+  /** Clips no longer in the folder, deleted with their transcripts. */
+  removed: number;
   errors: string[];
   /** Null when no transcriber is configured — distinct from finding nothing. */
   configured: boolean;
@@ -82,36 +99,78 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
   if (!deps.transcriber) {
     return {
       mediaFiles: 0, unchanged: 0, transcribed: 0, silent: 0, failed: 0, tagged: 0,
+      moved: 0, adopted: 0, removed: 0,
       errors: ["ASSEMBLYAI_API_KEY not set — footage cannot be transcribed"],
       configured: false,
     };
   }
 
+  // Throws on any failure, including a failed page. Everything below deletes
+  // what this listing lacks, so it must be complete or not happen at all.
   const entries = await dropbox.listFolder(rootPath);
   const media = entries.filter(isTranscribableMedia);
 
-  const known = media.length === 0 ? [] : await db
+  const stored: StoredFootage[] = (await db
     .select({
+      dropboxId: footage.dropboxId,
       path: footage.path,
       rev: footage.rev,
+      contentHash: footage.contentHash,
       transcriptionStatus: footage.transcriptionStatus,
       transcriptionAttempts: footage.transcriptionAttempts,
     })
-    .from(footage)
-    .where(inArray(footage.path, media.map((m) => m.path.toLowerCase())));
+    .from(footage)).map((row) => ({
+      ...row,
+      transcriptionStatus: row.transcriptionStatus as TranscriptionStatus | null,
+    }));
 
-  const byPath = new Map(known.map((k) => [k.path, k]));
+  const { matches, remove } = reconcileFootage(media, stored);
 
-  let unchanged = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0;
+  for (const row of remove) {
+    await db.delete(footage).where(
+      row.dropboxId === null
+        ? and(eq(footage.path, row.path), isNull(footage.dropboxId))
+        : eq(footage.dropboxId, row.dropboxId),
+    );
+  }
 
-  for (const entry of media) {
+  let adopted = 0;
+  for (const { entry, known, adopted: isAdopted } of matches) {
+    if (!known || !isAdopted) continue;
+    await db
+      .update(footage)
+      .set({ dropboxId: entry.id, contentHash: entry.contentHash, updatedAt: now() })
+      .where(and(eq(footage.path, known.path), isNull(footage.dropboxId)));
+    await db
+      .update(kbDocuments)
+      .set({ sourceFile: footageSourceFile(entry.id) })
+      .where(eq(kbDocuments.sourceFile, `footage:${known.path}`));
+    adopted++;
+  }
+
+  // Every footage document must belong to a clip in the folder. This removes
+  // the transcripts of the clips deleted above, and any left by earlier runs.
+  await db.delete(kbDocuments).where(and(
+    eq(kbDocuments.category, "footage"),
+    notInArray(kbDocuments.sourceFile, media.map((m) => footageSourceFile(m.id))),
+  ));
+
+  let unchanged = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0, moved = 0;
+
+  for (const { entry, known: prior, moved: isMoved } of matches) {
     const key = entry.path.toLowerCase();
-    const prior = byPath.get(key);
-    const plan = planFootage(entry, prior === undefined ? undefined : {
-      rev: prior.rev,
-      transcriptionStatus: prior.transcriptionStatus as TranscriptionStatus | null,
-      transcriptionAttempts: prior.transcriptionAttempts,
-    });
+    let plan = planFootage(entry, prior);
+
+    if (plan.action === "skip" && isMoved) {
+      const relocated = await relocateFootage(deps, entry, key, now, errors);
+      if (relocated) {
+        moved++;
+        continue;
+      }
+      // A document this module cannot rewrite is transcribed afresh rather
+      // than left pointing at a path that no longer exists.
+      plan = { action: "transcribe", reason: "retry" };
+    }
 
     if (plan.action === "skip") {
       unchanged++;
@@ -144,9 +203,11 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     await db
       .insert(footage)
       .values({
+        dropboxId: entry.id,
         path: key,
         name: entry.name,
         rev: entry.rev,
+        contentHash: entry.contentHash,
         sizeBytes: entry.size,
         transcriptionStatus: classified.status,
         transcriptionAttempts: attemptsBefore + 1,
@@ -158,10 +219,12 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
         updatedAt: now(),
       })
       .onConflictDoUpdate({
-        target: footage.path,
+        target: footage.dropboxId,
         set: {
+          path: key,
           name: entry.name,
           rev: entry.rev,
+          contentHash: entry.contentHash,
           sizeBytes: entry.size,
           transcriptionStatus: classified.status,
           transcriptionAttempts: attemptsBefore + 1,
@@ -203,12 +266,12 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
 
     // Replacing a file replaces its document, or the old transcript stays
     // searchable and points at a video that no longer says that.
-    await db.delete(kbDocuments).where(eq(kbDocuments.sourceFile, `footage:${key}`));
+    await db.delete(kbDocuments).where(eq(kbDocuments.sourceFile, footageSourceFile(entry.id)));
     await db.insert(kbDocuments).values({
       title: doc.title,
       content: doc.content,
       category: "footage",
-      sourceFile: `footage:${key}`,
+      sourceFile: footageSourceFile(entry.id),
       contentHash: entry.rev,
       chunkIndex: 0,
       totalChunks: 1,
@@ -222,7 +285,57 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
   return {
     mediaFiles: media.length,
     unchanged, transcribed, silent, failed, tagged,
+    moved, adopted, removed: remove.length,
     errors,
     configured: true,
   };
+}
+
+/**
+ * Points a moved clip's row and document at its new path.
+ *
+ * Returns false only when the clip has a document this module cannot rewrite.
+ * A clip with no document at all — silent b-roll — moves by its row alone.
+ */
+async function relocateFootage(
+  deps: SyncFootageDeps,
+  entry: DropboxFileEntry,
+  key: string,
+  now: () => Date,
+  errors: string[],
+): Promise<boolean> {
+  const { db } = deps;
+  const sourceFile = footageSourceFile(entry.id);
+  const [doc] = await db
+    .select({ content: kbDocuments.content })
+    .from(kbDocuments)
+    .where(eq(kbDocuments.sourceFile, sourceFile));
+
+  if (doc) {
+    const relocated = relocateFootageDocument(doc.content, { name: entry.name, path: key });
+    if (!relocated) return false;
+
+    // The path and name are in the embedded text, so the old vector describes
+    // the old name. If re-embedding fails the old one is kept — still the same
+    // transcript, and far better than a document search cannot reach.
+    let embedding: number[] | undefined;
+    if (deps.embeddingClient) {
+      try {
+        embedding = (await deps.embeddingClient.embed(relocated.content)).embedding;
+      } catch (err) {
+        errors.push(`Re-embedding failed for moved ${entry.name} — kept its previous embedding: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    await db
+      .update(kbDocuments)
+      .set({ ...relocated, ...(embedding ? { embedding } : {}) })
+      .where(eq(kbDocuments.sourceFile, sourceFile));
+  }
+
+  await db
+    .update(footage)
+    .set({ path: key, name: entry.name, rev: entry.rev, updatedAt: now() })
+    .where(eq(footage.dropboxId, entry.id));
+  return true;
 }

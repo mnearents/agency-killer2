@@ -10,16 +10,18 @@ import { createMockDropboxClient } from "../../mocks/dropbox";
 
 function makeFile(path: string, rev = "rev1"): DropboxFileEntry {
   return {
+    id: `id:${path}`,
     path,
     name: path.split("/").pop() || "",
     rev,
+    contentHash: `hash:${rev}`,
     size: 1024,
     isFolder: false,
   };
 }
 
 function makeFolder(path: string): DropboxFileEntry {
-  return { path, name: path.split("/").pop() || "", rev: "", size: 0, isFolder: true };
+  return { id: `id:${path}`, path, name: path.split("/").pop() || "", rev: "", contentHash: null, size: 0, isFolder: true };
 }
 
 // ─── Category mapping ─────────────────────────────────────────────────
