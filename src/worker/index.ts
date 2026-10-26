@@ -51,7 +51,7 @@ import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
-import { syncFootage } from "@/domain/footage/sync";
+import { syncFootage, type SyncFootageResult } from "@/domain/footage/sync";
 import { syncProducts } from "@/domain/shopify/product-sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
@@ -362,6 +362,46 @@ async function main() {
       run,
     ).then(() => undefined);
 
+  /**
+   * The footage sync, shared by the 14:10 cron and `!sync footage` so both run
+   * the same code and record the run the same way. Returns null when Dropbox is
+   * not configured; throws whatever the sync throws, after recording it.
+   */
+  const runFootageSync = async (): Promise<SyncFootageResult | null> => {
+    let outcome: SyncFootageResult | null = null;
+    await recorded("sync:footage", async () => {
+      if (!dropboxClient) {
+        console.log("[sync:footage] Skipped — DROPBOX credentials not set");
+        return { configured: false, rowsWritten: 0 };
+      }
+      const result = await syncFootage({
+        dropbox: dropboxClient,
+        db,
+        rootPath: dropboxFootageRoot,
+        transcriber: assemblyAiClient ?? undefined,
+        anthropic: anthropicClient ?? undefined,
+        embeddingClient: embeddingClient ?? undefined,
+      });
+      outcome = result;
+      console.log(
+        `[sync:footage] ${result.mediaFiles} media file(s): ${result.transcribed} transcribed, ` +
+          `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged, ` +
+          `${result.moved} moved, ${result.removed} removed` +
+          (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "")
+      );
+      if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
+      return {
+        configured: result.configured,
+        // Silent b-roll is a real outcome, so it counts as work done —
+        // otherwise a folder of wordless clips reports as `no-data`. So are
+        // moves and removals: a run that only tidied up still wrote rows.
+        rowsWritten: result.transcribed + result.silent + result.moved + result.adopted + result.removed,
+        errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+      };
+    });
+    return outcome;
+  };
+
   const handlerFns: Record<string, () => Promise<void>> = {
     "sync:meta": async () => {
       if (!metaClient || !metaAccountId) {
@@ -660,36 +700,9 @@ async function main() {
         };
       }),
 
-    "sync:footage": async () =>
-      recorded("sync:footage", async () => {
-        if (!dropboxClient) {
-          console.log("[sync:footage] Skipped — DROPBOX credentials not set");
-          return { configured: false, rowsWritten: 0 };
-        }
-        const result = await syncFootage({
-          dropbox: dropboxClient,
-          db,
-          rootPath: dropboxFootageRoot,
-          transcriber: assemblyAiClient ?? undefined,
-          anthropic: anthropicClient ?? undefined,
-          embeddingClient: embeddingClient ?? undefined,
-        });
-        console.log(
-          `[sync:footage] ${result.mediaFiles} media file(s): ${result.transcribed} transcribed, ` +
-            `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged, ` +
-            `${result.moved} moved, ${result.removed} removed` +
-            (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "")
-        );
-        if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
-        return {
-          configured: result.configured,
-          // Silent b-roll is a real outcome, so it counts as work done —
-          // otherwise a folder of wordless clips reports as `no-data`. So are
-          // moves and removals: a run that only tidied up still wrote rows.
-          rowsWritten: result.transcribed + result.silent + result.moved + result.adopted + result.removed,
-          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
-        };
-      }),
+    "sync:footage": async () => {
+      await runFootageSync();
+    },
 
     "sync:social": async () =>
       recorded("sync:social", async () => {
@@ -1450,6 +1463,37 @@ async function main() {
       return {
         text: `*Attentive sync complete!*\n${lines.join("\n")}\n• ${imported} total rows imported`,
         isError: false,
+      };
+    },
+    "sync:footage": async () => {
+      let result: SyncFootageResult | null;
+      try {
+        result = await runFootageSync();
+      } catch (err) {
+        return {
+          text: `Footage sync failed before it finished: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+      if (!result) {
+        return { text: "Footage sync unavailable — Dropbox credentials not set.", isError: true };
+      }
+      if (!result.configured) {
+        return { text: `Footage sync unavailable — ${result.errors.join("; ")}`, isError: true };
+      }
+      const lines = [
+        `• ${result.mediaFiles} video and audio files in the folder`,
+        `• ${result.transcribed} newly transcribed (${result.tagged} tagged), ${result.silent} with no speech`,
+        `• ${result.moved} moved or renamed, ${result.removed} removed because they left the folder`,
+        `• ${result.unchanged} unchanged`,
+      ];
+      if (result.adopted > 0) lines.push(`• ${result.adopted} older clips matched to their Dropbox file`);
+      if (result.failed > 0 || result.errors.length > 0) {
+        lines.push(`• ${result.failed} failed`, ...result.errors.slice(0, 10).map((e) => `  – ${e}`));
+      }
+      return {
+        text: `*Footage sync complete${result.errors.length > 0 ? ", with problems" : ""}*\n${lines.join("\n")}`,
+        isError: result.errors.length > 0,
       };
     },
     "sync:knowledge-base": async () => {

@@ -148,6 +148,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     inventory: "sync:inventory",
     attentive: "sync:attentive",
     kb: "sync:knowledge-base",
+    footage: "sync:footage",
     all: "sync:all",
     "": "sync:all",
   },

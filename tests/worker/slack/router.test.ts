@@ -196,6 +196,19 @@ describe("routeCommand: maps commands to handlers", () => {
     expect(result.handler).toBe("unknown");
   });
 
+  // An unrecognised sync action falls through to `sync:all`, which runs every
+  // sync including the Attentive 2FA login. Footage has to be named.
+  it("routes sync footage to the footage sync alone", () => {
+    const cmd: ParsedCommand = {
+      type: "command",
+      category: "sync",
+      action: "footage",
+      args: "",
+      raw: "!sync footage",
+    };
+    expect(routeCommand(cmd).handler).toBe("sync:footage");
+  });
+
   it("defaults to category overview when action is missing", () => {
     const cmd: ParsedCommand = {
       type: "command",
