@@ -43,10 +43,12 @@ export interface KnownFootage {
   contentHash: string | null;
   transcriptionStatus: TranscriptionStatus | null;
   transcriptionAttempts: number;
+  /** Why the last attempt failed. A credentials failure is always retried. */
+  transcriptionDetail: string | null;
 }
 
 export type FootageAction =
-  | { action: "transcribe"; reason: "new" | "replaced" | "retry" }
+  | { action: "transcribe"; reason: "new" | "replaced" | "retry" | "reset" }
   | { action: "skip"; reason: "settled" | "attempts-exhausted" | "unchanged" };
 
 /**
@@ -61,10 +63,15 @@ export type FootageAction =
  * the rev is not evidence of new bytes: it can change when a file is moved,
  * and a move must not buy a second transcription. Rows from before content
  * hashes were kept fall back to the rev.
+ *
+ * `retryExhausted` is `!sync footage retry`: a file that used up its attempts
+ * is started again from a count of zero (`reset`). Settled files are not
+ * touched by it.
  */
 export function planFootage(
   entry: DropboxFileEntry,
   known: KnownFootage | undefined,
+  options: { retryExhausted?: boolean } = {},
 ): FootageAction {
   if (known === undefined) return { action: "transcribe", reason: "new" };
   const replaced = known.contentHash !== null && entry.contentHash !== null
@@ -75,8 +82,12 @@ export function planFootage(
   const decision = shouldAttemptTranscription({
     status: known.transcriptionStatus,
     attempts: known.transcriptionAttempts,
+    detail: known.transcriptionDetail,
   });
   if (decision.attempt) return { action: "transcribe", reason: "retry" };
+  if (decision.reason === "attempts-exhausted" && options.retryExhausted) {
+    return { action: "transcribe", reason: "reset" };
+  }
   return {
     action: "skip",
     reason: decision.reason === "attempts-exhausted" ? "attempts-exhausted" : "settled",

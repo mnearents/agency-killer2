@@ -366,8 +366,11 @@ async function main() {
    * The footage sync, shared by the 14:10 cron and `!sync footage` so both run
    * the same code and record the run the same way. Returns null when Dropbox is
    * not configured; throws whatever the sync throws, after recording it.
+   * `retryExhausted` is `!sync footage retry`; the cron never sets it.
    */
-  const runFootageSync = async (): Promise<SyncFootageResult | null> => {
+  const runFootageSync = async (
+    options: { retryExhausted?: boolean } = {},
+  ): Promise<SyncFootageResult | null> => {
     let outcome: SyncFootageResult | null = null;
     await recorded("sync:footage", async () => {
       if (!dropboxClient) {
@@ -381,13 +384,15 @@ async function main() {
         transcriber: assemblyAiClient ?? undefined,
         anthropic: anthropicClient ?? undefined,
         embeddingClient: embeddingClient ?? undefined,
+        retryExhausted: options.retryExhausted,
       });
       outcome = result;
       console.log(
         `[sync:footage] ${result.mediaFiles} media file(s): ${result.transcribed} transcribed, ` +
           `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged, ` +
           `${result.moved} moved, ${result.removed} removed` +
-          (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "")
+          (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "") +
+          (result.exhausted > 0 ? `, ${result.exhausted} failed earlier and are no longer retried` : "")
       );
       if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
       return {
@@ -1465,10 +1470,10 @@ async function main() {
         isError: false,
       };
     },
-    "sync:footage": async () => {
+    "sync:footage": async (args) => {
       let result: SyncFootageResult | null;
       try {
-        result = await runFootageSync();
+        result = await runFootageSync({ retryExhausted: args.trim().toLowerCase() === "retry" });
       } catch (err) {
         return {
           text: `Footage sync failed before it finished: ${err instanceof Error ? err.message : String(err)}`,
@@ -1490,6 +1495,12 @@ async function main() {
       if (result.adopted > 0) lines.push(`• ${result.adopted} older clips matched to their Dropbox file`);
       if (result.failed > 0 || result.errors.length > 0) {
         lines.push(`• ${result.failed} failed`, ...result.errors.slice(0, 10).map((e) => `  – ${e}`));
+      }
+      if (result.exhausted > 0) {
+        lines.push(
+          `• ${result.exhausted} failed three times earlier and are no longer tried automatically — ` +
+            "send `!sync footage retry` to try them again",
+        );
       }
       return {
         text: `*Footage sync complete${result.errors.length > 0 ? ", with problems" : ""}*\n${lines.join("\n")}`,

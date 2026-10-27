@@ -14,7 +14,7 @@ const file = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, ...over,
 });
 
 describe("isTranscribableMedia", () => {
@@ -58,7 +58,7 @@ describe("planFootage", () => {
 
   it("skips a file already transcribed", () => {
     expect(planFootage(file(), {
-      rev: "r1", contentHash: null, transcriptionStatus: "ok", transcriptionAttempts: 1,
+      rev: "r1", contentHash: null, transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null,
     })).toEqual({ action: "skip", reason: "settled" });
   });
 
@@ -66,19 +66,43 @@ describe("planFootage", () => {
   // spends an API call to learn what is already recorded.
   it("skips silent footage rather than retrying it", () => {
     expect(planFootage(file(), {
-      rev: "r1", contentHash: null, transcriptionStatus: "no-audio", transcriptionAttempts: 1,
+      rev: "r1", contentHash: null, transcriptionStatus: "no-audio", transcriptionAttempts: 1, transcriptionDetail: null,
     }).action).toBe("skip");
   });
 
   it("retries a file that errored", () => {
     expect(planFootage(file(), {
-      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: 1,
+      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: 1, transcriptionDetail: null,
     })).toEqual({ action: "transcribe", reason: "retry" });
+  });
+
+  it("retries a file whose failure was our credentials, even past the limit", () => {
+    expect(planFootage(file(), {
+      rev: "r1", contentHash: "h1", transcriptionStatus: "error",
+      transcriptionAttempts: MAX_TRANSCRIPTION_ATTEMPTS,
+      transcriptionDetail: "AssemblyAI submit error (401): Authentication error, API token missing/invalid",
+    })).toEqual({ action: "transcribe", reason: "retry" });
+  });
+
+  // `!sync footage retry` — the way back for clips that failed for a reason
+  // nobody can classify after the fact.
+  it("starts a given-up file again when asked to", () => {
+    expect(planFootage(file(), {
+      rev: "r1", contentHash: "h1", transcriptionStatus: "error",
+      transcriptionAttempts: MAX_TRANSCRIPTION_ATTEMPTS, transcriptionDetail: "status: error",
+    }, { retryExhausted: true })).toEqual({ action: "transcribe", reason: "reset" });
+  });
+
+  it("does not re-transcribe a settled file when asked to retry", () => {
+    expect(planFootage(file(), {
+      rev: "r1", contentHash: "h1", transcriptionStatus: "no-audio",
+      transcriptionAttempts: 1, transcriptionDetail: null,
+    }, { retryExhausted: true })).toEqual({ action: "skip", reason: "settled" });
   });
 
   it("gives up after the attempt limit", () => {
     expect(planFootage(file(), {
-      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: MAX_TRANSCRIPTION_ATTEMPTS,
+      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: MAX_TRANSCRIPTION_ATTEMPTS, transcriptionDetail: null,
     })).toEqual({ action: "skip", reason: "attempts-exhausted" });
   });
 
@@ -86,13 +110,13 @@ describe("planFootage", () => {
   // different file. Without this, re-uploading a fixed export is ignored.
   it("transcribes again when the file was replaced, even if it was settled", () => {
     expect(planFootage(file({ rev: "r2" }), {
-      rev: "r1", contentHash: null, transcriptionStatus: "no-audio", transcriptionAttempts: 1,
+      rev: "r1", contentHash: null, transcriptionStatus: "no-audio", transcriptionAttempts: 1, transcriptionDetail: null,
     })).toEqual({ action: "transcribe", reason: "replaced" });
   });
 
   it("re-tries a replaced file even once attempts were exhausted", () => {
     expect(planFootage(file({ rev: "r2" }), {
-      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: 9,
+      rev: "r1", contentHash: null, transcriptionStatus: "error", transcriptionAttempts: 9, transcriptionDetail: null,
     }).action).toBe("transcribe");
   });
 
@@ -100,13 +124,13 @@ describe("planFootage", () => {
   // move can change it, and a move must not buy a second transcription.
   it("does not treat a changed rev as a replacement when the content is the same", () => {
     expect(planFootage(file({ rev: "r2", contentHash: "h1" }), {
-      rev: "r1", contentHash: "h1", transcriptionStatus: "ok", transcriptionAttempts: 1,
+      rev: "r1", contentHash: "h1", transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null,
     })).toEqual({ action: "skip", reason: "settled" });
   });
 
   it("treats changed content as a replacement even when the rev is unchanged", () => {
     expect(planFootage(file({ rev: "r1", contentHash: "h2" }), {
-      rev: "r1", contentHash: "h1", transcriptionStatus: "ok", transcriptionAttempts: 1,
+      rev: "r1", contentHash: "h1", transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null,
     })).toEqual({ action: "transcribe", reason: "replaced" });
   });
 });

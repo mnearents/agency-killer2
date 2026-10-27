@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { syncFootage } from "@/domain/footage/sync";
 import { footageDocument, type StoredFootage } from "@/domain/footage/footage";
 import { footage, kbDocuments } from "@/db/schema";
+import { MAX_TRANSCRIPTION_ATTEMPTS } from "@/domain/social/transcription";
 import { createMockDropboxClient } from "../../mocks/dropbox";
 import type { DropboxFileEntry } from "@/integrations/dropbox";
 
@@ -12,7 +13,7 @@ const entry = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, ...over,
 });
 
 interface KbRow { sourceFile: string; content: string }
@@ -274,6 +275,37 @@ describe("syncFootage", () => {
       expect(result).toMatchObject({ adopted: 1, removed: 0 });
       expect(updates.find((u) => u.table === footage)?.set).toMatchObject({ dropboxId: "id:clip", contentHash: "h1" });
       expect(updates.find((u) => u.table === kbDocuments)?.set).toMatchObject({ sourceFile: "footage:id:clip" });
+    });
+  });
+
+  describe("clips that have used up their attempts", () => {
+    const givenUp = () => stored({
+      transcriptionStatus: "error", transcriptionAttempts: MAX_TRANSCRIPTION_ATTEMPTS,
+      transcriptionDetail: "status: error",
+    });
+
+    // These were reported as `unchanged`, so a run that skipped 64 failed
+    // clips read as "0 failed" and nobody knew to retry them.
+    it("counts them apart from unchanged clips", async () => {
+      const { db } = fakeDb({ footage: [givenUp()] });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
+      });
+      expect(result).toMatchObject({ exhausted: 1, unchanged: 0, failed: 0 });
+    });
+
+    it("tries them again when asked, with a fresh count of attempts", async () => {
+      const { db, inserted } = fakeDb({ footage: [givenUp()] });
+      const transcribe = vi.fn().mockResolvedValue({ status: "completed", text: "hello" });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe } as never,
+        retryExhausted: true,
+      });
+      expect(transcribe).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ exhausted: 0, transcribed: 1 });
+      expect(inserted.find((v) => "transcriptionAttempts" in v)).toMatchObject({ transcriptionAttempts: 1 });
     });
   });
 });

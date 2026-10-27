@@ -178,6 +178,7 @@ When the user asks a question:
               "• `!inventory alerts` — Only the stock problems worth acting on",
               "• `!sync inventory` — Pull the latest stock levels from Shopify",
               "• `!sync footage` — Transcribe new videos in Dropbox /RAD/Footage and tidy up moved or deleted ones",
+              "• `!sync footage retry` — Same, and try again any videos that failed to transcribe three times",
               "• `!help` — Show this message",
               "",
               "Or just ask me anything in plain English!",

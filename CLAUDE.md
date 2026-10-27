@@ -421,7 +421,11 @@ Clips are identified by **Dropbox file ID, not path**: moving or renaming one
 updates its row and document without a second transcription, and a clip that
 leaves the folder is deleted with its transcript and tags on the next run. That
 deletion trusts the listing to be complete, which is why `listFolder` throws on
-a failed page rather than returning what it had. **Playwright** has no wrapper
+a failed page rather than returning what it had. A clip that fails three times is no
+longer retried and is counted as `exhausted`, never as unchanged; `!sync footage
+retry` starts those again. A failure that was our credentials being refused
+(401/403) never counts towards the three, because it says nothing about the
+file. **Playwright** has no wrapper
 module; it is used directly by `integrations/attentive-agent.ts` and
 `domain/email/renderer.ts`.
 

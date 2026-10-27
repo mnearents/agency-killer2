@@ -57,6 +57,8 @@ export interface SyncFootageDeps {
   anthropic?: AnthropicClient;
   embeddingClient?: EmbeddingClient;
   now?: () => Date;
+  /** Start clips that used up their attempts again (`!sync footage retry`). */
+  retryExhausted?: boolean;
 }
 
 export interface SyncFootageResult {
@@ -64,6 +66,12 @@ export interface SyncFootageResult {
   mediaFiles: number;
   /** Files skipped because nothing about them changed. */
   unchanged: number;
+  /**
+   * Clips that failed and used up their attempts, so were not tried this run.
+   * Counted apart from `unchanged`, or a run skipping 64 failures reads as
+   * "0 failed".
+   */
+  exhausted: number;
   transcribed: number;
   /** Clips with no speech. Ordinary for b-roll, not a failure. */
   silent: number;
@@ -98,7 +106,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
 
   if (!deps.transcriber) {
     return {
-      mediaFiles: 0, unchanged: 0, transcribed: 0, silent: 0, failed: 0, tagged: 0,
+      mediaFiles: 0, unchanged: 0, exhausted: 0, transcribed: 0, silent: 0, failed: 0, tagged: 0,
       moved: 0, adopted: 0, removed: 0,
       errors: ["ASSEMBLYAI_API_KEY not set — footage cannot be transcribed"],
       configured: false,
@@ -118,6 +126,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       contentHash: footage.contentHash,
       transcriptionStatus: footage.transcriptionStatus,
       transcriptionAttempts: footage.transcriptionAttempts,
+      transcriptionDetail: footage.transcriptionDetail,
     })
     .from(footage)).map((row) => ({
       ...row,
@@ -155,11 +164,11 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     notInArray(kbDocuments.sourceFile, media.map((m) => footageSourceFile(m.id))),
   ));
 
-  let unchanged = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0, moved = 0;
+  let unchanged = 0, exhausted = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0, moved = 0;
 
   for (const { entry, known: prior, moved: isMoved } of matches) {
     const key = entry.path.toLowerCase();
-    let plan = planFootage(entry, prior);
+    let plan = planFootage(entry, prior, { retryExhausted: deps.retryExhausted });
 
     if (plan.action === "skip" && isMoved) {
       const relocated = await relocateFootage(deps, entry, key, now, errors);
@@ -173,13 +182,16 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     }
 
     if (plan.action === "skip") {
-      unchanged++;
+      if (plan.reason === "attempts-exhausted") exhausted++;
+      else unchanged++;
       continue;
     }
 
     // A replaced file is a different video, so its previous attempts no longer
-    // describe it and the count starts again.
-    const attemptsBefore = plan.reason === "replaced" ? 0 : (prior?.transcriptionAttempts ?? 0);
+    // describe it and the count starts again. So does a deliberate retry.
+    const attemptsBefore = plan.reason === "replaced" || plan.reason === "reset"
+      ? 0
+      : (prior?.transcriptionAttempts ?? 0);
 
     const classified = await (async () => {
       try {
@@ -284,7 +296,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
 
   return {
     mediaFiles: media.length,
-    unchanged, transcribed, silent, failed, tagged,
+    unchanged, exhausted, transcribed, silent, failed, tagged,
     moved, adopted, removed: remove.length,
     errors,
     configured: true,

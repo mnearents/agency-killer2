@@ -48,8 +48,9 @@ export async function getFootageCoverage(db: Db): Promise<FootageCoverage> {
 
 export async function listFootage(
   db: Db,
-  options: { status?: string; tag?: string; limit: number },
-): Promise<{ rows: FootageSummary[]; matched: number }> {
+  options: { status?: string; tag?: string; limit: number; offset?: number },
+): Promise<{ rows: FootageSummary[]; matched: number; nextOffset: number | null }> {
+  const offset = options.offset ?? 0;
   const conditions = [];
   if (options.status) conditions.push(eq(footage.transcriptionStatus, options.status));
   // jsonb containment, so a tag matches exactly rather than as a substring of
@@ -76,10 +77,14 @@ export async function listFootage(
     })
     .from(footage)
     .where(where)
-    .orderBy(desc(footage.updatedAt))
-    .limit(options.limit);
+    // A total order, so a page boundary never falls between two clips updated
+    // in the same instant and shows one twice and the other never.
+    .orderBy(desc(footage.updatedAt), footage.path, footage.dropboxId)
+    .limit(options.limit)
+    .offset(offset);
 
-  return { rows, matched };
+  const next = offset + rows.length;
+  return { rows, matched, nextOffset: next < matched && rows.length > 0 ? next : null };
 }
 
 /** Every tag in use, so a caller can filter without guessing at vocabulary. */

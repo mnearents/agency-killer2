@@ -31,6 +31,8 @@ export const RETRYABLE_STATUSES: readonly TranscriptionStatus[] = ["error", "unk
 export interface TranscriptionState {
   status: TranscriptionStatus | null;
   attempts: number;
+  /** What the last failure recorded, when the caller keeps it. */
+  detail?: string | null;
 }
 
 export interface AttemptDecision {
@@ -39,15 +41,34 @@ export interface AttemptDecision {
 }
 
 /**
+ * Whether a recorded failure was our credentials being refused rather than
+ * anything about the file: a 401 or 403 from AssemblyAI or Dropbox, or a
+ * Dropbox token that would not refresh.
+ *
+ * Matched on the status as each client formats it — `(401)` from AssemblyAI,
+ * a trailing `: 401` from Dropbox — so a 401 in a file name is not mistaken
+ * for one.
+ */
+export function isCredentialFailure(detail: string | null | undefined): boolean {
+  if (!detail) return false;
+  return /\(40[13]\)|: 40[13]$|token refresh failed/i.test(detail);
+}
+
+/**
  * Whether to try transcribing this post now.
  *
  * `settled` covers both success and a measured silence: retrying either spends
  * money to learn what is already recorded.
+ *
+ * A credentials failure does not count towards the limit. The limit exists for
+ * files that cannot be transcribed, and a refused key says nothing about the
+ * file — counting it stranded clips on a key that had since been replaced. It
+ * costs nothing to keep trying: a refused call is not billed.
  */
 export function shouldAttemptTranscription(state: TranscriptionState): AttemptDecision {
   if (state.status === null) return { attempt: true, reason: "never-attempted" };
   if (!RETRYABLE_STATUSES.includes(state.status)) return { attempt: false, reason: "settled" };
-  if (state.attempts >= MAX_TRANSCRIPTION_ATTEMPTS) {
+  if (state.attempts >= MAX_TRANSCRIPTION_ATTEMPTS && !isCredentialFailure(state.detail)) {
     return { attempt: false, reason: "attempts-exhausted" };
   }
   return { attempt: true, reason: "retryable" };

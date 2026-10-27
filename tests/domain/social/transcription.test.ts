@@ -4,6 +4,7 @@ import {
   classifyTranscription,
   MAX_TRANSCRIPTION_ATTEMPTS,
   RETRYABLE_STATUSES,
+  isCredentialFailure,
 } from "@/domain/social/transcription";
 
 describe("shouldAttemptTranscription", () => {
@@ -55,6 +56,47 @@ describe("shouldAttemptTranscription", () => {
 
   it("treats only error and unknown as retryable", () => {
     expect([...RETRYABLE_STATUSES].sort()).toEqual(["error", "unknown"]);
+  });
+
+  // The cap is for files that cannot be transcribed. A rejected key says
+  // nothing about the file, and counting it stranded ten clips on a key that
+  // had since been replaced.
+  it("keeps retrying a failure caused by our credentials past the limit", () => {
+    expect(shouldAttemptTranscription({
+      status: "error",
+      attempts: MAX_TRANSCRIPTION_ATTEMPTS + 2,
+      detail: "AssemblyAI submit error (401): Authentication error, API token missing/invalid",
+    })).toEqual({ attempt: true, reason: "retryable" });
+  });
+
+  it("still gives up on an ordinary failure past the limit", () => {
+    expect(shouldAttemptTranscription({
+      status: "error", attempts: MAX_TRANSCRIPTION_ATTEMPTS, detail: "status: error",
+    })).toEqual({ attempt: false, reason: "attempts-exhausted" });
+  });
+});
+
+describe("isCredentialFailure", () => {
+  it.each([
+    "AssemblyAI submit error (401): Authentication error, API token missing/invalid",
+    "AssemblyAI poll error (403): forbidden",
+    "Dropbox temporary link failed for /rad/footage/clip.mov: 401",
+    "Dropbox token refresh failed: 400",
+  ])("recognises %s", (detail) => {
+    expect(isCredentialFailure(detail)).toBe(true);
+  });
+
+  it.each([
+    "status: error",
+    "429 rate limit exceeded",
+    "Dropbox temporary link failed for /rad/401/img_0401.mov: 409",
+    "transcriber returned nothing",
+  ])("does not mistake %s for one", (detail) => {
+    expect(isCredentialFailure(detail)).toBe(false);
+  });
+
+  it("is false when nothing was recorded", () => {
+    expect(isCredentialFailure(null)).toBe(false);
   });
 });
 

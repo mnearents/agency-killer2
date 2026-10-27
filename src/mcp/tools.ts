@@ -1114,12 +1114,14 @@ const footageTool: McpTool = {
   description:
     "Video and audio in Dropbox /RAD/Footage, with what was said in each clip and the tags derived from it. Filter by tag or by transcription status, or call with no arguments for the tag vocabulary and the coverage.\n" +
     "IMPORTANT: tags come from the TRANSCRIPT, not from the picture. A clip with `no-audio` is silent b-roll — it is known, listed, and untagged because there are no words to tag it from, NOT because anything failed. Tagging silent footage needs frame extraction and vision, which is not built (#13).\n" +
-    "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`.",
+    "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`.\n" +
+    "Pages hold at most 100 clips. When `nextOffset` is not null there are more: call again with `offset` set to it until it is null, rather than reconstructing the library from tag searches.",
   readOnly: true,
   schema: {
     tag: { type: "string" },
     status: { type: "enum", values: ["ok", "no-audio", "error", "unknown"] },
     limit: { type: "integer", min: 1, max: 100, default: 25 },
+    offset: { type: "integer", min: 0, default: 0 },
   },
   async run(ctx, args) {
     const coverage = await getFootageCoverage(ctx.db);
@@ -1131,11 +1133,12 @@ const footageTool: McpTool = {
       };
     }
 
-    const [{ rows, matched }, tags] = await Promise.all([
+    const [{ rows, matched, nextOffset }, tags] = await Promise.all([
       listFootage(ctx.db, {
         tag: typeof args.tag === "string" ? args.tag : undefined,
         status: typeof args.status === "string" ? args.status : undefined,
         limit: args.limit as number,
+        offset: args.offset as number,
       }),
       getFootageTags(ctx.db),
     ]);
@@ -1152,6 +1155,8 @@ const footageTool: McpTool = {
       filter: { tag: args.tag ?? null, status: args.status ?? null },
       matched,
       returned: rows.length,
+      offset: args.offset,
+      nextOffset,
       clips: rows.map((r) => ({
         ...r,
         sizeMb: Math.round((r.sizeBytes / 1_048_576) * 10) / 10,
