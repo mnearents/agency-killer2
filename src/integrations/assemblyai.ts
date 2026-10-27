@@ -7,11 +7,23 @@
 
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
 
+/** One spoken word, timed in milliseconds from the start of the media. */
+export interface TranscriptWord {
+  text: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
 export interface TranscriptResult {
   id: string;
   status: "completed" | "error" | "queued" | "processing";
   text: string | null;
   error?: string;
+  /** Word timings. Present on a completed transcript. */
+  words?: TranscriptWord[];
+  /** Length of the media in milliseconds, as AssemblyAI measured it. */
+  durationMs?: number | null;
 }
 
 export interface AssemblyAiClient {
@@ -20,6 +32,15 @@ export interface AssemblyAiClient {
    * Returns the full transcript text, or null if transcription failed.
    */
   transcribe(mediaUrl: string): Promise<TranscriptResult>;
+  /**
+   * IDs of every completed transcript the account holds, newest first.
+   * AssemblyAI keeps transcripts until they are deleted, so this is how words
+   * discarded by an earlier version of the sync are recovered without paying
+   * to transcribe again.
+   */
+  listCompletedTranscriptIds(): Promise<string[]>;
+  /** A transcript already made, with its words. Throws if it cannot be read. */
+  getTranscript(id: string): Promise<TranscriptResult>;
 }
 
 interface SubmitResponse {
@@ -32,6 +53,22 @@ interface PollResponse {
   status: string;
   text: string | null;
   error?: string;
+  words?: { text: string; start: number; end: number; confidence: number }[] | null;
+  /** Seconds. */
+  audio_duration?: number | null;
+}
+
+interface ListResponse {
+  transcripts: { id: string }[];
+  page_details: { prev_url: string | null };
+}
+
+function toWords(words: PollResponse["words"]): TranscriptWord[] {
+  return (words ?? []).map((w) => ({ text: w.text, start: w.start, end: w.end, confidence: w.confidence }));
+}
+
+function toDurationMs(seconds: number | null | undefined): number | null {
+  return typeof seconds === "number" ? Math.round(seconds * 1000) : null;
 }
 
 const MAX_POLLS = 60;
@@ -82,6 +119,8 @@ export function createAssemblyAiClient(apiKey: string): AssemblyAiClient {
             id,
             status: "completed" as const,
             text: result.text,
+            words: toWords(result.words),
+            durationMs: toDurationMs(result.audio_duration),
           };
         }
 
@@ -104,6 +143,39 @@ export function createAssemblyAiClient(apiKey: string): AssemblyAiClient {
         status: "processing" as const,
         text: null,
         error: "Transcription timed out after polling",
+      };
+    },
+
+    async listCompletedTranscriptIds() {
+      const ids: string[] = [];
+      let url: string | null = `${ASSEMBLYAI_BASE}/transcript?limit=200&status=completed`;
+      while (url) {
+        const response = await fetch(url, { headers });
+        // A page that fails fails the listing: a partial one would read as
+        // transcripts that do not exist, and send their clips to be paid for again.
+        if (!response.ok) {
+          throw new Error(`AssemblyAI transcript list error (${response.status}): ${await response.text()}`);
+        }
+        const page = (await response.json()) as ListResponse;
+        for (const t of page.transcripts) ids.push(t.id);
+        url = page.page_details.prev_url;
+      }
+      return ids;
+    },
+
+    async getTranscript(id) {
+      const response = await fetch(`${ASSEMBLYAI_BASE}/transcript/${id}`, { headers });
+      if (!response.ok) {
+        throw new Error(`AssemblyAI transcript fetch error (${response.status}): ${await response.text()}`);
+      }
+      const result = (await response.json()) as PollResponse;
+      return {
+        id: result.id,
+        status: result.status as TranscriptResult["status"],
+        text: result.text,
+        error: result.error,
+        words: toWords(result.words),
+        durationMs: toDurationMs(result.audio_duration),
       };
     },
   };

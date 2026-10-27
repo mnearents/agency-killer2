@@ -25,10 +25,10 @@
  * frame extraction and vision, which is the deferred half of #13.
  */
 
-import { and, eq, isNull, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import type { DropboxClient, DropboxFileEntry } from "@/integrations/dropbox";
-import type { AssemblyAiClient } from "@/integrations/assemblyai";
+import type { AssemblyAiClient, TranscriptResult } from "@/integrations/assemblyai";
 import type { AnthropicClient } from "@/integrations/anthropic";
 import type { EmbeddingClient } from "@/integrations/openai";
 import { footage, kbDocuments } from "@/db/schema";
@@ -44,9 +44,12 @@ import {
   reconcileFootage,
   relocateFootageDocument,
   footageSourceFile,
+  footageTranscript,
+  chooseRecoveredTranscript,
   TAGGING_INSTRUCTION,
   type FootageTags,
   type StoredFootage,
+  type FootageMatch,
 } from "./footage";
 
 export interface SyncFootageDeps {
@@ -83,6 +86,17 @@ export interface SyncFootageResult {
   adopted: number;
   /** Clips no longer in the folder, deleted with their transcripts. */
   removed: number;
+  /** Clips whose word timings were fetched from AssemblyAI's stored transcript. */
+  timingsRecovered: number;
+  /** Clips transcribed again because no stored transcript matched them. */
+  timingsRetranscribed: number;
+  /** Footage documents stored without an embedding and embedded this run. */
+  embedded: number;
+  /**
+   * Footage documents that still have no embedding after this run. Search by
+   * meaning cannot reach them; they are tried again on the next run.
+   */
+  unembedded: number;
   errors: string[];
   /** Null when no transcriber is configured — distinct from finding nothing. */
   configured: boolean;
@@ -108,6 +122,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     return {
       mediaFiles: 0, unchanged: 0, exhausted: 0, transcribed: 0, silent: 0, failed: 0, tagged: 0,
       moved: 0, adopted: 0, removed: 0,
+      timingsRecovered: 0, timingsRetranscribed: 0, embedded: 0, unembedded: 0,
       errors: ["ASSEMBLYAI_API_KEY not set — footage cannot be transcribed"],
       configured: false,
     };
@@ -127,6 +142,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       transcriptionStatus: footage.transcriptionStatus,
       transcriptionAttempts: footage.transcriptionAttempts,
       transcriptionDetail: footage.transcriptionDetail,
+      hasWords: sql<boolean>`${footage.words} is not null`,
     })
     .from(footage)).map((row) => ({
       ...row,
@@ -164,6 +180,9 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     notInArray(kbDocuments.sourceFile, media.map((m) => footageSourceFile(m.id))),
   ));
 
+  const timings = await recoverTimings(deps, matches, errors);
+  let timingsRetranscribed = 0;
+
   let unchanged = 0, exhausted = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0, moved = 0;
 
   for (const { entry, known: prior, moved: isMoved } of matches) {
@@ -181,6 +200,14 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       plan = { action: "transcribe", reason: "retry" };
     }
 
+    // Transcribed before words were kept, and AssemblyAI holds no transcript
+    // that can be matched to it with confidence. Transcribing again is the
+    // only way to a cut list for it.
+    if (plan.action === "skip" && timings.retranscribe.has(entry.id)) {
+      plan = { action: "transcribe", reason: "timings" };
+      timingsRetranscribed++;
+    }
+
     if (plan.action === "skip") {
       if (plan.reason === "attempts-exhausted") exhausted++;
       else unchanged++;
@@ -193,14 +220,23 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       ? 0
       : (prior?.transcriptionAttempts ?? 0);
 
-    const classified = await (async () => {
+    const { raw, classified } = await (async () => {
       try {
         const link = await dropbox.getTemporaryLink(entry.path);
-        return classifyTranscription(await deps.transcriber!.transcribe(link));
+        const result = await deps.transcriber!.transcribe(link);
+        return { raw: result, classified: classifyTranscription(result) };
       } catch (err) {
-        return classifyTranscription(null, err);
+        return { raw: null, classified: classifyTranscription(null, err) };
       }
     })();
+    const timing = {
+      transcriptId: raw?.id ?? null,
+      // Empty for a clip with no speech: there are no words, and that is known.
+      words: classified.status === "ok"
+        ? raw?.words ?? null
+        : classified.status === "no-audio" ? [] : null,
+      durationMs: raw?.durationMs ?? null,
+    };
 
     let tags: FootageTags | null = null;
     if (classified.status === "ok" && classified.text && deps.anthropic) {
@@ -225,6 +261,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
         transcriptionAttempts: attemptsBefore + 1,
         transcriptionAttemptedAt: now(),
         transcriptionDetail: classified.detail,
+        ...timing,
         tags: tags?.tags ?? null,
         summary: tags?.summary ?? null,
         taggedAt: tags ? now() : null,
@@ -242,6 +279,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
           transcriptionAttempts: attemptsBefore + 1,
           transcriptionAttemptedAt: now(),
           transcriptionDetail: classified.detail,
+          ...timing,
           tags: tags?.tags ?? null,
           summary: tags?.summary ?? null,
           taggedAt: tags ? now() : null,
@@ -272,7 +310,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       try {
         embedding = (await deps.embeddingClient.embed(doc.content)).embedding;
       } catch (err) {
-        errors.push(`Embedding failed for ${entry.name} — stored unsearchable: ${err instanceof Error ? err.message : String(err)}`);
+        errors.push(`Embedding failed for ${entry.name} — stored without one, tried again at the end of this run and the next: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -294,10 +332,14 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     transcribed++;
   }
 
+  const { embedded, unembedded } = await embedMissing(deps, errors);
+
   return {
     mediaFiles: media.length,
     unchanged, exhausted, transcribed, silent, failed, tagged,
     moved, adopted, removed: remove.length,
+    timingsRecovered: timings.recovered, timingsRetranscribed,
+    embedded, unembedded,
     errors,
     configured: true,
   };
@@ -350,4 +392,133 @@ async function relocateFootage(
     .set({ path: key, name: entry.name, rev: entry.rev, updatedAt: now() })
     .where(eq(footage.dropboxId, entry.id));
   return true;
+}
+
+/** Transcripts read from AssemblyAI at once while recovering word timings. */
+const RECOVERY_CONCURRENCY = 8;
+
+/**
+ * Fetches word timings for clips transcribed before they were kept.
+ *
+ * Nothing recorded which AssemblyAI transcript a clip came from, but the
+ * stored transcript is exactly AssemblyAI's text, and AssemblyAI keeps every
+ * transcript. So each one is read and matched to clips by text. A clip with no
+ * confident match is returned in `retranscribe`.
+ *
+ * Only a complete read may send anything to be transcribed again: a transcript
+ * that could not be read is a match that may have been missed, and the clips
+ * it would have matched are left for the next run rather than paid for twice.
+ * Runs only while some transcribed clip has no words, so it stops once all do.
+ */
+async function recoverTimings(
+  deps: SyncFootageDeps,
+  matches: FootageMatch[],
+  errors: string[],
+): Promise<{ recovered: number; retranscribe: Set<string> }> {
+  const none = { recovered: 0, retranscribe: new Set<string>() };
+  const missing = matches.filter((m) => m.known?.transcriptionStatus === "ok" && !m.known.hasWords);
+  if (missing.length === 0) return none;
+
+  const docs = await deps.db
+    .select({ sourceFile: kbDocuments.sourceFile, content: kbDocuments.content })
+    .from(kbDocuments)
+    .where(eq(kbDocuments.category, "footage"));
+  const contentBySource = new Map(docs.map((d) => [d.sourceFile, d.content]));
+
+  const clipsByText = new Map<string, string[]>();
+  const unreadable: string[] = [];
+  for (const { entry } of missing) {
+    const content = contentBySource.get(footageSourceFile(entry.id));
+    const transcript = content ? footageTranscript(content)?.trim() : null;
+    if (!transcript) { unreadable.push(entry.id); continue; }
+    clipsByText.set(transcript, [...(clipsByText.get(transcript) ?? []), entry.id]);
+  }
+
+  let ids: string[];
+  try {
+    ids = await deps.transcriber!.listCompletedTranscriptIds();
+  } catch (err) {
+    errors.push(`Word timings not recovered for ${missing.length} clip(s), and none transcribed again: ${err instanceof Error ? err.message : String(err)}`);
+    return none;
+  }
+
+  // Indexed by position in the listing, so candidates keep its newest-first order.
+  const candidates = new Map<string, { at: number; transcript: TranscriptResult }[]>();
+  let unread = 0;
+  let firstReadError: string | null = null;
+  for (let i = 0; i < ids.length; i += RECOVERY_CONCURRENCY) {
+    await Promise.all(ids.slice(i, i + RECOVERY_CONCURRENCY).map(async (id, j) => {
+      try {
+        const transcript = await deps.transcriber!.getTranscript(id);
+        const text = transcript.text?.trim();
+        if (!text || !clipsByText.has(text)) return;
+        candidates.set(text, [...(candidates.get(text) ?? []), { at: i + j, transcript }]);
+      } catch (err) {
+        unread++;
+        firstReadError ??= err instanceof Error ? err.message : String(err);
+      }
+    }));
+  }
+
+  let recovered = 0;
+  const unmatched = [...unreadable];
+  for (const [text, clipIds] of clipsByText) {
+    const chosen = chooseRecoveredTranscript(
+      (candidates.get(text) ?? []).sort((a, b) => a.at - b.at).map((c) => c.transcript),
+    );
+    if (!chosen) { unmatched.push(...clipIds); continue; }
+    await deps.db
+      .update(footage)
+      .set({ transcriptId: chosen.id, words: chosen.words ?? [], durationMs: chosen.durationMs ?? null })
+      .where(inArray(footage.dropboxId, clipIds));
+    recovered += clipIds.length;
+  }
+
+  if (unread > 0) {
+    errors.push(
+      `${unread} AssemblyAI transcript(s) could not be read (${firstReadError}) — ` +
+        `${unmatched.length} clip(s) left without word timings until the next run rather than transcribed again`,
+    );
+    return { recovered, retranscribe: new Set() };
+  }
+  return { recovered, retranscribe: new Set(unmatched) };
+}
+
+/**
+ * Embeds footage documents that were stored without an embedding — because
+ * the embedding call failed, or no key was set when they were written.
+ *
+ * Search by meaning cannot reach a document with no embedding, so one that
+ * fails is not given up on: it is counted and tried again next run.
+ */
+async function embedMissing(
+  deps: SyncFootageDeps,
+  errors: string[],
+): Promise<{ embedded: number; unembedded: number }> {
+  const rows = await deps.db
+    .select({ id: kbDocuments.id, content: kbDocuments.content })
+    .from(kbDocuments)
+    .where(and(eq(kbDocuments.category, "footage"), isNull(kbDocuments.embedding)));
+  if (rows.length === 0) return { embedded: 0, unembedded: 0 };
+  if (!deps.embeddingClient) return { embedded: 0, unembedded: rows.length };
+
+  let embedded = 0;
+  let firstError: string | null = null;
+  for (const row of rows) {
+    try {
+      const { embedding } = await deps.embeddingClient.embed(row.content);
+      await deps.db.update(kbDocuments).set({ embedding }).where(eq(kbDocuments.id, row.id));
+      embedded++;
+    } catch (err) {
+      firstError ??= err instanceof Error ? err.message : String(err);
+    }
+  }
+  const unembedded = rows.length - embedded;
+  if (unembedded > 0) {
+    errors.push(
+      `${unembedded} footage document(s) still have no embedding: ${firstError} — ` +
+        "unsearchable by meaning until then; tried again next run",
+    );
+  }
+  return { embedded, unembedded };
 }

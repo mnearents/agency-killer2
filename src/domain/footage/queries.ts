@@ -30,6 +30,8 @@ export interface FootageCoverage {
   failed: number;
   pending: number;
   tagged: number;
+  /** Transcribed clips whose word timings are stored — what a cut list needs. */
+  timed: number;
 }
 
 export async function getFootageCoverage(db: Db): Promise<FootageCoverage> {
@@ -41,6 +43,7 @@ export async function getFootageCoverage(db: Db): Promise<FootageCoverage> {
       failed: sql<number>`count(*) filter (where ${footage.transcriptionStatus} in ('error','unknown'))::int`,
       pending: sql<number>`count(*) filter (where ${footage.transcriptionStatus} is null)::int`,
       tagged: sql<number>`count(${footage.taggedAt})::int`,
+      timed: sql<number>`count(*) filter (where ${footage.transcriptionStatus} = 'ok' and jsonb_array_length(${footage.words}) > 0)::int`,
     })
     .from(footage);
   return row;

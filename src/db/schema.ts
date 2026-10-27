@@ -1080,6 +1080,19 @@ export const footage = pgTable(
     transcriptionAttemptedAt: timestamp("transcription_attempted_at", { withTimezone: true }),
     /** Why there is no transcript, when there is a reason worth keeping. */
     transcriptionDetail: text("transcription_detail"),
+    /**
+     * The AssemblyAI transcript this clip's words came from, so they can be
+     * fetched again without transcribing again.
+     */
+    transcriptId: text("transcript_id"),
+    /**
+     * Every spoken word with its start and end in milliseconds — what a cut
+     * list is made from. Null on a clip transcribed before words were kept and
+     * not yet recovered; empty on a clip with no speech.
+     */
+    words: jsonb("words").$type<{ text: string; start: number; end: number; confidence: number }[]>(),
+    /** Length of the media in milliseconds, as AssemblyAI measured it. */
+    durationMs: integer("duration_ms"),
 
     /** Derived from the transcript by Claude. Empty for silent footage. */
     tags: jsonb("tags").$type<string[]>(),

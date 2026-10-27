@@ -9,7 +9,11 @@ export function createMockAssemblyAiClient(
       id: "mock-transcript-id",
       status: "completed",
       text: "This is a mock transcript.",
+      words: [],
+      durationMs: null,
     }),
+    listCompletedTranscriptIds: vi.fn().mockResolvedValue([]),
+    getTranscript: vi.fn().mockRejectedValue(new Error("no transcript")),
     ...overrides,
   };
 }

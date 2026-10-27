@@ -13,10 +13,10 @@ const entry = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, ...over,
 });
 
-interface KbRow { sourceFile: string; content: string }
+interface KbRow { id?: number; sourceFile: string; content: string; embedding?: number[] | null }
 
 /**
  * Just enough Drizzle to observe what the sync would write. It cannot evaluate
@@ -306,6 +306,168 @@ describe("syncFootage", () => {
       expect(transcribe).toHaveBeenCalledOnce();
       expect(result).toMatchObject({ exhausted: 0, transcribed: 1 });
       expect(inserted.find((v) => "transcriptionAttempts" in v)).toMatchObject({ transcriptionAttempts: 1 });
+    });
+  });
+
+  describe("word timings", () => {
+    const words = [{ text: "Hello", start: 120, end: 480, confidence: 0.98 }];
+    const clipDoc = footageDocument({
+      name: "clip.mp4", path: "/rad/footage/clip.mp4", summary: null, tags: null, transcript: "Hello.",
+    });
+
+    it("keeps the transcript ID, words and duration of a new transcription", async () => {
+      const { db, inserted } = fakeDb();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: {
+          transcribe: vi.fn().mockResolvedValue({ id: "t1", status: "completed", text: "Hello.", words, durationMs: 54000 }),
+        } as never,
+      });
+      expect(inserted.find((v) => "transcriptionAttempts" in v))
+        .toMatchObject({ transcriptId: "t1", words, durationMs: 54000 });
+    });
+
+    // Transcripts made before words were kept. AssemblyAI still holds them, so
+    // the words are fetched rather than paid for twice.
+    it("recovers a clip's words from AssemblyAI without transcribing it again", async () => {
+      const { db, updates } = fakeDb({
+        footage: [stored({ hasWords: false })],
+        kb: [{ sourceFile: "footage:id:clip", content: clipDoc.content, embedding: [0.1] }],
+      });
+      const transcribe = vi.fn();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: {
+          transcribe,
+          listCompletedTranscriptIds: vi.fn().mockResolvedValue(["other", "t1"]),
+          getTranscript: vi.fn(async (id: string) => id === "t1"
+            ? { id, status: "completed", text: "Hello.", words, durationMs: 54000 }
+            : { id, status: "completed", text: "Something else.", words, durationMs: 9000 }),
+        } as never,
+      });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ timingsRecovered: 1, timingsRetranscribed: 0 });
+      expect(updates.find((u) => u.table === footage && "words" in u.set)?.set)
+        .toMatchObject({ transcriptId: "t1", words, durationMs: 54000 });
+    });
+
+    it("transcribes again a clip whose transcript AssemblyAI no longer holds", async () => {
+      const { db } = fakeDb({
+        footage: [stored({ hasWords: false })],
+        kb: [{ sourceFile: "footage:id:clip", content: clipDoc.content, embedding: [0.1] }],
+      });
+      const transcribe = vi.fn().mockResolvedValue({ id: "t2", status: "completed", text: "Hello.", words, durationMs: 54000 });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: {
+          transcribe,
+          listCompletedTranscriptIds: vi.fn().mockResolvedValue([]),
+          getTranscript: vi.fn(),
+        } as never,
+      });
+      expect(transcribe).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ timingsRecovered: 0, timingsRetranscribed: 1, transcribed: 1 });
+    });
+
+    it("does not look for transcripts when every clip has its words", async () => {
+      const { db } = fakeDb({ footage: [stored()] });
+      const listCompletedTranscriptIds = vi.fn();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: { transcribe: vi.fn(), listCompletedTranscriptIds } as never,
+      });
+      expect(listCompletedTranscriptIds).not.toHaveBeenCalled();
+    });
+
+    // An incomplete search finds fewer matches, and every clip it missed would
+    // be paid for again. So nothing is re-transcribed unless all was read.
+    it("transcribes nothing again when AssemblyAI cannot be listed", async () => {
+      const { db } = fakeDb({
+        footage: [stored({ hasWords: false })],
+        kb: [{ sourceFile: "footage:id:clip", content: clipDoc.content, embedding: [0.1] }],
+      });
+      const transcribe = vi.fn();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: {
+          transcribe,
+          listCompletedTranscriptIds: vi.fn().mockRejectedValue(new Error("AssemblyAI transcript list error (500)")),
+          getTranscript: vi.fn(),
+        } as never,
+      });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(result.timingsRetranscribed).toBe(0);
+      expect(result.errors.join(" ")).toMatch(/transcript list error \(500\)/);
+    });
+
+    it("transcribes nothing again when one transcript could not be read", async () => {
+      const { db } = fakeDb({
+        footage: [stored({ hasWords: false })],
+        kb: [{ sourceFile: "footage:id:clip", content: clipDoc.content, embedding: [0.1] }],
+      });
+      const transcribe = vi.fn();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage",
+        transcriber: {
+          transcribe,
+          listCompletedTranscriptIds: vi.fn().mockResolvedValue(["t1"]),
+          getTranscript: vi.fn().mockRejectedValue(new Error("AssemblyAI transcript fetch error (503)")),
+        } as never,
+      });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(result.errors.join(" ")).toMatch(/fetch error \(503\)/);
+    });
+  });
+
+  describe("documents stored without an embedding", () => {
+    it("embeds them on the next run", async () => {
+      const { db, updates } = fakeDb({
+        footage: [stored()],
+        kb: [{ id: 7, sourceFile: "footage:id:clip", content: "x", embedding: null }],
+      });
+      const embed = vi.fn().mockResolvedValue({ embedding: [0.5], tokenCount: 1 });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
+        embeddingClient: { embed, embedBatch: vi.fn() },
+      });
+      expect(embed).toHaveBeenCalledWith("x");
+      expect(result).toMatchObject({ embedded: 1, unembedded: 0 });
+      expect(updates.find((u) => u.table === kbDocuments)?.set).toEqual({ embedding: [0.5] });
+    });
+
+    // Previously a failed embedding was logged once and the document stayed
+    // unsearchable for good. Now it is counted and tried again next run.
+    it("counts what still could not be embedded and says it will retry", async () => {
+      const { db } = fakeDb({
+        footage: [stored()],
+        kb: [{ id: 7, sourceFile: "footage:id:clip", content: "x", embedding: null }],
+      });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
+        embeddingClient: { embed: vi.fn().mockRejectedValue(new Error("401 Incorrect API key")), embedBatch: vi.fn() },
+      });
+      expect(result).toMatchObject({ embedded: 0, unembedded: 1 });
+      expect(result.errors.join(" ")).toMatch(/1 footage document\(s\) still have no embedding.*401.*next run/);
+    });
+
+    it("counts them as unembedded when no embedding client is configured", async () => {
+      const { db } = fakeDb({
+        footage: [stored()],
+        kb: [{ id: 7, sourceFile: "footage:id:clip", content: "x", embedding: null }],
+      });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
+      });
+      expect(result).toMatchObject({ embedded: 0, unembedded: 1 });
     });
   });
 });

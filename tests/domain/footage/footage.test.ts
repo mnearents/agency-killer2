@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isTranscribableMedia, extensionOf, planFootage, parseTags, footageDocument,
   reconcileFootage, relocateFootageDocument, footageSourceFile,
+  footageTranscript, chooseRecoveredTranscript,
   VIDEO_EXTENSIONS, TAGGING_INSTRUCTION, type StoredFootage,
 } from "@/domain/footage/footage";
 import { MAX_TRANSCRIPTION_ATTEMPTS } from "@/domain/social/transcription";
@@ -14,7 +15,7 @@ const file = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, ...over,
 });
 
 describe("isTranscribableMedia", () => {
@@ -313,5 +314,53 @@ describe("footageDocument", () => {
     expect(footageDocument({
       name: "c.mp4", path: "/p", summary: null, tags: [], transcript: "t",
     }).content).not.toContain("Tags:");
+  });
+});
+
+describe("footageTranscript", () => {
+  it("returns the transcript a footage document was built from", () => {
+    const doc = footageDocument({
+      name: "a.mp4", path: "/rad/footage/a.mp4", summary: "s", tags: ["x"], transcript: "Hello there.\nSecond line.",
+    });
+    expect(footageTranscript(doc.content)).toBe("Hello there.\nSecond line.");
+  });
+
+  it("is null for a document that is not one", () => {
+    expect(footageTranscript("just some text")).toBeNull();
+  });
+});
+
+describe("chooseRecoveredTranscript", () => {
+  const word = (start: number, end: number) => ({ text: "w", start, end, confidence: 0.9 });
+  const transcript = (id: string, words = [word(100, 400), word(500, 900)]) => ({
+    id, status: "completed" as const, text: "w w", words, durationMs: 1000,
+  });
+
+  it("takes the only match", () => {
+    expect(chooseRecoveredTranscript([transcript("a")])?.id).toBe("a");
+  });
+
+  it("is null when nothing matched", () => {
+    expect(chooseRecoveredTranscript([])).toBeNull();
+  });
+
+  // The same clip transcribed twice, before and after a move. Either has the
+  // right timings; the newest is listed first.
+  it("takes the newest of several that agree", () => {
+    expect(chooseRecoveredTranscript([
+      transcript("new"), transcript("old", [word(110, 410), word(520, 890)]),
+    ])?.id).toBe("new");
+  });
+
+  // Two takes of the same line say the same words at different times. Taking
+  // either would cut the other clip in the wrong places.
+  it("refuses to choose between takes whose timings differ", () => {
+    expect(chooseRecoveredTranscript([
+      transcript("take1"), transcript("take2", [word(2100, 2400), word(2500, 2900)]),
+    ])).toBeNull();
+  });
+
+  it("refuses a transcript with no words to recover", () => {
+    expect(chooseRecoveredTranscript([transcript("a", [])])).toBeNull();
   });
 });

@@ -425,7 +425,13 @@ a failed page rather than returning what it had. A clip that fails three times i
 longer retried and is counted as `exhausted`, never as unchanged; `!sync footage
 retry` starts those again. A failure that was our credentials being refused
 (401/403) never counts towards the three, because it says nothing about the
-file. **Playwright** has no wrapper
+file. Each clip keeps its AssemblyAI transcript ID and **word timings**
+(`footage.words`, milliseconds) — what a cut list is made from. Clips
+transcribed before words were kept get them back from AssemblyAI, which holds
+every transcript, by matching the stored text; only a clip with no confident
+match is transcribed again, and only after every transcript was read. A footage
+document stored without an embedding is embedded on the next run, not left
+unsearchable. **Playwright** has no wrapper
 module; it is used directly by `integrations/attentive-agent.ts` and
 `domain/email/renderer.ts`.
 

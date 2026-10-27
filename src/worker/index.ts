@@ -392,7 +392,11 @@ async function main() {
           `${result.silent} silent, ${result.failed} failed, ${result.unchanged} unchanged, ${result.tagged} tagged, ` +
           `${result.moved} moved, ${result.removed} removed` +
           (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "") +
-          (result.exhausted > 0 ? `, ${result.exhausted} failed earlier and are no longer retried` : "")
+          (result.exhausted > 0 ? `, ${result.exhausted} failed earlier and are no longer retried` : "") +
+          (result.timingsRecovered > 0 ? `, ${result.timingsRecovered} given word timings from AssemblyAI` : "") +
+          (result.timingsRetranscribed > 0 ? `, ${result.timingsRetranscribed} transcribed again for word timings` : "") +
+          (result.embedded > 0 ? `, ${result.embedded} embedded` : "") +
+          (result.unembedded > 0 ? `, ${result.unembedded} still without an embedding` : "")
       );
       if (result.errors.length > 0) console.error("[sync:footage] Errors:", result.errors);
       return {
@@ -400,7 +404,8 @@ async function main() {
         // Silent b-roll is a real outcome, so it counts as work done —
         // otherwise a folder of wordless clips reports as `no-data`. So are
         // moves and removals: a run that only tidied up still wrote rows.
-        rowsWritten: result.transcribed + result.silent + result.moved + result.adopted + result.removed,
+        rowsWritten: result.transcribed + result.silent + result.moved + result.adopted + result.removed +
+          result.timingsRecovered + result.embedded,
         errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
       };
     });
@@ -1495,6 +1500,18 @@ async function main() {
       if (result.adopted > 0) lines.push(`• ${result.adopted} older clips matched to their Dropbox file`);
       if (result.failed > 0 || result.errors.length > 0) {
         lines.push(`• ${result.failed} failed`, ...result.errors.slice(0, 10).map((e) => `  – ${e}`));
+      }
+      if (result.timingsRecovered > 0 || result.timingsRetranscribed > 0) {
+        lines.push(
+          `• ${result.timingsRecovered} older videos given word-by-word timings, ` +
+            `${result.timingsRetranscribed} transcribed again to get them`,
+        );
+      }
+      if (result.embedded > 0 || result.unembedded > 0) {
+        lines.push(
+          `• ${result.embedded} transcripts made searchable` +
+            (result.unembedded > 0 ? `, ${result.unembedded} still not searchable (tried again next run)` : ""),
+        );
       }
       if (result.exhausted > 0) {
         lines.push(

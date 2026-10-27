@@ -5,6 +5,7 @@
  */
 
 import type { DropboxFileEntry } from "@/integrations/dropbox";
+import type { TranscriptResult } from "@/integrations/assemblyai";
 import {
   shouldAttemptTranscription,
   type TranscriptionStatus,
@@ -48,7 +49,7 @@ export interface KnownFootage {
 }
 
 export type FootageAction =
-  | { action: "transcribe"; reason: "new" | "replaced" | "retry" | "reset" }
+  | { action: "transcribe"; reason: "new" | "replaced" | "retry" | "reset" | "timings" }
   | { action: "skip"; reason: "settled" | "attempts-exhausted" | "unchanged" };
 
 /**
@@ -99,6 +100,8 @@ export interface StoredFootage extends KnownFootage {
   /** Null on rows recorded before file IDs were kept. */
   dropboxId: string | null;
   path: string;
+  /** Word timings are stored. False on clips transcribed before they were kept. */
+  hasWords: boolean;
 }
 
 export interface FootageMatch {
@@ -282,4 +285,43 @@ export function relocateFootageDocument(
     content: `${footageHeader(to.path)}${content.slice(newline)}`,
     contextPrefix: `Raw footage file ${to.name}`,
   };
+}
+
+const TRANSCRIPT_MARKER = "\nTranscript:\n";
+
+/**
+ * The transcript a footage document was built from — exactly AssemblyAI's
+ * text, which is what lets a transcript made before words were kept be found
+ * again among the ones AssemblyAI still holds. Null if the document is not one
+ * `footageDocument` wrote.
+ */
+export function footageTranscript(content: string): string | null {
+  const at = content.indexOf(TRANSCRIPT_MARKER);
+  return at === -1 ? null : content.slice(at + TRANSCRIPT_MARKER.length);
+}
+
+/** How far apart two transcripts of the same audio can time a word. */
+const SAME_AUDIO_TOLERANCE_MS = 250;
+
+/**
+ * Which of the AssemblyAI transcripts whose text matches a clip to take its
+ * words from, or null to transcribe it again instead.
+ *
+ * Several matches are ordinary: a clip moved before file IDs were kept was
+ * transcribed again at its new path. Those agree on their timings and any one
+ * will do, so the newest (listed first) is taken. Matches that disagree are
+ * different takes of the same line, and taking the wrong one would put every
+ * cut in the wrong place — so nothing is taken.
+ */
+export function chooseRecoveredTranscript(candidates: TranscriptResult[]): TranscriptResult | null {
+  const [first] = candidates;
+  if (!first?.words || first.words.length === 0) return null;
+  const agrees = (other: TranscriptResult) => {
+    const words = other.words ?? [];
+    if (words.length !== first.words!.length) return false;
+    return words.every((w, i) =>
+      Math.abs(w.start - first.words![i].start) <= SAME_AUDIO_TOLERANCE_MS &&
+      Math.abs(w.end - first.words![i].end) <= SAME_AUDIO_TOLERANCE_MS);
+  };
+  return candidates.every(agrees) ? first : null;
 }
