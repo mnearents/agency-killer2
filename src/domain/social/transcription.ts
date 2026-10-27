@@ -77,7 +77,19 @@ export function shouldAttemptTranscription(state: TranscriptionState): AttemptDe
 export interface TranscribeResult {
   status: string;
   text?: string | null;
+  /** The transcriber's own reason, when it gives one. */
+  error?: string;
 }
+
+/**
+ * AssemblyAI's refusals for a file with nothing to transcribe. It does not
+ * complete such a file with empty text — it fails it — so without these a
+ * silent clip reads as an error and is retried until it is given up on.
+ */
+const NO_AUDIO_REFUSALS = [
+  /no spoken audio/i,
+  /does not appear to contain audio/i,
+];
 
 export interface ClassifiedTranscription {
   status: TranscriptionStatus;
@@ -105,7 +117,11 @@ export function classifyTranscription(
     return { status: "error", text: null, detail: "transcriber returned nothing" };
   }
   if (result.status !== "completed") {
-    return { status: "error", text: null, detail: `status: ${result.status}` };
+    if (result.error && NO_AUDIO_REFUSALS.some((p) => p.test(result.error!))) {
+      return { status: "no-audio", text: null, detail: null };
+    }
+    const reason = result.error ? ` — ${result.error}` : "";
+    return { status: "error", text: null, detail: `status: ${result.status}${reason}`.slice(0, 300) };
   }
   const text = (result.text ?? "").trim();
   if (text === "") {

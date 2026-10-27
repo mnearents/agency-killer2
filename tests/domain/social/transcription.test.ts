@@ -135,6 +135,23 @@ describe("classifyTranscription", () => {
     });
   });
 
+  // AssemblyAI refuses silent b-roll outright rather than completing with
+  // empty text. Read as an error, every silent clip burned three attempts and
+  // was reported as broken.
+  it.each([
+    "language_detection cannot be performed on files with no spoken audio.",
+    "File does not appear to contain audio. File type is video/quicktime (QuickTime video).",
+  ])("records AssemblyAI's refusal %s as no-audio", (error) => {
+    expect(classifyTranscription({ status: "error", error }))
+      .toEqual({ status: "no-audio", text: null, detail: null });
+  });
+
+  // "status: error" alone is why the cause above went unseen for a week.
+  it("keeps the transcriber's reason for any other failure", () => {
+    expect(classifyTranscription({ status: "error", error: "Download error, unable to download" }))
+      .toEqual({ status: "error", text: null, detail: "status: error — Download error, unable to download" });
+  });
+
   it("records a null result as an error rather than silence", () => {
     expect(classifyTranscription(null).status).toBe("error");
   });
