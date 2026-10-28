@@ -1073,6 +1073,12 @@ export const footage = pgTable(
     /** Dropbox content hash. A changed hash means the file was replaced. */
     contentHash: text("content_hash"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    /**
+     * `finished-ad` for a clip in /RAD/Footage/Finished Ads, `raw` for
+     * everything else. Follows the folder: a clip moved across it is analysed
+     * again as the other kind.
+     */
+    kind: text("kind").notNull().default("raw"),
 
     /** ok | no-audio | error | unknown — the same vocabulary social uses. */
     transcriptionStatus: text("transcription_status"),
@@ -1100,6 +1106,17 @@ export const footage = pgTable(
     /** Set when tags were generated, so a retag is distinguishable from a first pass. */
     taggedAt: timestamp("tagged_at", { withTimezone: true }),
 
+    /**
+     * A finished ad's analysis, from its transcript. Null on raw footage, and
+     * null on an ad wherever the transcript did not say — including a hook
+     * that was only ever on-screen text.
+     */
+    adHook: text("ad_hook"),
+    adAngle: text("ad_angle"),
+    adProduct: text("ad_product"),
+    adCallToAction: text("ad_call_to_action"),
+    adFormat: text("ad_format"),
+
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1107,6 +1124,7 @@ export const footage = pgTable(
     index("footage_status_idx").on(table.transcriptionStatus),
     index("footage_name_idx").on(table.name),
     index("footage_path_idx").on(table.path),
+    index("footage_kind_idx").on(table.kind),
   ]
 );
 

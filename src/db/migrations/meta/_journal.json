@@ -330,6 +330,13 @@
       "when": 1793124027458,
       "tag": "0046_easy_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1793205219528,
+      "tag": "0047_fine_gorgon",
+      "breakpoints": true
     }
   ]
 }

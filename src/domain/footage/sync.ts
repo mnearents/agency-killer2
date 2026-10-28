@@ -51,6 +51,16 @@ import {
   type StoredFootage,
   type FootageMatch,
 } from "./footage";
+import {
+  footageKind,
+  footageCategory,
+  finishedAdDocument,
+  parseAdAnalysis,
+  AD_ANALYSIS_INSTRUCTION,
+  FOOTAGE_CATEGORIES,
+  type AdAnalysis,
+  type FootageKind,
+} from "./finished-ads";
 
 export interface SyncFootageDeps {
   dropbox: DropboxClient;
@@ -90,6 +100,10 @@ export interface SyncFootageResult {
   timingsRecovered: number;
   /** Clips transcribed again because no stored transcript matched them. */
   timingsRetranscribed: number;
+  /** Media files in Finished Ads — analysed as ads rather than raw footage. */
+  finishedAds: number;
+  /** Clips moved into or out of Finished Ads, and so analysed again as the other kind. */
+  reclassified: number;
   /** Footage documents stored without an embedding and embedded this run. */
   embedded: number;
   /**
@@ -102,15 +116,26 @@ export interface SyncFootageResult {
   configured: boolean;
 }
 
-async function tagTranscript(
+/**
+ * Tags a transcript — as raw footage, or as a finished ad, whose analysis also
+ * names its hook, angle, product, call to action and format.
+ */
+async function analyseTranscript(
   anthropic: AnthropicClient,
   transcript: string,
-): Promise<FootageTags | null> {
+  kind: FootageKind,
+): Promise<{ tags: FootageTags; ad: AdAnalysis | null } | null> {
+  const instruction = kind === "finished-ad" ? AD_ANALYSIS_INSTRUCTION : TAGGING_INSTRUCTION;
   const result = await anthropic.generate(
-    `${TAGGING_INSTRUCTION}\n\nTranscript:\n"""\n${transcript.slice(0, 12000)}\n"""`,
+    `${instruction}\n\nTranscript:\n"""\n${transcript.slice(0, 12000)}\n"""`,
     { maxTokens: 500, temperature: 0 },
   );
-  return parseTags(result.text);
+  if (kind === "finished-ad") {
+    const ad = parseAdAnalysis(result.text);
+    return ad ? { tags: { summary: ad.summary, tags: ad.tags }, ad } : null;
+  }
+  const tags = parseTags(result.text);
+  return tags ? { tags, ad: null } : null;
 }
 
 export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageResult> {
@@ -122,7 +147,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     return {
       mediaFiles: 0, unchanged: 0, exhausted: 0, transcribed: 0, silent: 0, failed: 0, tagged: 0,
       moved: 0, adopted: 0, removed: 0,
-      timingsRecovered: 0, timingsRetranscribed: 0, embedded: 0, unembedded: 0,
+      timingsRecovered: 0, timingsRetranscribed: 0, finishedAds: 0, reclassified: 0, embedded: 0, unembedded: 0,
       errors: ["ASSEMBLYAI_API_KEY not set — footage cannot be transcribed"],
       configured: false,
     };
@@ -143,10 +168,12 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
       transcriptionAttempts: footage.transcriptionAttempts,
       transcriptionDetail: footage.transcriptionDetail,
       hasWords: sql<boolean>`${footage.words} is not null`,
+      kind: footage.kind,
     })
     .from(footage)).map((row) => ({
       ...row,
       transcriptionStatus: row.transcriptionStatus as TranscriptionStatus | null,
+      kind: row.kind as FootageKind,
     }));
 
   const { matches, remove } = reconcileFootage(media, stored);
@@ -176,7 +203,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
   // Every footage document must belong to a clip in the folder. This removes
   // the transcripts of the clips deleted above, and any left by earlier runs.
   await db.delete(kbDocuments).where(and(
-    eq(kbDocuments.category, "footage"),
+    inArray(kbDocuments.category, [...FOOTAGE_CATEGORIES]),
     notInArray(kbDocuments.sourceFile, media.map((m) => footageSourceFile(m.id))),
   ));
 
@@ -184,13 +211,23 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
   let timingsRetranscribed = 0;
 
   let unchanged = 0, exhausted = 0, transcribed = 0, silent = 0, failed = 0, tagged = 0, moved = 0;
+  let finishedAds = 0, reclassified = 0;
 
   for (const { entry, known: prior, moved: isMoved } of matches) {
     const key = entry.path.toLowerCase();
+    const kind = footageKind(entry.path, rootPath);
+    if (kind === "finished-ad") finishedAds++;
     let plan = planFootage(entry, prior, { retryExhausted: deps.retryExhausted });
 
+    // Moved into or out of Finished Ads. Its tags and document were written
+    // for the other kind, so it is analysed afresh rather than relocated.
+    if (plan.action === "skip" && prior && prior.kind !== kind) {
+      plan = { action: "transcribe", reason: "reclassified" };
+      reclassified++;
+    }
+
     if (plan.action === "skip" && isMoved) {
-      const relocated = await relocateFootage(deps, entry, key, now, errors);
+      const relocated = await relocateFootage(deps, entry, key, kind, now, errors);
       if (relocated) {
         moved++;
         continue;
@@ -216,7 +253,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
 
     // A replaced file is a different video, so its previous attempts no longer
     // describe it and the count starts again. So does a deliberate retry.
-    const attemptsBefore = plan.reason === "replaced" || plan.reason === "reset"
+    const attemptsBefore = plan.reason === "replaced" || plan.reason === "reset" || plan.reason === "reclassified"
       ? 0
       : (prior?.transcriptionAttempts ?? 0);
 
@@ -239,14 +276,26 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     };
 
     let tags: FootageTags | null = null;
+    let ad: AdAnalysis | null = null;
     if (classified.status === "ok" && classified.text && deps.anthropic) {
       try {
-        tags = await tagTranscript(deps.anthropic, classified.text);
-        if (tags) tagged++;
+        const analysed = await analyseTranscript(deps.anthropic, classified.text, kind);
+        if (analysed) {
+          ({ tags, ad } = analysed);
+          tagged++;
+        }
       } catch (err) {
         errors.push(`Tagging failed for ${entry.name}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    const analysis = {
+      kind,
+      adHook: ad?.hook ?? null,
+      adAngle: ad?.angle ?? null,
+      adProduct: ad?.product ?? null,
+      adCallToAction: ad?.callToAction ?? null,
+      adFormat: ad?.format ?? null,
+    };
 
     await db
       .insert(footage)
@@ -262,6 +311,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
         transcriptionAttemptedAt: now(),
         transcriptionDetail: classified.detail,
         ...timing,
+        ...analysis,
         tags: tags?.tags ?? null,
         summary: tags?.summary ?? null,
         taggedAt: tags ? now() : null,
@@ -280,6 +330,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
           transcriptionAttemptedAt: now(),
           transcriptionDetail: classified.detail,
           ...timing,
+          ...analysis,
           tags: tags?.tags ?? null,
           summary: tags?.summary ?? null,
           taggedAt: tags ? now() : null,
@@ -297,13 +348,15 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     // Only a real transcript becomes knowledge. A silent clip is recorded in
     // `footage` and deliberately left out of the knowledge base, so a search
     // never returns a document that says nothing.
-    const doc = footageDocument({
-      name: entry.name,
-      path: entry.path,
-      summary: tags?.summary ?? null,
-      tags: tags?.tags ?? null,
-      transcript: classified.text,
-    });
+    const doc = kind === "finished-ad"
+      ? finishedAdDocument({ name: entry.name, path: entry.path, analysis: ad, transcript: classified.text })
+      : footageDocument({
+          name: entry.name,
+          path: entry.path,
+          summary: tags?.summary ?? null,
+          tags: tags?.tags ?? null,
+          transcript: classified.text,
+        });
 
     let embedding: number[] | null = null;
     if (deps.embeddingClient) {
@@ -320,7 +373,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     await db.insert(kbDocuments).values({
       title: doc.title,
       content: doc.content,
-      category: "footage",
+      category: footageCategory(kind),
       sourceFile: footageSourceFile(entry.id),
       contentHash: entry.rev,
       chunkIndex: 0,
@@ -339,6 +392,7 @@ export async function syncFootage(deps: SyncFootageDeps): Promise<SyncFootageRes
     unchanged, exhausted, transcribed, silent, failed, tagged,
     moved, adopted, removed: remove.length,
     timingsRecovered: timings.recovered, timingsRetranscribed,
+    finishedAds, reclassified,
     embedded, unembedded,
     errors,
     configured: true,
@@ -355,6 +409,7 @@ async function relocateFootage(
   deps: SyncFootageDeps,
   entry: DropboxFileEntry,
   key: string,
+  kind: FootageKind,
   now: () => Date,
   errors: string[],
 ): Promise<boolean> {
@@ -366,7 +421,7 @@ async function relocateFootage(
     .where(eq(kbDocuments.sourceFile, sourceFile));
 
   if (doc) {
-    const relocated = relocateFootageDocument(doc.content, { name: entry.name, path: key });
+    const relocated = relocateFootageDocument(doc.content, { name: entry.name, path: key }, kind);
     if (!relocated) return false;
 
     // The path and name are in the embedded text, so the old vector describes
@@ -422,7 +477,7 @@ async function recoverTimings(
   const docs = await deps.db
     .select({ sourceFile: kbDocuments.sourceFile, content: kbDocuments.content })
     .from(kbDocuments)
-    .where(eq(kbDocuments.category, "footage"));
+    .where(inArray(kbDocuments.category, [...FOOTAGE_CATEGORIES]));
   const contentBySource = new Map(docs.map((d) => [d.sourceFile, d.content]));
 
   const clipsByText = new Map<string, string[]>();
@@ -498,7 +553,7 @@ async function embedMissing(
   const rows = await deps.db
     .select({ id: kbDocuments.id, content: kbDocuments.content })
     .from(kbDocuments)
-    .where(and(eq(kbDocuments.category, "footage"), isNull(kbDocuments.embedding)));
+    .where(and(inArray(kbDocuments.category, [...FOOTAGE_CATEGORIES]), isNull(kbDocuments.embedding)));
   if (rows.length === 0) return { embedded: 0, unembedded: 0 };
   if (!deps.embeddingClient) return { embedded: 0, unembedded: rows.length };
 

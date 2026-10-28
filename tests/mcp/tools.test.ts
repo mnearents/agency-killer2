@@ -203,6 +203,32 @@ describe("the tool catalogue", () => {
     expect(tool.description).toMatch(/NOT because anything failed/);
   });
 
+  // Finished ads were listed as raw footage, so an agent counted a hook that
+  // had already run as one still available.
+  it("exposes finished ads as their own read-only surface", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "finished_ads");
+    expect(tool, "no finished_ads tool").toBeDefined();
+    expect(tool!.readOnly).toBe(true);
+  });
+
+  it("tells the footage tool's caller that finished ads are elsewhere", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "footage")!.description).toMatch(/finished_ads/);
+  });
+
+  // The analysis reads speech. An ad whose hook is on-screen text has no hook
+  // recorded, and a model must not read that as an ad without one.
+  it("declares that a finished ad's hook comes from speech, not on-screen text", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "finished_ads")!;
+    expect(tool.description).toMatch(/on-screen text/i);
+    expect(tool.description).toMatch(/NOT that the ad has no hook/);
+  });
+
+  // Nothing links an ad file to its Meta results yet. Saying so stops a model
+  // presenting usage as performance.
+  it("declares that finished ads are not linked to their Meta results", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "finished_ads")!.description).toMatch(/not linked to Meta/i);
+  });
+
   it("exposes the knowledge base surface", () => {
     const names = ALL_TOOLS.map((t) => t.name);
     expect(names).toContain("kb_search");

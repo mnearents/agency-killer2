@@ -6,6 +6,7 @@
 
 import type { DropboxFileEntry } from "@/integrations/dropbox";
 import type { TranscriptResult } from "@/integrations/assemblyai";
+import { documentHeader, documentLabels, type FootageKind } from "./finished-ads";
 import {
   shouldAttemptTranscription,
   type TranscriptionStatus,
@@ -49,7 +50,7 @@ export interface KnownFootage {
 }
 
 export type FootageAction =
-  | { action: "transcribe"; reason: "new" | "replaced" | "retry" | "reset" | "timings" }
+  | { action: "transcribe"; reason: "new" | "replaced" | "retry" | "reset" | "timings" | "reclassified" }
   | { action: "skip"; reason: "settled" | "attempts-exhausted" | "unchanged" };
 
 /**
@@ -102,6 +103,8 @@ export interface StoredFootage extends KnownFootage {
   path: string;
   /** Word timings are stored. False on clips transcribed before they were kept. */
   hasWords: boolean;
+  /** What the clip was analysed as. Differs from its folder's after a move across Finished Ads. */
+  kind: FootageKind;
 }
 
 export interface FootageMatch {
@@ -258,13 +261,9 @@ export function footageDocument(input: {
     // Tags and summary sit in the embedded text on purpose: a search for
     // "unboxing" should find a clip tagged unboxing even when the speaker
     // never says the word.
-    content: `${footageHeader(input.path)}\n${summaryLine}${tagLine}\nTranscript:\n${input.transcript}`,
+    content: `${documentHeader("raw", input.path)}\n${summaryLine}${tagLine}\nTranscript:\n${input.transcript}`,
     contextPrefix: `Raw footage file ${input.name}`,
   };
-}
-
-function footageHeader(path: string): string {
-  return `[Footage ${path}]`;
 }
 
 /**
@@ -272,18 +271,21 @@ function footageHeader(path: string): string {
  *
  * The transcript lives only in the document, so a move rewrites the header
  * rather than rebuilding from parts. Returns null for a body without the
- * header this module writes — one it cannot rewrite without guessing.
+ * header this module writes for that kind — one it cannot rewrite without
+ * guessing. A move that changes the kind is not a relocation: the clip is
+ * analysed afresh as the other kind.
  */
 export function relocateFootageDocument(
   content: string,
   to: { name: string; path: string },
+  kind: FootageKind = "raw",
 ): { title: string; content: string; contextPrefix: string } | null {
   const newline = content.indexOf("\n");
-  if (newline === -1 || !/^\[Footage .*\]$/.test(content.slice(0, newline))) return null;
+  const label = kind === "finished-ad" ? "Finished ad" : "Footage";
+  if (newline === -1 || !new RegExp(`^\\[${label} .*\\]$`).test(content.slice(0, newline))) return null;
   return {
-    title: `Footage: ${to.name}`,
-    content: `${footageHeader(to.path)}${content.slice(newline)}`,
-    contextPrefix: `Raw footage file ${to.name}`,
+    ...documentLabels(kind, to.name),
+    content: `${documentHeader(kind, to.path)}${content.slice(newline)}`,
   };
 }
 

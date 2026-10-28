@@ -15,7 +15,7 @@ const file = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, kind: "raw", ...over,
 });
 
 describe("isTranscribableMedia", () => {

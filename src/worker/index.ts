@@ -393,6 +393,8 @@ async function main() {
           `${result.moved} moved, ${result.removed} removed` +
           (result.adopted > 0 ? `, ${result.adopted} matched to their Dropbox file ID` : "") +
           (result.exhausted > 0 ? `, ${result.exhausted} failed earlier and are no longer retried` : "") +
+          (result.finishedAds > 0 ? `, ${result.finishedAds} finished ads` : "") +
+          (result.reclassified > 0 ? `, ${result.reclassified} analysed again after moving across Finished Ads` : "") +
           (result.timingsRecovered > 0 ? `, ${result.timingsRecovered} given word timings from AssemblyAI` : "") +
           (result.timingsRetranscribed > 0 ? `, ${result.timingsRetranscribed} transcribed again for word timings` : "") +
           (result.embedded > 0 ? `, ${result.embedded} embedded` : "") +
@@ -1500,6 +1502,12 @@ async function main() {
       if (result.adopted > 0) lines.push(`• ${result.adopted} older clips matched to their Dropbox file`);
       if (result.failed > 0 || result.errors.length > 0) {
         lines.push(`• ${result.failed} failed`, ...result.errors.slice(0, 10).map((e) => `  – ${e}`));
+      }
+      if (result.finishedAds > 0) {
+        lines.push(
+          `• ${result.finishedAds} of them are finished ads` +
+            (result.reclassified > 0 ? ` (${result.reclassified} re-read after moving into or out of Finished Ads)` : ""),
+        );
       }
       if (result.timingsRecovered > 0 || result.timingsRetranscribed > 0) {
         lines.push(

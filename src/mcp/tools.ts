@@ -90,6 +90,8 @@ import {
   getFootageCoverage,
   listFootage,
   getFootageTags,
+  getFinishedAdUsage,
+  listFinishedAds,
 } from "@/domain/footage/queries";
 import {
   getKbCoverage,
@@ -1112,7 +1114,8 @@ const footageTool: McpTool = {
   name: "footage",
   title: "Raw footage in Dropbox",
   description:
-    "Video and audio in Dropbox /RAD/Footage, with what was said in each clip and the tags derived from it. Filter by tag or by transcription status, or call with no arguments for the tag vocabulary and the coverage.\n" +
+    "Raw video and audio in Dropbox /RAD/Footage, with what was said in each clip and the tags derived from it. Filter by tag or by transcription status, or call with no arguments for the tag vocabulary and the coverage.\n" +
+    "Finished, edited ads in /RAD/Footage/Finished Ads are NOT included here — they are material that has already been used, not material to cut. Use finished_ads for them.\n" +
     "IMPORTANT: tags come from the TRANSCRIPT, not from the picture. A clip with `no-audio` is silent b-roll — it is known, listed, and untagged because there are no words to tag it from, NOT because anything failed. Tagging silent footage needs frame extraction and vision, which is not built (#13).\n" +
     "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`.\n" +
     "Pages hold at most 100 clips. When `nextOffset` is not null there are more: call again with `offset` set to it until it is null, rather than reconstructing the library from tag searches.",
@@ -1160,6 +1163,64 @@ const footageTool: McpTool = {
       clips: rows.map((r) => ({
         ...r,
         sizeMb: Math.round((r.sizeBytes / 1_048_576) * 10) / 10,
+      })),
+    };
+  },
+};
+
+const finishedAdsTool: McpTool = {
+  name: "finished_ads",
+  title: "Finished ads already made",
+  description:
+    "The edited ad videos exported to Dropbox /RAD/Footage/Finished Ads, each with the hook, angle, product, call to action and format read from what is said in it, plus its transcript. `usage` tallies the angles, products and formats used across every ad. Check it before suggesting new ads, so a suggestion is new rather than a repeat, and so a hook that has already run is not offered as untried.\n" +
+    "IMPORTANT: the analysis reads the ad's SPEECH. It cannot see the picture. A hook or offer that appears only as on-screen text is invisible to it, so a null `hook` means none was spoken — NOT that the ad has no hook. A `no-audio` ad (music and on-screen text) is listed with no analysis at all for the same reason.\n" +
+    "These ads are not linked to Meta results: this says what has been made, not how it performed. For performance use ads_creative_performance, and do not attribute a result to an ad here by guessing which Meta ad it became.\n" +
+    "Filter by `angle`, `product` or `format` (whole value, case-insensitive). Pages hold at most 100 ads; when `nextOffset` is not null, call again with `offset` set to it.",
+  readOnly: true,
+  schema: {
+    angle: { type: "string" },
+    product: { type: "string" },
+    format: { type: "string" },
+    limit: { type: "integer", min: 1, max: 100, default: 25 },
+    offset: { type: "integer", min: 0, default: 0 },
+  },
+  async run(ctx, args) {
+    const [usage, { rows, matched, nextOffset }] = await Promise.all([
+      getFinishedAdUsage(ctx.db),
+      listFinishedAds(ctx.db, {
+        angle: typeof args.angle === "string" ? args.angle : undefined,
+        product: typeof args.product === "string" ? args.product : undefined,
+        format: typeof args.format === "string" ? args.format : undefined,
+        limit: args.limit as number,
+        offset: args.offset as number,
+      }),
+    ]);
+    const total = usage.analysed + usage.silent + usage.failed + usage.pending;
+    if (total === 0) {
+      return {
+        usage,
+        note:
+          "No finished ads recorded. That is an empty Finished Ads folder or a footage sync that has not run since it was added — check data_freshness for sync:footage before reading it as no ads having been made.",
+      };
+    }
+    return {
+      usage: {
+        ...usage,
+        total,
+        note:
+          usage.silent > 0
+            ? `${usage.silent} of ${total} ads have no speech, so nothing could be read from them — their hooks, angles and products are absent from these tallies, not zero.`
+            : undefined,
+      },
+      filter: { angle: args.angle ?? null, product: args.product ?? null, format: args.format ?? null },
+      matched,
+      returned: rows.length,
+      offset: args.offset,
+      nextOffset,
+      ads: rows.map((r) => ({
+        ...r,
+        durationSeconds: r.durationMs === null ? null : Math.round(r.durationMs / 100) / 10,
+        durationMs: undefined,
       })),
     };
   },
@@ -3331,6 +3392,7 @@ export const ALL_TOOLS: McpTool[] = [
   productSeoAudit,
   productSearchPerformance,
   footageTool,
+  finishedAdsTool,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

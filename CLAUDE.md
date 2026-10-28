@@ -431,7 +431,18 @@ transcribed before words were kept get them back from AssemblyAI, which holds
 every transcript, by matching the stored text; only a clip with no confident
 match is transcribed again, and only after every transcript was read. A footage
 document stored without an embedding is embedded on the next run, not left
-unsearchable. **Playwright** has no wrapper
+unsearchable.
+
+**Finished ads are not footage.** Edited ads exported to
+`/RAD/Footage/Finished Ads` sync with everything else but are recorded as
+`kind = 'finished-ad'`, analysed for hook, angle, product, call to action and
+format (`finished-ads.ts`), filed under knowledge base category `finished-ad`
+rather than `footage`, and served by the `finished_ads` MCP tool — the
+`footage` tool excludes them. Without the split an agent counts a hook that
+already ran as one still available. A clip moved across that folder is
+transcribed and analysed again as the other kind. The analysis reads speech
+only, so a hook that is on-screen text is recorded as null, and nothing yet
+links an ad file to its Meta results. **Playwright** has no wrapper
 module; it is used directly by `integrations/attentive-agent.ts` and
 `domain/email/renderer.ts`.
 

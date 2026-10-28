@@ -3,6 +3,7 @@ import { syncFootage } from "@/domain/footage/sync";
 import { footageDocument, type StoredFootage } from "@/domain/footage/footage";
 import { footage, kbDocuments } from "@/db/schema";
 import { MAX_TRANSCRIPTION_ATTEMPTS } from "@/domain/social/transcription";
+import { AD_ANALYSIS_INSTRUCTION, finishedAdDocument } from "@/domain/footage/finished-ads";
 import { createMockDropboxClient } from "../../mocks/dropbox";
 import type { DropboxFileEntry } from "@/integrations/dropbox";
 
@@ -13,7 +14,7 @@ const entry = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({
   dropboxId: "id:clip", path: "/rad/footage/clip.mp4", rev: "r1", contentHash: "h1",
-  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, ...over,
+  transcriptionStatus: "ok", transcriptionAttempts: 1, transcriptionDetail: null, hasWords: true, kind: "raw", ...over,
 });
 
 interface KbRow { id?: number; sourceFile: string; content: string; embedding?: number[] | null }
@@ -468,6 +469,102 @@ describe("syncFootage", () => {
         dropbox, db, rootPath: "/RAD/Footage", transcriber: { transcribe: vi.fn() } as never,
       });
       expect(result).toMatchObject({ embedded: 0, unembedded: 1 });
+    });
+  });
+
+  describe("finished ads", () => {
+    const ad = (over: Partial<DropboxFileEntry> = {}) => entry({
+      id: "id:ad", path: "/RAD/Footage/Finished Ads/Sunday.mp4", name: "Sunday.mp4", ...over,
+    });
+    const analysis = JSON.stringify({
+      summary: "A teacher's Sunday", tags: ["teacher"], hook: "Sunday nights used to take me three hours.",
+      angle: "time saving", product: "Teacher Planner", callToAction: "Shop now", format: "testimonial",
+    });
+    const transcriber = () => ({
+      transcribe: vi.fn().mockResolvedValue({ id: "t", status: "completed", text: "Sunday nights used to take me three hours.", words: [] }),
+    });
+
+    it("analyses a finished ad for its hook and angle and files it apart from footage", async () => {
+      const { db, inserted } = fakeDb();
+      const generate = vi.fn().mockResolvedValue({ text: analysis });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([ad()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: transcriber() as never, anthropic: { generate } as never,
+      });
+
+      expect(generate.mock.calls[0][0]).toContain(AD_ANALYSIS_INSTRUCTION);
+      expect(result).toMatchObject({ finishedAds: 1, tagged: 1 });
+      expect(inserted.find((v) => "transcriptionAttempts" in v)).toMatchObject({
+        kind: "finished-ad", adHook: "Sunday nights used to take me three hours.", adAngle: "time saving",
+        adProduct: "Teacher Planner", adCallToAction: "Shop now", adFormat: "testimonial",
+        tags: ["teacher"], summary: "A teacher's Sunday",
+      });
+      const doc = inserted.find((v) => "category" in v)!;
+      expect(doc.category).toBe("finished-ad");
+      expect(doc.title).toBe("Finished ad: Sunday.mp4");
+    });
+
+    it("tags raw footage as it always has, with no ad fields", async () => {
+      const { db, inserted } = fakeDb();
+      const generate = vi.fn().mockResolvedValue({ text: '{"summary":"s","tags":["planner"]}' });
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: transcriber() as never, anthropic: { generate } as never,
+      });
+
+      expect(generate.mock.calls[0][0]).not.toContain(AD_ANALYSIS_INSTRUCTION);
+      expect(result.finishedAds).toBe(0);
+      expect(inserted.find((v) => "transcriptionAttempts" in v)).toMatchObject({ kind: "raw", adHook: null, adAngle: null });
+      expect(inserted.find((v) => "category" in v)!.category).toBe("footage");
+    });
+
+    // A clip moved into Finished Ads was raw footage when it was analysed, so
+    // it has topic tags and no hook. A relocation would keep it that way.
+    it("analyses a clip again when it moves into Finished Ads", async () => {
+      const { db, inserted } = fakeDb({ footage: [stored({ dropboxId: "id:ad", path: "/rad/footage/sunday.mp4" })] });
+      const t = transcriber();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([ad()]) });
+      const result = await syncFootage({
+        dropbox, db, rootPath: "/RAD/Footage", transcriber: t as never,
+        anthropic: { generate: vi.fn().mockResolvedValue({ text: analysis }) } as never,
+      });
+
+      expect(t.transcribe).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ reclassified: 1, moved: 0 });
+      expect(inserted.find((v) => "category" in v)!.category).toBe("finished-ad");
+    });
+
+    it("analyses a clip again as footage when it moves out of Finished Ads", async () => {
+      const { db, inserted } = fakeDb({
+        footage: [stored({ dropboxId: "id:clip", path: "/rad/footage/finished ads/clip.mp4", kind: "finished-ad" })],
+      });
+      const t = transcriber();
+      const dropbox = createMockDropboxClient({ listFolder: vi.fn().mockResolvedValue([entry()]) });
+      const result = await syncFootage({ dropbox, db, rootPath: "/RAD/Footage", transcriber: t as never });
+
+      expect(t.transcribe).toHaveBeenCalledOnce();
+      expect(result.reclassified).toBe(1);
+      expect(inserted.find((v) => "transcriptionAttempts" in v)).toMatchObject({ kind: "raw" });
+    });
+
+    it("relocates a finished ad moved within Finished Ads without analysing it again", async () => {
+      const doc = finishedAdDocument({
+        name: "Sunday.mp4", path: "/rad/footage/finished ads/sunday.mp4", analysis: null, transcript: "Hi.",
+      });
+      const { db, updates } = fakeDb({
+        footage: [stored({ dropboxId: "id:ad", path: "/rad/footage/finished ads/sunday.mp4", kind: "finished-ad" })],
+        kb: [{ sourceFile: "footage:id:ad", content: doc.content, embedding: [0.1] }],
+      });
+      const t = transcriber();
+      const dropbox = createMockDropboxClient({
+        listFolder: vi.fn().mockResolvedValue([ad({ path: "/RAD/Footage/Finished Ads/2026/Sunday.mp4" })]),
+      });
+      const result = await syncFootage({ dropbox, db, rootPath: "/RAD/Footage", transcriber: t as never });
+
+      expect(t.transcribe).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ moved: 1, reclassified: 0 });
+      expect(String(updates.find((u) => u.table === kbDocuments)?.set.content))
+        .toContain("[Finished ad /rad/footage/finished ads/2026/sunday.mp4]");
     });
   });
 });
