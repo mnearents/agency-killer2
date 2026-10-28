@@ -36,6 +36,16 @@ describe("getPhase1Tasks: task definitions", () => {
     expect(sealSchedule.minute).toBeGreaterThan(shopifySchedule.minute ?? 0);
   });
 
+  // The fraud watch. Every three hours, so a hijacked account is noticed the
+  // same morning rather than at the next daily sync.
+  it("includes the Meta ad account watch (every 3 hours)", () => {
+    const watch = getPhase1Tasks().find((t) => t.id === "meta-watch");
+    expect(watch).toBeDefined();
+    expect(watch!.schedule).toEqual({ type: "interval", hours: 3 });
+    expect(watch!.enabled).toBe(true);
+    expect(getTaskHandlerMap()["meta-watch"]).toBe("watch:meta");
+  });
+
   it("includes KB sync from Dropbox (every 6 hours)", () => {
     const tasks = getPhase1Tasks();
     const kb = tasks.find((t) => t.id === "kb-sync");

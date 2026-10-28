@@ -41,6 +41,48 @@ export const metaCampaigns = pgTable("meta_campaigns", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The ad account watch's last snapshot: the account and every
+ * campaign, ad set and ad, with the fields it compares. Replaced whole on each
+ * check that reported what it found. Separate from meta_campaigns, which the
+ * daily sync owns and which keeps neither ads' creatives nor updated_time.
+ */
+export const metaWatchObjects = pgTable("meta_watch_objects", {
+  id: text("id").primaryKey(), // Meta's object ID
+  level: text("level").notNull(), // account | campaign | adset | ad
+  name: text("name").notNull(),
+  campaignId: text("campaign_id"),
+  adsetId: text("adset_id"),
+  status: text("status"),
+  effectiveStatus: text("effective_status"),
+  dailyBudgetCents: bigint("daily_budget_cents", { mode: "number" }),
+  lifetimeBudgetCents: bigint("lifetime_budget_cents", { mode: "number" }),
+  bidStrategy: text("bid_strategy"),
+  spendCapCents: bigint("spend_cap_cents", { mode: "number" }),
+  creativeId: text("creative_id"),
+  createdTime: text("created_time"),
+  updatedTime: text("updated_time"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+});
+
+/** Every change the watch reported, newest last. Append-only. */
+export const metaWatchChanges = pgTable(
+  "meta_watch_changes",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull(),
+    kind: text("kind").notNull(), // created | removed | changed | edited
+    level: text("level").notNull(),
+    objectId: text("object_id").notNull(),
+    objectName: text("object_name").notNull(),
+    campaignId: text("campaign_id"),
+    field: text("field"),
+    before: text("before"),
+    after: text("after"),
+  },
+  (table) => [index("meta_watch_changes_detected_idx").on(table.detectedAt)]
+);
+
 export const metaAdSets = pgTable("meta_adsets", {
   id: text("id").primaryKey(), // Meta's adset ID
   campaignId: text("campaign_id")

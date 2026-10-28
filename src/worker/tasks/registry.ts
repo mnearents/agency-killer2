@@ -112,6 +112,14 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "meta-watch",
+      name: "Meta Ad Account Watch",
+      // Fraud watch. Also runs once at worker startup, so a deploy never
+      // leaves a gap longer than this interval.
+      schedule: { type: "interval", hours: 3 },
+      enabled: true,
+    },
+    {
       id: "kb-sync",
       name: "Knowledge Base Sync",
       schedule: { type: "interval", hours: 6 },
@@ -147,6 +155,7 @@ export function getPhase1Tasks(): TaskDefinition[] {
 export function getTaskHandlerMap(): Record<string, string> {
   return {
     "meta-sync": "sync:meta",
+    "meta-watch": "watch:meta",
     "shopify-sync": "sync:shopify",
     "seal-sync": "sync:seal",
     "customers-sync": "sync:customers",

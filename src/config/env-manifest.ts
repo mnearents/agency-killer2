@@ -91,6 +91,19 @@ export const ENV_MANIFEST: EnvVariable[] = [
       "The Meta sync runs and writes nothing — this is one of the three that shipped inert. `meta_insights` sits empty while the task logs a clean skip.",
   },
   {
+    name: "HEALTHCHECKS_META_WATCH_URL",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact:
+      "The ad account watch still runs, but nothing notices if it stops — a revoked token or a dead worker goes unreported. The healthchecks.io ping URL for that check.",
+  },
+  {
+    name: "META_WATCH_SLACK_CHANNEL",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Ad account change alerts go to SLACK_REPORT_CHANNEL instead. With neither set, a change fails the watch rather than going unreported.",
+  },
+  {
     name: "INSTAGRAM_BUSINESS_ACCOUNT_ID",
     surfaces: ["worker"],
     severity: "degraded",

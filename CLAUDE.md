@@ -124,6 +124,29 @@ run says so **before** reusing it rather than after a 2FA prompt ten minutes
 later. If a fresh login still yields nothing usable, that is reported as an
 error on the run instead of being discovered next time.
 
+### Ad account watch (fraud)
+
+`watch:meta` reads the Meta ad account — account, campaigns, ad sets, ads —
+every three hours **and once at worker startup**, compares it with the last
+snapshot (`meta_watch_objects`) and posts anything new, gone or edited to
+`META_WATCH_SLACK_CHANNEL` (else `SLACK_REPORT_CHANNEL`). Changes are kept in
+`meta_watch_changes`; `/meta/watch` shows active campaigns, daily budgets and
+active ads; `!ads watch` runs it now. Logic is `domain/meta/watch.ts` (pure)
+and `run-watch.ts`.
+
+- **Delivery status is never compared** — it is Meta's state, not an edit, and
+  an alert that fires when an ad enters review is ignored on the day it matters.
+  An edit to anything untracked (targeting, placements) is caught by
+  `updated_time` moving.
+- **The snapshot advances only once the alert is delivered.** Saving first
+  would make an undelivered change invisible to every later comparison.
+- **healthchecks.io (`HEALTHCHECKS_META_WATCH_URL`) is pinged on every
+  outcome**, and fails on a token Meta refuses, a missing token or account ID,
+  or changes with nowhere to send them. Startup runs the check so a deploy
+  never stretches the gap past three hours.
+- Who made a change comes from Meta's activity log when the token can read it;
+  when it cannot, the alert says the author is unknown rather than omitting it.
+
 ### 3PL cost data — three files, none of them sufficient alone
 
 Fulfilment is Evobox (Lehi, UT), running ShipHero. Cost of delivery for the
@@ -377,6 +400,7 @@ src/
 │   ├── search-console.ts   # Google Search Console
 │   ├── shopify-analytics.ts # ShopifyQL (sessions)
 │   ├── instagram-api.ts    # Organic IG/FB
+│   ├── healthchecks.ts     # healthchecks.io heartbeat for the ad account watch
 │   ├── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 │   └── attentive-agent.ts  # Playwright scrape of Attentive reports (no API)
 ├── ai/                     # LLM orchestration layer

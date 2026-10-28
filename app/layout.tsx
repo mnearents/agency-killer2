@@ -38,6 +38,9 @@ export default function RootLayout({
           <a href="/meta" style={{ color: "#666", textDecoration: "none" }}>
             Meta Ads
           </a>
+          <a href="/meta/watch" style={{ color: "#666", textDecoration: "none" }}>
+            Ad Watch
+          </a>
           <a href="/shopify" style={{ color: "#666", textDecoration: "none" }}>
             Shopify
           </a>

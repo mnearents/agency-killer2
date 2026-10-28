@@ -52,6 +52,9 @@ import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { syncFootage, type SyncFootageResult } from "@/domain/footage/sync";
+import { runMetaWatch, type MetaWatchResult } from "@/domain/meta/run-watch";
+import { createWatchStore, META_WATCH_TASK } from "@/domain/meta/watch-store";
+import { createHeartbeat } from "@/integrations/healthchecks";
 import { syncProducts } from "@/domain/shopify/product-sync";
 import { embedChunks } from "@/domain/knowledge/embedding";
 import { storeChunks, getExistingHashes } from "@/domain/knowledge/storage";
@@ -361,6 +364,47 @@ async function main() {
       },
       run,
     ).then(() => undefined);
+
+  /**
+   * The ad account watch (fraud), shared by the 3-hour schedule, the run at
+   * startup and `!ads watch`. Pings healthchecks.io on every outcome — a
+   * missing token or account fails it too, because then nobody is watching.
+   * Throws whatever the watch throws, after recording it.
+   */
+  const metaWatchHeartbeat = createHeartbeat(getEnvOptional("HEALTHCHECKS_META_WATCH_URL"));
+  const metaWatchChannel = getEnvOptional("META_WATCH_SLACK_CHANNEL") ?? slackReportChannel;
+  const runMetaWatchTask = async (): Promise<MetaWatchResult | null> => {
+    let outcome: MetaWatchResult | null = null;
+    await recorded(META_WATCH_TASK, async () => {
+      if (!metaClient || !metaAccountId) {
+        const missing = !metaClient ? "META_ACCESS_TOKEN" : "META_AD_ACCOUNT_ID";
+        console.error(`[watch:meta] Not watching — ${missing} not set`);
+        await metaWatchHeartbeat.fail(`Not watching the ad account: ${missing} not set`);
+        return { configured: false, rowsWritten: 0 };
+      }
+      if (!metaWatchHeartbeat.configured) {
+        console.error("[watch:meta] HEALTHCHECKS_META_WATCH_URL not set — nothing will notice if this watch stops");
+      }
+      const channel = metaWatchChannel;
+      const result = await runMetaWatch({
+        client: metaClient,
+        accountId: metaAccountId,
+        store: createWatchStore(db),
+        heartbeat: metaWatchHeartbeat,
+        // Read at call time: Slack connects after the scheduler starts.
+        notify: channel && postToSlack ? (text) => postToSlack!(channel, text) : undefined,
+        now: () => new Date(),
+      });
+      outcome = result;
+      console.log(
+        `[watch:meta] ${result.outcome === "baseline" ? "Baseline recorded" : result.outcome === "alerted" ? `${result.changes} change(s) alerted to ${channel}` : "No changes"} — ` +
+          `${result.summary.campaigns.length} active campaign(s), ` +
+          `$${(result.summary.totalDailyBudgetCents / 100).toFixed(2)}/day, heartbeat ${metaWatchHeartbeat.configured ? "pinged" : "NOT configured"}`,
+      );
+      return { configured: true, rowsWritten: result.objects };
+    });
+    return outcome;
+  };
 
   /**
    * The footage sync, shared by the 14:10 cron and `!sync footage` so both run
@@ -716,6 +760,10 @@ async function main() {
       await runFootageSync();
     },
 
+    "watch:meta": async () => {
+      await runMetaWatchTask();
+    },
+
     "sync:social": async () =>
       recorded("sync:social", async () => {
         if (!igClient || !igUserId) {
@@ -961,6 +1009,34 @@ async function main() {
 
   // ─── Start Slack bot ────────────────────────────────────────────────
   const slackHandlers: Record<string, (args: string) => Promise<SlackResponse>> = {
+    "watch:meta": async () => {
+      let result: MetaWatchResult | null;
+      try {
+        result = await runMetaWatchTask();
+      } catch (err) {
+        return {
+          text: `Ad account check failed — the account could not be checked: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        };
+      }
+      if (!result) {
+        return { text: "Ad account check unavailable — META_ACCESS_TOKEN or META_AD_ACCOUNT_ID not set.", isError: true };
+      }
+      const headline = result.outcome === "baseline"
+        ? "First check — recorded the account as it is now. Changes from here on will be reported."
+        : result.outcome === "alerted"
+          ? `${result.changes} change(s) found — posted above.`
+          : "No changes since the last check.";
+      const budget = (c: (typeof result.summary.campaigns)[number]) =>
+        c.dailyBudgetCents !== null ? `$${(c.dailyBudgetCents / 100).toFixed(2)}/day` : c.budgetSource;
+      return {
+        text: `*Ad account check*\n${headline}\n` +
+          `${result.summary.campaigns.length} active campaign(s), $${(result.summary.totalDailyBudgetCents / 100).toFixed(2)}/day in total:\n` +
+          result.summary.campaigns.map((c) => `• ${c.name} — ${budget(c)}, ${c.activeAds} active ad(s)`).join("\n"),
+        isError: false,
+      };
+    },
+
     "meta:analysis": async () => {
       if (!orchestrator) {
         return { text: "AI responses unavailable — ANTHROPIC_API_KEY not set.", isError: true };
@@ -1744,6 +1820,12 @@ async function main() {
   }
 
   console.log("[worker] Ready.");
+
+  // Check the ad account now rather than three hours from now, so a deploy
+  // proves the token still reads it and leaves no gap in the heartbeat.
+  runMetaWatchTask().catch((err) => {
+    console.error("[watch:meta] Startup check failed:", err instanceof Error ? err.message : err);
+  });
 }
 
 main().catch((err) => {

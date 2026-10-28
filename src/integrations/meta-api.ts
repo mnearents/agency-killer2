@@ -5,6 +5,8 @@
  * API docs: https://developers.facebook.com/docs/marketing-api
  */
 
+import type { WatchSnapshotRaw, ActivityEvent } from "@/domain/meta/watch";
+
 const GRAPH_API_VERSION = "v21.0";
 const GRAPH_API_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
@@ -160,6 +162,15 @@ export interface MetaApiInsight {
 }
 
 export interface MetaApiClient {
+  /**
+   * The account and every campaign, ad set and ad, with the fields the ad
+   * account watch compares. Throws if any page fails: the watch reports what
+   * is missing from a listing as removed, so a partial one would be false
+   * alarms.
+   */
+  getWatchSnapshot(accountId: string): Promise<WatchSnapshotRaw>;
+  /** The account's activity log since a time — who changed what. */
+  getActivities(accountId: string, since: Date): Promise<ActivityEvent[]>;
   getCampaigns(accountId: string): Promise<MetaApiCampaign[]>;
   getAdSets(accountId: string): Promise<MetaApiAdSet[]>;
   getAds(accountId: string): Promise<MetaApiAd[]>;
@@ -170,6 +181,14 @@ export interface MetaApiClient {
     endDate: string
   ): Promise<MetaApiInsight[]>;
 }
+
+const WATCH_ACCOUNT_FIELDS = "id,name,account_status,spend_cap";
+const WATCH_CAMPAIGN_FIELDS =
+  "id,name,status,effective_status,daily_budget,lifetime_budget,bid_strategy,spend_cap,created_time,updated_time";
+const WATCH_ADSET_FIELDS =
+  "id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget,bid_strategy,created_time,updated_time";
+const WATCH_AD_FIELDS =
+  "id,name,campaign_id,adset_id,status,effective_status,creative{id},created_time,updated_time";
 
 const CAMPAIGN_FIELDS = [
   "id", "name", "status", "objective", "buying_type",
@@ -237,6 +256,39 @@ export function createMetaApiClient(accessToken: string): MetaApiClient {
   }
 
   return {
+    async getWatchSnapshot(accountId) {
+      const accountResponse = await fetch(buildUrl(accountId, { fields: WATCH_ACCOUNT_FIELDS }));
+      if (!accountResponse.ok) {
+        throw MetaApiError.fromResponseBody(await accountResponse.text(), accountResponse.status);
+      }
+      const account = (await accountResponse.json()) as WatchSnapshotRaw["account"];
+      const [campaigns, adsets, ads] = await Promise.all([
+        fetchAllPages<WatchSnapshotRaw["campaigns"][number]>(
+          buildUrl(`${accountId}/campaigns`, { fields: WATCH_CAMPAIGN_FIELDS, limit: "500" })),
+        fetchAllPages<WatchSnapshotRaw["adsets"][number]>(
+          buildUrl(`${accountId}/adsets`, { fields: WATCH_ADSET_FIELDS, limit: "500" })),
+        fetchAllPages<WatchSnapshotRaw["ads"][number]>(
+          buildUrl(`${accountId}/ads`, { fields: WATCH_AD_FIELDS, limit: "500" })),
+      ]);
+      return { account, campaigns, adsets, ads };
+    },
+
+    async getActivities(accountId, since) {
+      const rows = await fetchAllPages<{
+        object_id?: string; actor_name?: string; event_type: string; event_time: string;
+      }>(buildUrl(`${accountId}/activities`, {
+        fields: "object_id,actor_name,event_type,event_time",
+        since: String(Math.floor(since.getTime() / 1000)),
+        limit: "500",
+      }));
+      return rows.map((r) => ({
+        objectId: r.object_id ?? null,
+        actorName: r.actor_name ?? null,
+        eventType: r.event_type,
+        eventTime: r.event_time,
+      }));
+    },
+
     async getCampaigns(accountId) {
       const url = buildUrl(`${accountId}/campaigns`, {
         fields: CAMPAIGN_FIELDS,

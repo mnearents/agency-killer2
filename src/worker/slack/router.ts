@@ -91,6 +91,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
   ads: {
     report: "meta:analysis",
     status: "meta:status",
+    watch: "watch:meta",
     "": "meta:overview",
   },
   email: {

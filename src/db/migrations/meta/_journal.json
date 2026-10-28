@@ -337,6 +337,13 @@
       "when": 1793205219528,
       "tag": "0047_fine_gorgon",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1793206713656,
+      "tag": "0048_sparkling_richard_fisk",
+      "breakpoints": true
     }
   ]
 }

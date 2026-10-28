@@ -157,6 +157,7 @@ When the user asks a question:
               "*Available commands:*",
               "• `!ads report` — AI-generated performance analysis",
               "• `!ads status` — Quick campaign metrics",
+              "• `!ads watch` — Check the ad account for new campaigns, edits and budget changes now",
               "• `!email design <brief>` — Generate email creative",
               "• `!blog create <topic>` — Generate a blog article",
               "• `!blog list` — List pending blog topics",
