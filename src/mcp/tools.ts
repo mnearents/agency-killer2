@@ -93,6 +93,7 @@ import {
   getFinishedAdUsage,
   listFinishedAds,
 } from "@/domain/footage/queries";
+import { findTranscriptClips, footageTranscriptResult } from "@/domain/footage/transcript";
 import {
   getKbCoverage,
   searchKbByVector,
@@ -1117,7 +1118,7 @@ const footageTool: McpTool = {
     "Raw video and audio in Dropbox /RAD/Footage, with what was said in each clip and the tags derived from it. Filter by tag or by transcription status, or call with no arguments for the tag vocabulary and the coverage.\n" +
     "Finished, edited ads in /RAD/Footage/Finished Ads are NOT included here — they are material that has already been used, not material to cut. Use finished_ads for them.\n" +
     "IMPORTANT: tags come from the TRANSCRIPT, not from the picture. A clip with `no-audio` is silent b-roll — it is known, listed, and untagged because there are no words to tag it from, NOT because anything failed. Tagging silent footage needs frame extraction and vision, which is not built (#13).\n" +
-    "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`.\n" +
+    "To find a clip by what was said in it, use kb_search — footage transcripts are in the knowledge base under category `footage`. For when each thing was said in a clip, pass its `id` to footage_transcript.\n" +
     "Pages hold at most 100 clips. When `nextOffset` is not null there are more: call again with `offset` set to it until it is null, rather than reconstructing the library from tag searches.",
   readOnly: true,
   schema: {
@@ -1175,7 +1176,7 @@ const finishedAdsTool: McpTool = {
     "The edited ad videos exported to Dropbox /RAD/Footage/Finished Ads, each with the hook, angle, product, call to action and format read from what is said in it, plus its transcript. `usage` tallies the angles, products and formats used across every ad. Check it before suggesting new ads, so a suggestion is new rather than a repeat, and so a hook that has already run is not offered as untried.\n" +
     "IMPORTANT: the analysis reads the ad's SPEECH. It cannot see the picture. A hook or offer that appears only as on-screen text is invisible to it, so a null `hook` means none was spoken — NOT that the ad has no hook. A `no-audio` ad (music and on-screen text) is listed with no analysis at all for the same reason.\n" +
     "These ads are not linked to Meta results: this says what has been made, not how it performed. For performance use ads_creative_performance, and do not attribute a result to an ad here by guessing which Meta ad it became.\n" +
-    "Filter by `angle`, `product` or `format` (whole value, case-insensitive). Pages hold at most 100 ads; when `nextOffset` is not null, call again with `offset` set to it.",
+    "Filter by `angle`, `product` or `format` (whole value, case-insensitive). Pages hold at most 100 ads; when `nextOffset` is not null, call again with `offset` set to it. For when each line is said in an ad, pass its `id` to footage_transcript.",
   readOnly: true,
   schema: {
     angle: { type: "string" },
@@ -1223,6 +1224,31 @@ const finishedAdsTool: McpTool = {
         durationMs: undefined,
       })),
     };
+  },
+};
+
+const footageTranscriptTool: McpTool = {
+  name: "footage_transcript",
+  title: "Timed transcript of one clip",
+  description:
+    "What was said in one clip and exactly when, for choosing cuts. Takes the clip's `id` (preferred) or `path`, as returned by footage (raw clips) or finished_ads (finished ads) — exactly one of them.\n" +
+    "Returns `segments`, each with `startMs`, `endMs`, `text`, `gapBeforeMs` (silence before it) and `minConfidence` (its least certain word). A segment ends at a sentence OR at any pause of 1.5s or more, so a mid-sentence restart or fumble is its own segment; a long `gapBeforeMs` is where a speaker paused. `trailingSilenceMs` is the room after the last word. `words: true` adds every word with its own times, for cuts finer than a segment.\n" +
+    "Times are milliseconds from the start of the file, as AssemblyAI measured them from the audio.\n" +
+    "IMPORTANT: this is the SPEECH only. Nothing here sees the picture — framing, a dropped prop or someone walking through shot are invisible to it, so a segment that reads cleanly can still be unusable. A silent clip returns `segments: []` with a note: it has no speech, not a missing transcript. `segments: null` means no timings exist, and `note` says why.",
+  readOnly: true,
+  schema: {
+    id: { type: "string" },
+    path: { type: "string" },
+    words: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const id = typeof args.id === "string" ? args.id.trim() : "";
+    const path = typeof args.path === "string" ? args.path.trim() : "";
+    if ((id === "") === (path === "")) {
+      throw new McpArgumentError("Pass exactly one of `id` or `path`.");
+    }
+    const clips = await findTranscriptClips(ctx.db, id ? { id } : { path });
+    return footageTranscriptResult(clips, { withWords: args.words === true });
   },
 };
 
@@ -3393,6 +3419,7 @@ export const ALL_TOOLS: McpTool[] = [
   productSearchPerformance,
   footageTool,
   finishedAdsTool,
+  footageTranscriptTool,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

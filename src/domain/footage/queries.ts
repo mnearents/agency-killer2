@@ -12,6 +12,8 @@ import { footage, kbDocuments } from "@/db/schema";
 import type { FootageKind } from "./finished-ads";
 
 export interface FootageSummary {
+  /** Dropbox file ID — what footage_transcript takes. */
+  id: string | null;
   path: string;
   name: string;
   sizeBytes: number;
@@ -76,6 +78,7 @@ export async function listFootage(
 
   const rows = await db
     .select({
+      id: footage.dropboxId,
       path: footage.path,
       name: footage.name,
       sizeBytes: footage.sizeBytes,
@@ -109,6 +112,8 @@ export async function getFootageTags(db: Db): Promise<{ tag: string; clips: numb
 }
 
 export interface FinishedAdSummary {
+  /** Dropbox file ID — what footage_transcript takes. */
+  id: string | null;
   path: string;
   name: string;
   hook: string | null;
@@ -188,6 +193,7 @@ export async function listFinishedAds(
 
   const rows = await db
     .select({
+      id: footage.dropboxId,
       path: footage.path,
       name: footage.name,
       hook: footage.adHook,

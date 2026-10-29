@@ -450,7 +450,10 @@ longer retried and is counted as `exhausted`, never as unchanged; `!sync footage
 retry` starts those again. A failure that was our credentials being refused
 (401/403) never counts towards the three, because it says nothing about the
 file. Each clip keeps its AssemblyAI transcript ID and **word timings**
-(`footage.words`, milliseconds) — what a cut list is made from. Clips
+(`footage.words`, milliseconds) — what a cut list is made from. The
+`footage_transcript` MCP tool serves them for one clip as segments that end
+at a sentence **or at any pause of 1.5s or more**, because a mid-sentence
+restart is exactly where an editor cuts and a sentence-only split hides it. Clips
 transcribed before words were kept get them back from AssemblyAI, which holds
 every transcript, by matching the stored text; only a clip with no confident
 match is transcribed again, and only after every transcript was read. A footage

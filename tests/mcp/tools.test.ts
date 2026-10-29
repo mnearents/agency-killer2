@@ -229,6 +229,30 @@ describe("the tool catalogue", () => {
     expect(ALL_TOOLS.find((t) => t.name === "finished_ads")!.description).toMatch(/not linked to Meta/i);
   });
 
+  // Timings were stored and nothing could read them, so a cut list could not
+  // be made from Claude Desktop.
+  it("exposes timed transcripts as a read-only surface", () => {
+    const tool = ALL_TOOLS.find((t) => t.name === "footage_transcript");
+    expect(tool, "no footage_transcript tool").toBeDefined();
+    expect(tool!.readOnly).toBe(true);
+    expect(Object.keys(tool!.schema).sort()).toEqual(["id", "path", "words"]);
+  });
+
+  // Rejected before any query, so the db stub is never touched.
+  it("requires exactly one of id and path for a transcript", async () => {
+    await expect(dispatchTool(ctx, "footage_transcript", {})).rejects.toBeInstanceOf(McpArgumentError);
+    await expect(dispatchTool(ctx, "footage_transcript", { id: "id:a", path: "/rad/footage/a.mov" }))
+      .rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  // The transcript tool is keyed by id, so the tools that list clips must
+  // hand one out.
+  it("tells the transcript tool's caller where ids come from, and the listing tools that they return one", () => {
+    expect(ALL_TOOLS.find((t) => t.name === "footage_transcript")!.description).toMatch(/footage.*finished_ads/s);
+    expect(ALL_TOOLS.find((t) => t.name === "footage")!.description).toMatch(/footage_transcript/);
+    expect(ALL_TOOLS.find((t) => t.name === "finished_ads")!.description).toMatch(/footage_transcript/);
+  });
+
   it("exposes the knowledge base surface", () => {
     const names = ALL_TOOLS.map((t) => t.name);
     expect(names).toContain("kb_search");
