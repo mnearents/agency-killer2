@@ -89,6 +89,7 @@ export interface TranscribeResult {
 const NO_AUDIO_REFUSALS = [
   /no spoken audio/i,
   /does not appear to contain audio/i,
+  /no audio stream found/i,
 ];
 
 export interface ClassifiedTranscription {

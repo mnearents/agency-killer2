@@ -141,6 +141,7 @@ describe("classifyTranscription", () => {
   it.each([
     "language_detection cannot be performed on files with no spoken audio.",
     "File does not appear to contain audio. File type is video/quicktime (QuickTime video).",
+    "No audio stream found in the file. File type is video/mp4 (ISO Media, MP4 v2 [ISO 14496-14]).",
   ])("records AssemblyAI's refusal %s as no-audio", (error) => {
     expect(classifyTranscription({ status: "error", error }))
       .toEqual({ status: "no-audio", text: null, detail: null });
