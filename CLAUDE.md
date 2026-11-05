@@ -318,7 +318,9 @@ to `src/mcp/` takes effect on the next Claude Desktop restart.
 
 #### Hosted (claude.ai connector)
 
-`src/mcp/serve.ts` runs as its own Railway service (`mcp.railway.toml`) and
+`src/mcp/serve.ts` runs as its own Railway service, `mcp` (build `pnpm install
+--frozen-lockfile`, start `pnpm mcp:hosted`, health check `/health`, set on
+the service: Railway no longer accepts a config file for new services) and
 speaks Streamable HTTP at `<MCP_PUBLIC_URL>/mcp`, so Claude Desktop, the web
 app and the phone reach it as a custom connector with nothing installed.
 
