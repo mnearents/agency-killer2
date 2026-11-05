@@ -58,6 +58,13 @@ describe("sync:attentive handler", () => {
     expect(handler![0]).toMatch(/classifyOutcome\(\{[\s\S]*?error: failures\[0\]/);
   });
 
+  // The run recorded api-error every day while the scheduler logged
+  // "attentive-sync: success", because the handler returned normally. A run
+  // that landed nothing and failed must fail the task, after the record.
+  it("fails the task, after recording, when nothing landed and the run failed", () => {
+    expect(handler![0]).toMatch(/insert\(syncRuns\)[\s\S]*if \(isFailure\(classified\.outcome\) && imported === 0\) \{\s*throw new Error\(/);
+  });
+
   // An export that failed and an import that rejected rows are both failures
   // of the sync, and folding only one into the outcome hides the other.
   it("counts import errors as failures, not only export errors", () => {

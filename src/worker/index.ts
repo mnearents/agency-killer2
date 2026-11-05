@@ -26,7 +26,7 @@ import { envChecks, syncRuns } from "@/db/schema";
 // Reused rather than re-derived: the outcome vocabulary (ok / no-data /
 // auth-failed / api-error) is about syncs, not about Meta. A non-Meta error
 // classifies as api-error, which is the right answer for a scrape failure.
-import { classifyOutcome } from "@/domain/meta/outcomes";
+import { classifyOutcome, isFailure } from "@/domain/meta/outcomes";
 import { runWithSyncRecord, type TaskOutcome } from "@/db/sync-runs";
 import { checkEnv, formatEnvCheck, toStoredVariables } from "@/config/env-manifest";
 import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
@@ -847,6 +847,11 @@ async function main() {
       console.log(`[sync:attentive] Done: ${imported} rows, outcome ${classified.outcome}`);
       if (failures.length > 0) {
         console.error("[sync:attentive] Errors:", failures);
+      }
+      // After the record, so data_freshness still says why. Without this the
+      // scheduler logged "success" every day the login failed.
+      if (isFailure(classified.outcome) && imported === 0) {
+        throw new Error(`Attentive sync landed nothing: ${failures[0] ?? classified.outcome}`);
       }
     },
 

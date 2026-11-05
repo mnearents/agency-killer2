@@ -23,6 +23,12 @@ vi.mock("@/domain/attentive/queries", async (importOriginal) => {
   };
 });
 
+// Coverage is its own concern, tested in tests/domain/attentive/coverage.test.ts.
+vi.mock("@/domain/attentive/coverage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/attentive/coverage")>()),
+  getAttentiveSyncState: vi.fn().mockResolvedValue({ dataThrough: null, lastRun: null, lastSuccessAt: null }),
+}));
+
 const NOW = new Date("2026-09-18T12:00:00Z");
 const ctx = { db: {} as never, now: () => NOW } as unknown as McpToolContext;
 

@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Db } from "@/db/client";
-import { queryLog } from "@/db/schema";
+import { queryLog, attentiveCampaigns, attentiveCampaignMessages, attentiveJourneyMessages } from "@/db/schema";
 import type { AnalyticsDb } from "./analytics-db";
 import { runQuery, describeViews, ROW_CAP, type QueryDeps } from "./query";
 import {
@@ -56,6 +56,7 @@ import {
   getJourneyMessagePerformance,
   getMessageCostTotals,
 } from "@/domain/attentive/queries";
+import { describeAttentiveCoverage, getAttentiveSyncState, ATTENTIVE_UNAVAILABLE } from "@/domain/attentive/coverage";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
 import { getInventoryItems, getPoolVariantRows } from "@/domain/inventory/queries";
 import {
@@ -554,15 +555,20 @@ const emailSmsPerformance: McpTool = {
   name: "email_sms_performance",
   title: "Email and SMS performance",
   description:
-    "Attentive email and SMS delivery, clicks, conversions, revenue and unsubscribes for a date range. This data is imported manually — check data_freshness before treating a quiet week as a real result.",
+    "Attentive email and SMS delivery, clicks, conversions, revenue and unsubscribes for a date range. Scraped daily from the Attentive UI, which needs an SMS code to log in, so it stops when nobody answers that code. `coverage` says how far the data reaches and why the sync last failed: when `coverage.current` is false, the missing days are missing, NOT quiet. `unavailable` names what Attentive cannot provide at all (scheduled sends, subscriber counts) — do not report those as zero.",
   readOnly: true,
   schema: { ...RANGE_SCHEMA },
   async run(ctx, args) {
     const range = resolveRange(args, ctx.now(), 30);
-    const s = await getAttentiveWeekSummary(ctx.db, range.startDate, range.endDate);
+    const [s, state] = await Promise.all([
+      getAttentiveWeekSummary(ctx.db, range.startDate, range.endDate),
+      getAttentiveSyncState(ctx.db, attentiveCampaigns, attentiveCampaigns.date),
+    ]);
 
     return {
       range: describeRange(range),
+      coverage: describeAttentiveCoverage(state, range.endDate),
+      unavailable: ATTENTIVE_UNAVAILABLE,
       email: {
         delivered: s.emailDelivered,
         clicks: s.emailClicks,
@@ -2842,19 +2848,22 @@ const emailCampaignDetail: McpTool = {
     "Read unsubscribes beside revenue on every row: a campaign with strong revenue and a spike in unsubscribes borrowed from future sends rather than earning anything, and on revenue alone it looks like a win worth repeating. " +
     "`bySegment` breaks the same sends out by the audience they went to; its revenue is the SAME money as `campaigns`, counted a second way, so never add the two together. " +
     "`messagingCost` is the SMS carrier cost over the window, which is a daily figure and cannot be attributed to a particular campaign. " +
-    "Scraped from the Attentive UI, not an API — check `data_freshness` before reading a quiet window as a quiet month.",
+    "Scraped from the Attentive UI, not an API. `coverage` says how far the data reaches: when `coverage.current` is false, the missing days are missing, NOT quiet. Only sent campaigns appear — scheduled ones cannot be read (see `scheduledSends`).",
   readOnly: true,
   schema: { ...RANGE_SCHEMA },
   async run(ctx, args) {
     const range = resolveRange(args, ctx.now(), 30);
-    const [campaigns, bySegment, cost] = await Promise.all([
+    const [campaigns, bySegment, cost, state] = await Promise.all([
       getCampaignMessagePerformance(ctx.db, range.startDate, range.endDate),
       getCampaignSegmentPerformance(ctx.db, range.startDate, range.endDate),
       getMessageCostTotals(ctx.db, range.startDate, range.endDate),
+      getAttentiveSyncState(ctx.db, attentiveCampaignMessages, attentiveCampaignMessages.date),
     ]);
 
     return {
       range: describeRange(range),
+      coverage: describeAttentiveCoverage(state, range.endDate),
+      scheduledSends: ATTENTIVE_UNAVAILABLE.scheduledSends,
       campaigns: campaigns.map((c) => ({
         date: c.date,
         campaign: c.campaign,
@@ -2912,15 +2921,19 @@ const emailJourneyDetail: McpTool = {
     "This is where silent ongoing loss lives: a journey runs unattended for months, and nobody re-reads a flow that was set up and left running, so a step that stopped converting keeps sending. " +
     "`sendDays` is how many days that step actually sent — a step that ran twice must not be read as one that ran all month. " +
     "Unsubscribes are per step, which is what makes 'this message is where people leave' answerable. " +
-    "Scraped from the Attentive UI, not an API.",
+    "Scraped from the Attentive UI, not an API. `coverage` says how far the data reaches: when `coverage.current` is false, the missing days are missing, NOT quiet.",
   readOnly: true,
   schema: { ...RANGE_SCHEMA },
   async run(ctx, args) {
     const range = resolveRange(args, ctx.now(), 30);
-    const rows = await getJourneyMessagePerformance(ctx.db, range.startDate, range.endDate);
+    const [rows, state] = await Promise.all([
+      getJourneyMessagePerformance(ctx.db, range.startDate, range.endDate),
+      getAttentiveSyncState(ctx.db, attentiveJourneyMessages, attentiveJourneyMessages.date),
+    ]);
 
     return {
       range: describeRange(range),
+      coverage: describeAttentiveCoverage(state, range.endDate),
       messages: rows.map((r) => ({
         journey: r.journeyName,
         trigger: r.triggerName,
@@ -3218,7 +3231,7 @@ const pilotNotesAdd: McpTool = {
   name: "pilot_notes_add",
   title: "Add a pilot note",
   description:
-    "Append an entry to the pilot notes log. This is the ONLY tool on this server that writes anything. The log is append-only: nothing can be edited or deleted, so a mistake is corrected by appending a correction. Use kind 'open' with a title to raise something new, 'comment' with a noteId to add context, and 'resolution' with a noteId to close one. Returns the noteId, which is what later entries attach to.",
+    "Append an entry to the pilot notes log. The log is append-only: nothing can be edited or deleted, so a mistake is corrected by appending a correction. Use kind 'open' with a title to raise something new, 'comment' with a noteId to add context, and 'resolution' with a noteId to close one. Returns the noteId, which is what later entries attach to.",
   readOnly: false,
   schema: {
     kind: { type: "enum", values: [...NOTE_KINDS], default: "open" },
