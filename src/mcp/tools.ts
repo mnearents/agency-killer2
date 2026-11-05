@@ -35,7 +35,7 @@ import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import { getEnvHealth, anyEnvProblem } from "@/db/env-health";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
-import { getOrderSummary, getDailyOrders, getProductSales } from "@/domain/shopify/queries";
+import { getOrderSummaryBetween, getDailyOrders, getProductSales } from "@/domain/shopify/queries";
 import {
   getSubscriptionFacts,
   getSnapshotFacts,
@@ -382,13 +382,8 @@ const storePerformance: McpTool = {
   schema: { ...RANGE_SCHEMA },
   async run(ctx, args) {
     const range = resolveRange(args, ctx.now(), 30);
-    const days = Math.max(
-      1,
-      Math.round((range.endDate.getTime() - range.startDate.getTime()) / (24 * 60 * 60 * 1000))
-    );
-
     const [summary, daily] = await Promise.all([
-      getOrderSummary(ctx.db, days),
+      getOrderSummaryBetween(ctx.db, range.startDate, range.endDate),
       getDailyOrders(ctx.db, range.startDate, range.endDate),
     ]);
 

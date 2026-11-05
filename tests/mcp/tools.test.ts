@@ -21,6 +21,12 @@ vi.mock("@/domain/shopify/queries", () => ({
     subscriptionOrders: 0,
     subscriptionRevenueCents: 0,
   }),
+  getOrderSummaryBetween: vi.fn().mockResolvedValue({
+    totalOrders: 0,
+    totalRevenueCents: 0,
+    subscriptionOrders: 0,
+    subscriptionRevenueCents: 0,
+  }),
   getDailyOrders: vi.fn().mockResolvedValue([]),
   getTopProducts: vi.fn().mockResolvedValue([]),
 }));
@@ -679,8 +685,19 @@ describe("ads_performance", () => {
 });
 
 describe("store_performance", () => {
+  // The summary was the last N days counted back from NOW, whatever window
+  // was asked for: "2025" returned Nov 2025-Nov 2026 ($430k against $235k),
+  // and any two windows of the same length returned identical totals.
+  it("totals the window it was asked for, not the last N days", async () => {
+    await dispatchTool(ctx, "store_performance", { startDate: "2025-01-01", endDate: "2025-12-31" });
+    const [, start, end] = vi.mocked(shopifyQueries.getOrderSummaryBetween).mock.calls.at(-1)!;
+    expect(start.toISOString().slice(0, 10)).toBe("2025-01-01");
+    expect(end.toISOString().slice(0, 10)).toBe("2025-12-31");
+    expect(shopifyQueries.getOrderSummary).not.toHaveBeenCalled();
+  });
+
   it("converts order revenue to dollars", async () => {
-    vi.mocked(shopifyQueries.getOrderSummary).mockResolvedValue({
+    vi.mocked(shopifyQueries.getOrderSummaryBetween).mockResolvedValue({
       totalOrders: 12,
       totalRevenueCents: 123456,
       subscriptionOrders: 3,

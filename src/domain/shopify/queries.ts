@@ -84,6 +84,36 @@ export async function getOrderSummary(
   };
 }
 
+/**
+ * Order count and revenue over an explicit window — the same bounds as
+ * getDailyOrders, so a summary and its daily rows always add up.
+ *
+ * store_performance used getOrderSummary(days), which counts back from NOW:
+ * a request for 2025 got the last 364 days instead, and two windows of equal
+ * length got identical totals.
+ */
+export async function getOrderSummaryBetween(
+  db: Db,
+  startDate: Date,
+  endDate: Date,
+): Promise<{ totalOrders: number; totalRevenueCents: number; subscriptionOrders: number; subscriptionRevenueCents: number }> {
+  const [row] = await db
+    .select({
+      totalOrders: sql<number>`COUNT(*)`,
+      totalRevenueCents: sql<number>`COALESCE(SUM(${shopifyOrders.totalPriceCents}), 0)`,
+      subscriptionOrders: sql<number>`COUNT(*) FILTER (WHERE ${shopifyOrders.isRecurring} = 1)`,
+      subscriptionRevenueCents: sql<number>`COALESCE(SUM(${shopifyOrders.totalPriceCents}) FILTER (WHERE ${shopifyOrders.isRecurring} = 1), 0)`,
+    })
+    .from(shopifyOrders)
+    .where(and(gte(shopifyOrders.orderCreatedAt, startDate), lte(shopifyOrders.orderCreatedAt, endDate)));
+  return {
+    totalOrders: Number(row?.totalOrders ?? 0),
+    totalRevenueCents: Number(row?.totalRevenueCents ?? 0),
+    subscriptionOrders: Number(row?.subscriptionOrders ?? 0),
+    subscriptionRevenueCents: Number(row?.subscriptionRevenueCents ?? 0),
+  };
+}
+
 export interface DailyOrderMetrics {
   date: string;
   orders: number;
