@@ -152,7 +152,7 @@ export const ENV_MANIFEST: EnvVariable[] = [
   },
   {
     name: "ATTENTIVE_API_KEY",
-    surfaces: ["mcp"],
+    surfaces: ["mcp", "mcp-hosted"],
     severity: "degraded",
     impact: "The segment push tools are unavailable, so no audience can be sent to Attentive.",
   },
@@ -257,6 +257,13 @@ export const ENV_MANIFEST: EnvVariable[] = [
     severity: "required",
     impact:
       "Every sign-in to the hosted MCP server is refused. Each refusal is logged with the WorkOS user ID, which is what goes here.",
+  },
+  {
+    name: "MCP_WRITE_TOOLS",
+    surfaces: ["mcp-hosted"],
+    severity: "degraded",
+    impact:
+      "The hosted MCP server serves read-only tools only: calendar, drafts, experiments, pilot notes and the segment push need the local server. Set to `on` to serve them.",
   },
   {
     name: "MCP_TOKEN_AUDIENCE",

@@ -47,8 +47,8 @@ export async function runToolCall(
 export interface McpServerOptions {
   /**
    * Offer only read-only tools, and refuse the others even when called by
-   * name. The hosted server sets this: there, nothing about reachability
-   * protects the write tools any more.
+   * name. The hosted server sets this unless MCP_WRITE_TOOLS is on: there,
+   * nothing about reachability protects the write tools.
    */
   readOnly?: boolean;
 }
@@ -75,7 +75,7 @@ export function createMcpServer(ctx: McpToolContext, options: McpServerOptions =
     const { name } = request.params;
     if (!offered.has(name) && ALL_TOOLS.some((t) => t.name === name)) {
       return {
-        content: [{ type: "text" as const, text: `Tool "${name}" changes data and is not available on the hosted server. Use the local Claude Desktop server for it.` }],
+        content: [{ type: "text" as const, text: `Tool "${name}" changes data, and this server is serving read-only tools. Write tools are switched on with MCP_WRITE_TOOLS=on.` }],
         isError: true,
       };
     }

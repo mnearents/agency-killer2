@@ -2,13 +2,11 @@
  * Hosted MCP server entry point — Streamable HTTP on Railway, for claude.ai
  * connectors (Desktop, web and phone).
  *
- * The local stdio entry point (`index.ts`) is unchanged and still the only
- * one that serves the write tools. This one serves the read-only tools to
- * people WorkOS AuthKit has signed in and MCP_ALLOWED_USERS names.
- *
- * It deliberately builds no Attentive client, whatever the environment holds:
- * the segment push is the one tool that reaches an external service, and it
- * stays on the machine that has always run it.
+ * It serves people WorkOS AuthKit has signed in and MCP_ALLOWED_USERS names.
+ * Read-only tools only, unless MCP_WRITE_TOOLS is exactly `on` — then every
+ * tool, including the segment push when ATTENTIVE_API_KEY is also set. The
+ * worker still holds no Attentive key and imports nothing from here, so no
+ * cron can push a segment whatever this service is configured to do.
  */
 
 import { createServer } from "node:http";
@@ -16,6 +14,7 @@ import { createRemoteJWKSet } from "jose";
 import { createDb } from "@/db/client";
 import { createAnalyticsDb } from "./analytics-db";
 import { createEmbeddingClient } from "@/integrations/openai";
+import { createAttentiveWriteClient } from "@/integrations/attentive-write";
 import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 import { createHostedHandler } from "./hosted";
 import { createTokenVerifier, parseHostedAuthConfig } from "./hosted-auth";
@@ -45,6 +44,8 @@ function main() {
   }
   const analyticsUrl = process.env.ANALYTICS_DATABASE_URL;
   const openaiKey = process.env.OPENAI_API_KEY;
+  const attentiveKey = process.env.ATTENTIVE_API_KEY;
+  const allowWrites = process.env.MCP_WRITE_TOOLS === "on";
 
   let metadata: { at: number; body: unknown } | null = null;
   const handler = createHostedHandler({
@@ -55,7 +56,9 @@ function main() {
       now: () => new Date(),
       analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
       embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
+      attentive: allowWrites && attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
     },
+    allowWrites,
     async fetchAuthServerMetadata() {
       if (metadata && Date.now() - metadata.at < 3_600_000) return metadata.body;
       const res = await fetch(`${auth.authServer}/.well-known/oauth-authorization-server`, { signal: AbortSignal.timeout(10_000) });
@@ -106,7 +109,7 @@ function main() {
 
   const port = Number(process.env.PORT ?? 8080);
   server.listen(port, () => {
-    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), read-only tools only`);
+    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), ${allowWrites ? `write tools ON${attentiveKey ? "" : " (segment push unavailable: no ATTENTIVE_API_KEY)"}` : "read-only tools only"}`);
   });
 }
 

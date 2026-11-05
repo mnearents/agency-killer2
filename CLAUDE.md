@@ -331,10 +331,13 @@ app and the phone reach it as a custom connector with nothing installed.
 - **A valid login is not permission.** The token's WorkOS user ID must be in
   `MCP_ALLOWED_USERS`. Empty admits no one; every refusal is logged with the
   ID, so adding a person is reading one log line.
-- **Read-only tools only.** Locally the write tools were protected partly by
-  nothing being able to reach them. Hosted, that is gone, so they are not
-  listed and are refused by name. `segment_push` additionally has no client:
-  `serve.ts` never builds one.
+- **Write tools need `MCP_WRITE_TOOLS=on`.** Locally they were protected
+  partly by nothing being able to reach them. Hosted, that is gone, so serving
+  them is a setting someone made, and without it they are neither listed nor
+  callable by name. With it, `segment_push` also needs `ATTENTIVE_API_KEY` on
+  this service — never on the worker, which imports nothing from `src/mcp/`,
+  so no cron can push a segment however this service is configured. Every
+  call, write or not, is logged with the WorkOS user who made it.
 - **It refuses to start** without `MCP_AUTHKIT_DOMAIN` and `MCP_PUBLIC_URL`
   rather than serve an endpoint with no login in front of it.
 - Each request gets a new stateless server — no sessions to leak between

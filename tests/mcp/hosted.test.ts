@@ -28,12 +28,13 @@ const verify = async (header: string | null): Promise<AuthOutcome> =>
   : header === "Bearer stranger" ? { ok: false, status: 403, reason: "user_x is not in MCP_ALLOWED_USERS" }
   : { ok: false, status: 401, reason: "no bearer token" };
 
-function setup() {
+function setup(opts: { allowWrites?: boolean } = {}) {
   const lines: string[] = [];
   const handler = createHostedHandler({
     auth,
     verify,
     ctx,
+    allowWrites: opts.allowWrites ?? false,
     fetchAuthServerMetadata: async () => ({ issuer: auth.authServer, registration_endpoint: `${auth.authServer}/oauth2/register` }),
     log: (l) => lines.push(l),
   });
@@ -97,8 +98,8 @@ describe("hosted MCP endpoint", () => {
   });
 
   // Hosted, the read-only guarantee no longer rests on the server being
-  // unreachable, so the write tools are not offered at all.
-  it("lists only the read-only tools", async () => {
+  // unreachable, so without MCP_WRITE_TOOLS the write tools are not offered.
+  it("lists only the read-only tools unless writes are switched on", async () => {
     const tools = (await result(await setup().handler(rpc("tools/list")))).tools as { name: string }[];
     const names = tools.map((t) => t.name);
     expect(names).toContain("data_freshness");
@@ -110,7 +111,20 @@ describe("hosted MCP endpoint", () => {
   it("refuses to run a write tool even when called by name", async () => {
     const r = await result(await setup().handler(rpc("tools/call", { name: "calendar_add", arguments: { title: "x" } })));
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toMatch(/not available on the hosted server/);
+    expect(r.content[0].text).toMatch(/MCP_WRITE_TOOLS/);
+  });
+
+  it("offers every tool, writers included, when writes are switched on", async () => {
+    const tools = (await result(await setup({ allowWrites: true }).handler(rpc("tools/list")))).tools as { name: string; annotations: { readOnlyHint: boolean } }[];
+    expect(tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS.map((t) => t.name).sort());
+    // What makes Claude ask before running one.
+    expect(tools.find((t) => t.name === "calendar_add")!.annotations.readOnlyHint).toBe(false);
+  });
+
+  it("logs who called a write tool", async () => {
+    const { handler, lines } = setup({ allowWrites: true });
+    await handler(rpc("tools/call", { name: "calendar_add", arguments: {} }));
+    expect(lines).toContain("[mcp-hosted] user_matt tools/call calendar_add");
   });
 
   it("runs a read-only tool for an allowed user and logs who called what", async () => {

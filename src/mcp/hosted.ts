@@ -9,9 +9,10 @@
  * new stateless server answers it: there are no sessions to hijack or leak
  * between users, and nothing held between requests but the database pool.
  *
- * Only read-only tools are offered. Locally the write tools were protected
- * partly by nothing being able to reach them; here that is gone, so they are
- * not served at all until there is a reason to and a decision to.
+ * Write tools are served only when `allowWrites` is set (MCP_WRITE_TOOLS=on).
+ * Locally they were protected partly by nothing being able to reach them;
+ * here that is gone, so serving them is a decision recorded in the
+ * environment, and the default is read-only.
  */
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
@@ -28,6 +29,8 @@ export interface HostedDeps {
   auth: HostedAuthConfig;
   verify: (authorization: string | null) => Promise<AuthOutcome>;
   ctx: McpToolContext;
+  /** Serve the write tools too. Off means read-only tools only. */
+  allowWrites: boolean;
   /** AuthKit's own authorization server metadata, for clients that ask us for it. */
   fetchAuthServerMetadata: () => Promise<unknown>;
   log: (line: string) => void;
@@ -86,7 +89,7 @@ export function createHostedHandler(deps: HostedDeps): (req: Request) => Promise
       }
     }
 
-    const server = createMcpServer(ctx, { readOnly: true });
+    const server = createMcpServer(ctx, { readOnly: !deps.allowWrites });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     try {
