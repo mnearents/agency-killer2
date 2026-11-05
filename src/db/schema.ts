@@ -2145,3 +2145,36 @@ export const productStrategy = pgTable(
 );
 
 export type ProductStrategyRow = typeof productStrategy.$inferSelect;
+
+/**
+ * What the business is aiming at: revenue targets by period and line, and
+ * each quarter's ranked priorities.
+ *
+ * Append-only, like product_strategy: the newest row for a (kind, period,
+ * line) is current. A target is what someone committed to on a date, and
+ * overwriting it would make "were we behind the plan as it stood in March"
+ * unanswerable.
+ */
+export const goals = pgTable(
+  "goals",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** target | priorities */
+    kind: text("kind").notNull(),
+    /** "2027" or "2027-03" for a target; "2027-Q1" for priorities. */
+    period: text("period").notNull(),
+    /** total | subscription | physical | digital | wholesale. Null for priorities. */
+    line: text("line"),
+    /** Null clears a target. */
+    targetCents: bigint("target_cents", { mode: "number" }),
+    /** Most important first. */
+    priorities: jsonb("priorities").$type<string[]>(),
+    notes: text("notes"),
+    author: text("author").notNull(),
+    requestedBy: text("requested_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("goals_kind_period_line_created_idx").on(table.kind, table.period, table.line, table.createdAt)]
+);

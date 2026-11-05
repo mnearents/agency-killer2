@@ -96,6 +96,17 @@ import {
 } from "@/domain/footage/queries";
 import { findTranscriptClips, footageTranscriptResult } from "@/domain/footage/transcript";
 import {
+  GOAL_LINES,
+  computePace,
+  parsePeriod,
+  parsePriorities,
+  quarterOf,
+  getCurrentGoals,
+  getGoalHistory,
+  recordGoal,
+} from "@/domain/strategy/goals";
+import { getRevenueByLine } from "@/domain/economics/queries";
+import {
   PRODUCT_ROLES,
   CLEARABLE,
   mergeStrategy,
@@ -1440,6 +1451,115 @@ const productStrategySet: McpTool = {
       product: { productId: resolved.product.id, title: resolved.product.title, handle: resolved.product.handle },
       strategy: describeStrategy(saved, ctx.now().getUTCMonth() + 1),
       previous: current ? describeStrategy(current, ctx.now().getUTCMonth() + 1) : null,
+    };
+  },
+};
+
+const goalsTool: McpTool = {
+  name: "goals",
+  title: "Goals and priorities",
+  description:
+    "What the business is aiming at: annual and monthly revenue targets by business line (total, subscription, physical, digital, wholesale) and the quarter's ranked priorities. " +
+    "Start any plan from here — a recommendation that does not serve a priority or a target needs a reason. A line or month with no target has none set: say so rather than assuming one. " +
+    "Defaults to the current year and quarter; `year` and `quarter` (YYYY-Qn) choose others; `history: true` adds every change.",
+  readOnly: true,
+  schema: {
+    year: { type: "integer", min: 2020, max: 2100 },
+    quarter: { type: "string" },
+    history: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const year = (args.year as number | undefined) ?? now.getUTCFullYear();
+    let quarter = quarterOf(now);
+    if (typeof args.quarter === "string") {
+      const p = (() => { try { return parsePeriod(args.quarter as string); } catch (e) { throw new McpArgumentError((e as Error).message); } })();
+      if (p.kind !== "quarter") throw new McpArgumentError("quarter must look like 2027-Q1.");
+      quarter = p.period;
+    } else if (args.year !== undefined && year !== now.getUTCFullYear()) {
+      quarter = `${year}-Q1`;
+    }
+    const [current, quarterRows] = await Promise.all([
+      getCurrentGoals(ctx.db, String(year)),
+      quarter.startsWith(String(year)) ? Promise.resolve(null) : getCurrentGoals(ctx.db, quarter),
+    ]);
+    const all = [...current, ...(quarterRows ?? [])];
+    const who = (g: { author: string; requestedBy: string | null }) => (g.requestedBy ? `${g.author} for ${g.requestedBy}` : g.author);
+    const targets = all.filter((g) => g.kind === "target" && g.targetCents !== null);
+    const pr = all.find((g) => g.kind === "priorities" && g.period === quarter);
+    return {
+      year,
+      annualTargets: targets.filter((g) => g.period === String(year)).map((g) => ({ line: g.line, targetDollars: dollars(g.targetCents!), notes: g.notes, setBy: who(g), setAt: g.setAt.toISOString() })),
+      monthlyTargets: targets.filter((g) => g.period.length === 7).sort((a, b) => a.period.localeCompare(b.period) || String(a.line).localeCompare(String(b.line)))
+        .map((g) => ({ period: g.period, line: g.line, targetDollars: dollars(g.targetCents!), setBy: who(g) })),
+      priorities: pr ? { quarter, ranked: pr.priorities ?? [], setBy: who(pr), setAt: pr.setAt.toISOString() } : { quarter, ranked: [], note: `No priorities set for ${quarter}.` },
+      ...(args.history ? { history: await getGoalHistory(ctx.db, String(year)) } : {}),
+    };
+  },
+};
+
+const goalsSet: McpTool = {
+  name: "goals_set",
+  title: "Set a target or the quarter's priorities",
+  description:
+    "Set a revenue target — `period` YYYY or YYYY-MM, `line` (total, subscription, physical, digital, wholesale) and `targetDollars` — or a quarter's priorities — `period` YYYY-Qn and `priorities`, one per line, most important first, replacing that quarter's list. `clear: true` removes a target. " +
+    "Targets are what a person committed to: record what they told you, never a number you derived. Every change is kept, recorded as written by Claude for the signed-in person.",
+  readOnly: false,
+  schema: {
+    period: { type: "string", required: true },
+    line: { type: "enum", values: GOAL_LINES },
+    targetDollars: { type: "number", min: 0, max: 100_000_000 },
+    priorities: { type: "string" },
+    clear: { type: "boolean", default: false },
+    notes: { type: "string" },
+  },
+  async run(ctx, args) {
+    let parsed;
+    try { parsed = parsePeriod(args.period as string); } catch (e) { throw new McpArgumentError((e as Error).message); }
+    const who = { author: "claude", requestedBy: ctx.actor ?? null, notes: typeof args.notes === "string" ? args.notes.trim() || null : null };
+
+    if (typeof args.priorities === "string") {
+      if (parsed.kind !== "quarter") throw new McpArgumentError("Priorities belong to a quarter: period must look like 2027-Q1.");
+      let list;
+      try { list = parsePriorities(args.priorities); } catch (e) { throw new McpArgumentError((e as Error).message); }
+      const saved = await recordGoal(ctx.db, { kind: "priorities", period: parsed.period, line: null, targetCents: null, priorities: list, ...who });
+      return { written: true, kind: "priorities", period: parsed.period, ranked: list, id: saved.id };
+    }
+
+    if (parsed.kind === "quarter") throw new McpArgumentError("Targets are set per year (YYYY) or month (YYYY-MM); quarters hold priorities.");
+    if (args.line === undefined) throw new McpArgumentError("A target needs a `line`: total, subscription, physical, digital or wholesale.");
+    if (args.targetDollars === undefined && !args.clear) throw new McpArgumentError("Pass targetDollars or clear: true.");
+    const targetCents = args.clear ? null : Math.round((args.targetDollars as number) * 100);
+    const saved = await recordGoal(ctx.db, { kind: "target", period: parsed.period, line: args.line as string, targetCents, priorities: null, ...who });
+    return { written: true, kind: "target", period: parsed.period, line: args.line, targetDollars: targetCents === null ? null : dollars(targetCents), id: saved.id };
+  },
+};
+
+const goalsPace: McpTool = {
+  name: "goals_pace",
+  title: "Revenue against plan",
+  description:
+    "Actual revenue against target for each business line, month to date and year to date, with the gap in dollars. The month's target is due pro rata (half the month gone, half the target due); the year's is the full months before plus that share. `projectedYearDollars` extends the year-to-date run rate. " +
+    "A line with no plan shows a null gap, not a lead over zero. `basis` says where a line's targets came from — a total with only an annual figure is spread evenly by days and labelled so. Wholesale has no actual: nothing in the order data identifies a wholesale order. `asOf` (YYYY-MM-DD) defaults to today.",
+  readOnly: true,
+  schema: { asOf: { type: "date" } },
+  async run(ctx, args) {
+    const asOf = (args.asOf as Date | undefined) ?? ctx.now();
+    const y = asOf.getUTCFullYear();
+    const m = asOf.getUTCMonth();
+    const end = new Date(Date.UTC(y, m, asOf.getUTCDate() + 1));
+    const [rows, mtd, ytd] = await Promise.all([
+      getCurrentGoals(ctx.db, String(y)),
+      getRevenueByLine(ctx.db, new Date(Date.UTC(y, m, 1)), end),
+      getRevenueByLine(ctx.db, new Date(Date.UTC(y, 0, 1)), end),
+    ]);
+    const targets = rows
+      .filter((g) => g.kind === "target" && g.line !== null)
+      .map((g) => ({ period: g.period, line: g.line as (typeof GOAL_LINES)[number], targetCents: g.targetCents }));
+    return {
+      ...computePace(targets, { monthToDate: mtd, yearToDate: ytd }, asOf),
+      revenueDefinition:
+        "Order totals after discounts, including tax and shipping — the same figure store_performance reports — placed in a line by what the order contained. Refunds are not subtracted.",
     };
   },
 };
@@ -3621,6 +3741,9 @@ export const ALL_TOOLS: McpTool[] = [
   footageTranscriptTool,
   productStrategyTool,
   productStrategySet,
+  goalsTool,
+  goalsSet,
+  goalsPace,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

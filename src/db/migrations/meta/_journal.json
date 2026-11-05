@@ -351,6 +351,13 @@
       "when": 1793904218121,
       "tag": "0049_giant_penance",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1793904790795,
+      "tag": "0050_deep_ser_duncan",
+      "breakpoints": true
     }
   ]
 }

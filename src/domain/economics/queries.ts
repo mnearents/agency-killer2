@@ -70,6 +70,43 @@ export async function getRateSettings(db: Db, on: string): Promise<RateSettings 
 
 
 /**
+ * The four per-order flags `classifyBusinessLine` reads, over `li`
+ * (shopify_line_items) and `inv` (shopify_inventory) in a GROUP BY order.
+ * Shared so that every query placing an order in a line places it the same way.
+ */
+const LINE_FLAGS = sql.raw(`
+        BOOL_OR(li.product_type = 'Subscription') AS has_subscription_type,
+        -- Never a product: a plan change, a proration, a subscription gift.
+        BOOL_OR(li.product_type IS NULL AND inv.id IS NULL) AS has_untyped_without_inventory,
+        -- Only a physical thing has a stock count, which is why this outranks
+        -- a blank product_type on 1,742 line items. See #43.
+        BOOL_OR(inv.tracked = 1) AS has_tracked_inventory,
+        BOOL_OR(li.product_type IS NOT NULL
+                AND li.product_type <> ''
+                AND li.product_type NOT IN (${DIGITAL_TYPES_SQL})
+                AND li.product_type <> 'Subscription') AS has_known_physical_type`);
+
+/**
+ * Revenue per business line over [start, end): order totals as
+ * store_performance counts them (after discounts, including tax and
+ * shipping), so the two tools agree. Every order counts, drop-shipped lines
+ * included — this is revenue, not margin.
+ */
+export async function getRevenueByLine(db: Db, start: Date, end: Date): Promise<Record<BusinessLine, number>> {
+  const rows = (await db.execute(sql`
+    SELECT ${LINE_FLAGS}, MAX(o.total_price_cents) AS total_price_cents
+    FROM shopify_orders o
+    JOIN shopify_line_items li ON li.order_id = o.id
+    LEFT JOIN shopify_inventory inv ON inv.id = li.variant_id
+    WHERE o.order_created_at >= ${start} AND o.order_created_at < ${end}
+    GROUP BY o.id
+  `)) as unknown as Array<Parameters<typeof lineOf>[0] & { total_price_cents: number }>;
+  const out = Object.fromEntries(BUSINESS_LINES.map((l) => [l, 0])) as Record<BusinessLine, number>;
+  for (const r of rows) out[lineOf(r)] += Number(r.total_price_cents);
+  return out;
+}
+
+/**
  * The row's four classifier flags, as the pure rule wants them.
  *
  * The rule lives in `classify.ts` rather than in a SQL CASE so that it can be
@@ -120,16 +157,7 @@ export async function getOrdersForEconomics(
         o.id,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
-        BOOL_OR(li.product_type = 'Subscription') AS has_subscription_type,
-        -- Never a product: a plan change, a proration, a subscription gift.
-        BOOL_OR(li.product_type IS NULL AND inv.id IS NULL) AS has_untyped_without_inventory,
-        -- Only a physical thing has a stock count, which is why this outranks
-        -- a blank product_type on 1,742 line items. See #43.
-        BOOL_OR(inv.tracked = 1) AS has_tracked_inventory,
-        BOOL_OR(li.product_type IS NOT NULL
-                AND li.product_type <> ''
-                AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
-                AND li.product_type <> 'Subscription') AS has_known_physical_type,
+        ${LINE_FLAGS},
         -- Cost of the goods, times quantity.
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         -- Coverage is measured over line revenue, so a partly-costed order
@@ -293,16 +321,7 @@ export async function getNewCustomerOrders(
         o.id,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
-        BOOL_OR(li.product_type = 'Subscription') AS has_subscription_type,
-        -- Never a product: a plan change, a proration, a subscription gift.
-        BOOL_OR(li.product_type IS NULL AND inv.id IS NULL) AS has_untyped_without_inventory,
-        -- Only a physical thing has a stock count, which is why this outranks
-        -- a blank product_type on 1,742 line items. See #43.
-        BOOL_OR(inv.tracked = 1) AS has_tracked_inventory,
-        BOOL_OR(li.product_type IS NOT NULL
-                AND li.product_type <> ''
-                AND li.product_type NOT IN (${sql.raw(DIGITAL_TYPES_SQL)})
-                AND li.product_type <> 'Subscription') AS has_known_physical_type,
+        ${LINE_FLAGS},
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         COALESCE(SUM(li.price_cents * li.quantity), 0) AS line_revenue_cents,
         COALESCE(SUM(CASE WHEN inv.unit_cost_cents IS NOT NULL

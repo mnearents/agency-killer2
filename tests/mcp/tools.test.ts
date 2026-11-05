@@ -184,6 +184,7 @@ describe("the tool catalogue", () => {
         "draft_save",
         "experiment_record_result",
         "experiment_start",
+        "goals_set",
         "pilot_notes_add",
         "product_strategy_set",
         "segment_push",

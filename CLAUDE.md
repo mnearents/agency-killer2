@@ -261,6 +261,23 @@ and `data_freshness` reports active products with none.
   author and the signed-in person (`MCP_ALLOWED_USERS` `id=Name`) as who
   asked. `role: null` means undecided, never "no role".
 
+### Goals and pace
+
+`goals` holds revenue targets by period (YYYY or YYYY-MM) and line (total,
+subscription, physical, digital, wholesale), and each quarter's ranked
+priorities — append-only, newest row current, seeded with the 2027 target of
+$1M. `goals_pace` measures actual against plan month to date and year to date.
+
+- **Revenue here is store_performance's figure** — order totals after
+  discounts, including tax and shipping — placed in a line by the same
+  classifier unit economics uses (`LINE_FLAGS` in `economics/queries.ts`), so
+  the tools agree.
+- **No plan, no gap.** A line without targets reports a null gap, never a
+  lead over zero. A total with only an annual figure is spread by days and
+  labelled straight-line.
+- **Wholesale is unmeasured**: nothing in the order data marks a wholesale
+  order, so it has a target and no actual.
+
 ### MCP server (Claude Desktop)
 
 A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the
@@ -285,10 +302,10 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; ten are not.** The writers are `calendar_add`,
-  `calendar_update`, `calendar_remove`, `draft_save`, `draft_record_decision`,
-  `experiment_start`, `experiment_record_result`, `pilot_notes_add`,
-  `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+- **Most tools are read-only; eleven are not.** The writers are
+  `calendar_add`, `calendar_update`, `calendar_remove`, `draft_save`,
+  `draft_record_decision`, `experiment_start`, `experiment_record_result`,
+  `goals_set`, `pilot_notes_add`, `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and
