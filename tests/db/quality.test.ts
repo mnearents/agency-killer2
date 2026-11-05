@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createDb } from "@/db/client";
-import { buildQualityQuery, classifyQuality, type RawQualityCheck } from "@/db/quality";
+import { buildQualityQuery, buildStrategyCoverageQuery, classifyQuality, type RawQualityCheck } from "@/db/quality";
 
 function raw(overrides: Partial<RawQualityCheck> = {}): RawQualityCheck {
   return {
@@ -73,6 +73,20 @@ describe("buildQualityQuery", () => {
 
   it("still counts blank product_type apart from null, being different faults", () => {
     expect(sql).toContain("product_type");
+  });
+});
+
+describe("buildStrategyCoverageQuery", () => {
+  const { sql } = buildStrategyCoverageQuery(createDb("postgres://user:pass@localhost:5432/test")).toSQL();
+
+  // The current role is the NEWEST row. Any row with a role would count a
+  // product as decided after someone cleared it.
+  it("reads each active product's newest strategy row only", () => {
+    expect(sql).toMatch(/order by ps\.created_at desc/i);
+    // Qualified: a bare "id" inside the subquery is product_strategy's own id.
+    expect(sql).toContain('ps.product_id = "shopify_products"."id"');
+    expect(sql).toMatch(/limit 1/i);
+    expect(sql).toMatch(/"shopify_products"\."status" = \$1/);
   });
 });
 

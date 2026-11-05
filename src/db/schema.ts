@@ -2103,3 +2103,45 @@ export const queryLog = pgTable(
 
 export type SealTierChangeEvent = typeof sealTierChangeEvents.$inferSelect;
 export type QueryLogRow = typeof queryLog.$inferSelect;
+
+/**
+ * What each product is FOR — strategy, which sales numbers cannot show.
+ *
+ * The brief pitched a blog post about the Friendship Journal, which does not
+ * sell and is not meant to grow, because nothing recorded that. A role here
+ * is a decision someone made, and the agent reads it beside the numbers.
+ *
+ * Append-only: a change is a new row, and the current strategy for a product
+ * is its newest row. History is the table itself, so there is no UPDATE that
+ * could lose who decided what and when. A product with no row has no role —
+ * which is the same answer as a seeded row with a NULL role, without needing
+ * a seed to run again every time a product is added.
+ */
+export const productStrategy = pgTable(
+  "product_strategy",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** Shopify product GID — `shopify_products.id`. */
+    productId: text("product_id").notNull(),
+    /** hero | grow | seasonal | maintain | clearance | gift_with_purchase | sunset. Null = undecided. */
+    role: text("role"),
+    /** Subset of PRODUCT_AUDIENCES. */
+    audiences: jsonb("audiences").$type<string[]>().notNull().default([]),
+    /** 1-12. A window may wrap the year (11 → 1). Both null = all year. */
+    seasonStartMonth: integer("season_start_month"),
+    seasonEndMonth: integer("season_end_month"),
+    /** 1 is the most important. Null = unranked. */
+    priorityRank: integer("priority_rank"),
+    notes: text("notes"),
+    /** "claude" when written through MCP, or a person's name. */
+    author: text("author").notNull(),
+    /** The signed-in person Claude was acting for, when known. */
+    requestedBy: text("requested_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("product_strategy_product_created_idx").on(table.productId, table.createdAt)]
+);
+
+export type ProductStrategyRow = typeof productStrategy.$inferSelect;

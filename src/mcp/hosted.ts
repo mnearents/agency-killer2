@@ -89,7 +89,8 @@ export function createHostedHandler(deps: HostedDeps): (req: Request) => Promise
       }
     }
 
-    const server = createMcpServer(ctx, { readOnly: !deps.allowWrites });
+    const actor = auth.userNames.get(outcome.userId) ?? outcome.userId;
+    const server = createMcpServer({ ...ctx, actor }, { readOnly: !deps.allowWrites });
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     try {

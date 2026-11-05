@@ -244,6 +244,23 @@ from `seal_subscriptions` or from `is_subscriber`.
 - Seal covers Really Awesome Doodles only; Color Happy ran in Appstle. A
   subscriber count from Seal is a RAD count.
 
+### Product strategy — read it beside the sales
+
+Sales say what sold; `product_strategy` says what each product is FOR (hero,
+grow, seasonal, maintain, clearance, gift_with_purchase, sunset), for whom,
+when it sells, and how it ranks. The brief once pitched promotion for the
+Friendship Journal, which does not sell and is not meant to — nothing recorded
+that. `store_top_products` and `inventory_status` carry each product's role,
+and `data_freshness` reports active products with none.
+
+- **Append-only.** A change is a new row with the whole strategy; the newest
+  row per product is current, so history is the table. A product with no row
+  has no role, which is the same answer as a seeded NULL without a seed that
+  has to rerun whenever a product is added.
+- **A role is a person's decision.** `product_strategy_set` records Claude as
+  author and the signed-in person (`MCP_ALLOWED_USERS` `id=Name`) as who
+  asked. `role: null` means undecided, never "no role".
+
 ### MCP server (Claude Desktop)
 
 A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the
@@ -268,10 +285,10 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; nine are not.** The writers are `calendar_add`,
+- **Most tools are read-only; ten are not.** The writers are `calendar_add`,
   `calendar_update`, `calendar_remove`, `draft_save`, `draft_record_decision`,
-  `experiment_start`, `experiment_record_result`, `pilot_notes_add` and
-  `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+  `experiment_start`, `experiment_record_result`, `pilot_notes_add`,
+  `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and
@@ -411,6 +428,7 @@ src/
 │   ├── voice/              # Brand voice prompt assembly, validation
 │   ├── inventory/          # Stock monitoring, alerts, bundling
 │   ├── segments/           # Segment definitions and the Attentive push
+│   ├── strategy/           # Product strategy roles; goals and pace
 │   ├── experiments/        # Declared experiments and their results
 │   ├── drafts/             # Generated drafts and decisions on them
 │   ├── calendar/           # Marketing calendar entries

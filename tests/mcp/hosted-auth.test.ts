@@ -16,6 +16,7 @@ const config: HostedAuthConfig = {
   publicUrl: "https://mcp.radandhappy.example",
   resource: "https://mcp.radandhappy.example/mcp",
   allowedUsers: new Set(["user_matt"]),
+  userNames: new Map(),
 };
 
 let keys: JWTVerifyGetKey;
@@ -106,7 +107,7 @@ describe("parseHostedAuthConfig", () => {
   const env = {
     MCP_AUTHKIT_DOMAIN: "https://rad-and-happy.authkit.app/",
     MCP_PUBLIC_URL: "https://mcp.radandhappy.example/",
-    MCP_ALLOWED_USERS: " user_matt, user_tara ,",
+    MCP_ALLOWED_USERS: " user_matt=Matt, user_tara ,",
   };
 
   it("reads the domain, the public URL and the allow list", () => {
@@ -117,6 +118,7 @@ describe("parseHostedAuthConfig", () => {
         publicUrl: "https://mcp.radandhappy.example",
         resource: "https://mcp.radandhappy.example/mcp",
         allowedUsers: new Set(["user_matt", "user_tara"]),
+        userNames: new Map([["user_matt", "Matt"]]),
         audience: undefined,
       },
     });

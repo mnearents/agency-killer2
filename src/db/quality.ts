@@ -11,9 +11,9 @@
  * rather than a judgement.
  */
 
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import type { Db } from "./client";
-import { shopifyLineItems } from "./schema";
+import { shopifyLineItems, shopifyProducts } from "./schema";
 
 export interface RawQualityCheck {
   check: string;
@@ -79,8 +79,25 @@ export function buildQualityQuery(db: Db) {
     .from(shopifyLineItems);
 }
 
+/** Active products, and how many have no role in their newest strategy row. */
+export function buildStrategyCoverageQuery(db: Db) {
+  return db
+    .select({
+      total: sql<number>`COUNT(*)`,
+      // Qualified by hand: Drizzle renders an interpolated column bare inside
+      // raw SQL, and a bare "id" here would resolve to product_strategy.id.
+      undecided: sql<number>`COUNT(*) FILTER (WHERE (
+        SELECT ps.role FROM product_strategy ps
+        WHERE ps.product_id = "shopify_products"."id"
+        ORDER BY ps.created_at DESC, ps.id DESC LIMIT 1
+      ) IS NULL)`,
+    })
+    .from(shopifyProducts)
+    .where(eq(shopifyProducts.status, "ACTIVE"));
+}
+
 export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
-  const [lineItems] = await buildQualityQuery(db);
+  const [[lineItems], [strategy]] = await Promise.all([buildQualityQuery(db), buildStrategyCoverageQuery(db)]);
 
   const total = Number(lineItems?.total ?? 0);
 
@@ -100,6 +117,14 @@ export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
         "Custom lines typed straight onto an order — no variant_id, product_id or sku. They are subscription plan changes, marketplace fees and test rows rather than products, so they belong in no product revenue line.",
       affected: Number(lineItems?.noProduct ?? 0),
       total,
+    },
+    {
+      check: "active products with no strategy role",
+      table: "product_strategy",
+      detail:
+        "Nobody has said what these products are for, so any recommendation about them rests on sales alone — which is how a product that is not meant to grow gets pitched for promotion. Set roles with product_strategy_set; product_strategy with role none lists them.",
+      affected: Number(strategy?.undecided ?? 0),
+      total: Number(strategy?.total ?? 0),
     },
   ]);
 }

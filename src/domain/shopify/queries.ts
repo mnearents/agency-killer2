@@ -123,3 +123,48 @@ export async function getDailyOrders(
     subscriptionOrders: Number(r.subscriptionOrders ?? 0),
   }));
 }
+
+export interface ProductSales {
+  productId: string;
+  title: string;
+  handle: string | null;
+  status: string | null;
+  productType: string | null;
+  units: number;
+  orders: number;
+  /** Line revenue after line discounts, before tax and shipping. */
+  revenueCents: number;
+}
+
+/**
+ * Sales per product over a window, keyed by product so a strategy role can
+ * sit beside it. Every active product appears, sold or not — a product that
+ * sold nothing is the answer to "what is not working", and an inner join
+ * would drop exactly those.
+ */
+export async function getProductSales(db: Db, since: Date, until: Date): Promise<ProductSales[]> {
+  const rows = (await db.execute(sql`
+    with sales as (
+      select li.product_id,
+             sum(li.quantity)::int as units,
+             count(distinct li.order_id)::int as orders,
+             sum(li.price_cents * li.quantity - coalesce(li.total_discount_cents, 0))::bigint as revenue_cents,
+             max(li.title) as title
+      from shopify_line_items li
+      join shopify_orders o on o.id = li.order_id
+      where o.order_created_at >= ${since} and o.order_created_at < ${until}
+        and li.product_id is not null
+      group by li.product_id
+    )
+    select coalesce(p.id, s.product_id) as "productId",
+           coalesce(p.title, s.title) as title,
+           p.handle, p.status, p.product_type as "productType",
+           coalesce(s.units, 0) as units,
+           coalesce(s.orders, 0) as orders,
+           coalesce(s.revenue_cents, 0) as "revenueCents"
+    from shopify_products p
+    full join sales s on s.product_id = p.id
+    where p.status = 'ACTIVE' or s.product_id is not null
+  `)) as unknown as ProductSales[];
+  return rows.map((r) => ({ ...r, units: Number(r.units), orders: Number(r.orders), revenueCents: Number(r.revenueCents) }));
+}

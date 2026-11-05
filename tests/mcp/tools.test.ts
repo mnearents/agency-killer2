@@ -42,6 +42,11 @@ vi.mock("@/domain/attentive/queries", () => ({
     totalCents: 0, campaignCostCents: 0, automatedSendCostCents: 0, receivedCostCents: 0, carrierFeesCents: 0, days: 0,
   }),
 }));
+// No product has a strategy yet; strategy-tools.test.ts covers the roles.
+vi.mock("@/domain/strategy/products", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/strategy/products")>()),
+  getCurrentStrategies: vi.fn().mockResolvedValue(new Map()),
+}));
 // The real classifier, over a sync that stopped on 2026-08-10 — before this
 // file's clock (2026-09-02), so every default window runs past the data.
 vi.mock("@/domain/attentive/coverage", async (importOriginal) => ({
@@ -174,6 +179,7 @@ describe("the tool catalogue", () => {
         "experiment_record_result",
         "experiment_start",
         "pilot_notes_add",
+        "product_strategy_set",
         "segment_push",
       ].sort()
     );

@@ -35,7 +35,7 @@ import { getDataQuality, anyQualityIssue } from "@/db/quality";
 import { getEnvHealth, anyEnvProblem } from "@/db/env-health";
 import { getInsightTotals, getInsightsByCampaign, getInsightsByAdCreative } from "@/domain/meta/queries";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
-import { getOrderSummary, getDailyOrders, getTopProducts } from "@/domain/shopify/queries";
+import { getOrderSummary, getDailyOrders, getProductSales } from "@/domain/shopify/queries";
 import {
   getSubscriptionFacts,
   getSnapshotFacts,
@@ -95,6 +95,21 @@ import {
   listFinishedAds,
 } from "@/domain/footage/queries";
 import { findTranscriptClips, footageTranscriptResult } from "@/domain/footage/transcript";
+import {
+  PRODUCT_ROLES,
+  CLEARABLE,
+  mergeStrategy,
+  parseAudiences,
+  isInSeason,
+  listProducts,
+  getCurrentStrategies,
+  getStrategyHistory,
+  findProductsByRef,
+  recordStrategy,
+  type CurrentStrategy,
+  type ClearableField,
+  type StrategyChange,
+} from "@/domain/strategy/products";
 import {
   getKbCoverage,
   searchKbByVector,
@@ -239,6 +254,12 @@ export interface McpToolContext {
    * same name as the good one is the failure that field exists to prevent.
    */
   embeddings?: EmbeddingClient;
+  /**
+   * The signed-in person a request is for, on the hosted server: their name
+   * from MCP_ALLOWED_USERS, else their WorkOS ID. Absent locally. Write tools
+   * record it as who asked; the author is still Claude.
+   */
+  actor?: string;
 }
 
 export interface McpTool {
@@ -393,17 +414,45 @@ const storeTopProducts: McpTool = {
   name: "store_top_products",
   title: "Top selling products",
   description:
-    "The best-selling products by order frequency, with price and product type. Useful for picking what to feature in an email or bundle with slow stock.",
+    "Products ranked by revenue over a window (default the last 30 days), with units, orders and each product's strategy ROLE from product_strategy. " +
+    "Read the role before recommending a product: a high seller marked sunset or a low seller marked maintain is selling as intended, and `roleDecided: false` means nobody has decided what it is for yet — say so rather than inferring it. " +
+    "`order: bottom` lists the weakest ACTIVE products, including those that sold nothing, which a top list can never show. Revenue is line revenue after line discounts, before tax and shipping.",
   readOnly: true,
-  schema: { limit: { type: "integer", min: 1, max: 100, default: 10 } },
+  schema: {
+    limit: { type: "integer", min: 1, max: 100, default: 10 },
+    days: { type: "integer", min: 1, max: 730, default: 30 },
+    order: { type: "enum", values: ["top", "bottom"], default: "top" },
+  },
   async run(ctx, args) {
-    const products = await getTopProducts(ctx.db, args.limit as number);
+    const until = ctx.now();
+    const since = new Date(until.getTime() - (args.days as number) * 86_400_000);
+    const month = until.getUTCMonth() + 1;
+    const [sales, strategies] = await Promise.all([getProductSales(ctx.db, since, until), getCurrentStrategies(ctx.db)]);
+    const bottom = args.order === "bottom";
+    const ranked = (bottom ? sales.filter((p) => p.status === "ACTIVE") : sales.filter((p) => p.units > 0))
+      .sort((a, b) => (bottom ? a.revenueCents - b.revenueCents : b.revenueCents - a.revenueCents) || a.title.localeCompare(b.title));
+    const shown = ranked.slice(0, args.limit as number);
     return {
-      products: products.map((p) => ({
-        title: p.title,
-        productType: p.productType ?? null,
-        priceDollars: dollars(p.priceCents),
-      })),
+      window: { since: since.toISOString(), until: until.toISOString(), days: args.days },
+      order: args.order,
+      matched: ranked.length,
+      returned: shown.length,
+      products: shown.map((p) => {
+        const s = describeStrategy(strategies.get(p.productId), month);
+        return {
+          productId: p.productId,
+          title: p.title,
+          handle: p.handle,
+          productType: p.productType,
+          revenueDollars: dollars(p.revenueCents),
+          units: p.units,
+          orders: p.orders,
+          role: s.role,
+          roleDecided: s.decided,
+          audiences: s.audiences,
+          inSeasonNow: s.inSeasonNow,
+        };
+      }),
     };
   },
 };
@@ -646,7 +695,7 @@ const inventoryStatus: McpTool = {
   name: "inventory_status",
   title: "Inventory status",
   description:
-    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up), not-our-stock (drop-shipped — sells here but sits on someone else's shelf, so it carries none of our COGS) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Returns only problems unless includeHealthy is set.",
+    "Stock levels with days of cover and a classification per variant: stockout, critical-cover (too late to reorder), low-cover (reorder now), slow-mover (cash tied up), not-our-stock (drop-shipped — sells here but sits on someone else's shelf, so it carries none of our COGS) or healthy. Untracked and non-active variants are ignored because Shopify reports them as zero. Each item carries its product's strategy `role` (product_strategy): low cover on a sunset or clearance product is the plan working, not a reorder. Returns only problems unless includeHealthy is set.",
   readOnly: true,
   schema: {
     includeHealthy: { type: "boolean", default: false },
@@ -654,7 +703,8 @@ const inventoryStatus: McpTool = {
     criticalCoverDays: { type: "integer", min: 1, max: 365 },
   },
   async run(ctx, args) {
-    const items = await getInventoryItems(ctx.db);
+    const [items, strategies] = await Promise.all([getInventoryItems(ctx.db), getCurrentStrategies(ctx.db)]);
+    const month = ctx.now().getUTCMonth() + 1;
     const options = {
       reorderLeadTimeDays: args.reorderLeadTimeDays as number | undefined,
       criticalCoverDays: args.criticalCoverDays as number | undefined,
@@ -673,6 +723,10 @@ const inventoryStatus: McpTool = {
         dailyVelocity: velocity,
         daysOfCover: computeDaysOfCover(item.quantity, velocity),
         classification: classifyItem(item, options),
+        // Low cover on a sunset or clearance product is the plan working.
+        ...(({ role, decided, inSeasonNow }) => ({ role, roleDecided: decided, inSeasonNow }))(
+          describeStrategy(item.productId ? strategies.get(item.productId) : undefined, month),
+        ),
       };
     });
 
@@ -1255,6 +1309,143 @@ const footageTranscriptTool: McpTool = {
     }
     const clips = await findTranscriptClips(ctx.db, id ? { id } : { path });
     return footageTranscriptResult(clips, { withWords: args.words === true });
+  },
+};
+
+/** "claude for Matt" — who wrote a strategy row and whom it was written for. */
+const setBy = (s: Pick<CurrentStrategy, "author" | "requestedBy">) => (s.requestedBy ? `${s.author} for ${s.requestedBy}` : s.author);
+
+function describeStrategy(s: CurrentStrategy | undefined, month: number) {
+  if (!s) return { role: null, audiences: [] as string[], season: null, inSeasonNow: null, priorityRank: null, notes: null, decided: false, setBy: null, setAt: null };
+  return {
+    role: s.role,
+    audiences: s.audiences,
+    season: s.seasonStartMonth === null ? null : { startMonth: s.seasonStartMonth, endMonth: s.seasonEndMonth },
+    inSeasonNow: isInSeason(s, month),
+    priorityRank: s.priorityRank,
+    notes: s.notes,
+    decided: s.role !== null,
+    setBy: setBy(s),
+    setAt: s.setAt.toISOString(),
+  };
+}
+
+/** One product from exactly one of productId or handle, or an error to return. */
+async function resolveProduct(ctx: McpToolContext, args: ParsedArgs) {
+  const id = typeof args.productId === "string" ? args.productId.trim() : "";
+  const handle = typeof args.handle === "string" ? args.handle.trim() : "";
+  if ((id === "") === (handle === "")) throw new McpArgumentError("Pass exactly one of `productId` or `handle`.");
+  const found = await findProductsByRef(ctx.db, id ? { id } : { handle });
+  if (found.length === 0) {
+    return { error: `No product with ${id ? `id ${id}` : `handle "${handle}"`}. product_strategy lists every product with its id and handle.` } as const;
+  }
+  return { product: found[0] } as const;
+}
+
+const productStrategyTool: McpTool = {
+  name: "product_strategy",
+  title: "What each product is for",
+  description:
+    "The strategic role of each product — hero, grow, seasonal, maintain, clearance, gift_with_purchase or sunset — with its audiences, selling season, priority rank and notes, as decided by a person. " +
+    "READ THIS BEFORE RECOMMENDING A PRODUCT. Sales numbers say what sold; they cannot say what a product is for. A product that sells little may be meant to (maintain, sunset), and promoting it is a wasted send. " +
+    "`role: null` with `decided: false` means nobody has decided yet — not that it has no role. Say so rather than inferring one from sales. " +
+    "With no arguments, lists every active product; `role` filters (`none` for the undecided), `audience` filters by audience. Pass `productId` or `handle` for one product with its full history of changes.",
+  readOnly: true,
+  schema: {
+    productId: { type: "string" },
+    handle: { type: "string" },
+    role: { type: "enum", values: [...PRODUCT_ROLES, "none"] },
+    audience: { type: "string" },
+    includeInactive: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const month = ctx.now().getUTCMonth() + 1;
+    if (typeof args.productId === "string" || typeof args.handle === "string") {
+      const resolved = await resolveProduct(ctx, args);
+      if ("error" in resolved) return resolved;
+      const history = await getStrategyHistory(ctx.db, resolved.product.id);
+      return {
+        product: { ...resolved.product, ...describeStrategy(history[0], month) },
+        history: history.map((h) => ({ ...describeStrategy(h, month), inSeasonNow: undefined })),
+      };
+    }
+
+    const [products, current] = await Promise.all([
+      listProducts(ctx.db, { activeOnly: !args.includeInactive }),
+      getCurrentStrategies(ctx.db),
+    ]);
+    const audience = typeof args.audience === "string" ? args.audience.trim().toLowerCase() : null;
+    const rows = products
+      .map((p) => ({ productId: p.id, title: p.title, handle: p.handle, status: p.status, productType: p.productType, ...describeStrategy(current.get(p.id), month) }))
+      .filter((p) => args.role === undefined || (args.role === "none" ? p.role === null : p.role === args.role))
+      .filter((p) => audience === null || p.audiences.includes(audience));
+
+    return {
+      filter: { role: args.role ?? null, audience, includeInactive: args.includeInactive },
+      productsInScope: products.length,
+      undecided: products.filter((p) => !current.get(p.id)?.role).length,
+      matched: rows.length,
+      products: rows,
+    };
+  },
+};
+
+const productStrategySet: McpTool = {
+  name: "product_strategy_set",
+  title: "Set a product's strategy",
+  description:
+    "Record what a product is for: `role` (hero, grow, seasonal, maintain, clearance, gift_with_purchase, sunset), `audiences` (comma-separated: teachers, homeschool, parents, kids, adults_who_color, planner_users, gift_buyers), selling season (`seasonStartMonth` and `seasonEndMonth`, 1-12, may wrap the year), `priorityRank` (1 = most important) and `notes`. " +
+    "Pass only what changes; everything else is kept. `clear` (comma-separated field names) empties fields. Identify the product by exactly one of `productId` or `handle`. " +
+    "Strategy is a person's decision: record what they told you, not a role you inferred from sales. Every change is kept — nothing is overwritten — and recorded as written by Claude for the signed-in person.",
+  readOnly: false,
+  schema: {
+    productId: { type: "string" },
+    handle: { type: "string" },
+    role: { type: "enum", values: PRODUCT_ROLES },
+    audiences: { type: "string" },
+    seasonStartMonth: { type: "integer", min: 1, max: 12 },
+    seasonEndMonth: { type: "integer", min: 1, max: 12 },
+    priorityRank: { type: "integer", min: 1, max: 1000 },
+    notes: { type: "string" },
+    clear: { type: "string" },
+  },
+  async run(ctx, args) {
+    const change: StrategyChange = {
+      role: args.role as string | undefined,
+      seasonStartMonth: args.seasonStartMonth as number | undefined,
+      seasonEndMonth: args.seasonEndMonth as number | undefined,
+      priorityRank: args.priorityRank as number | undefined,
+      notes: typeof args.notes === "string" ? args.notes.trim() || undefined : undefined,
+    };
+    try {
+      if (typeof args.audiences === "string") change.audiences = parseAudiences(args.audiences);
+      if (typeof args.clear === "string") {
+        change.clear = args.clear.split(",").map((f) => f.trim()).filter(Boolean).map((f) => {
+          if (!(CLEARABLE as readonly string[]).includes(f)) throw new Error(`Cannot clear "${f}": clearable fields are ${CLEARABLE.join(", ")}`);
+          return f as ClearableField;
+        });
+      }
+    } catch (err) {
+      throw new McpArgumentError((err as Error).message);
+    }
+
+    const resolved = await resolveProduct(ctx, args);
+    if ("error" in resolved) return resolved;
+    const [current] = await getStrategyHistory(ctx.db, resolved.product.id);
+
+    let next;
+    try {
+      next = mergeStrategy(current ?? null, change);
+    } catch (err) {
+      throw new McpArgumentError((err as Error).message);
+    }
+    const saved = await recordStrategy(ctx.db, resolved.product.id, next, { author: "claude", requestedBy: ctx.actor ?? null });
+    return {
+      written: true,
+      product: { productId: resolved.product.id, title: resolved.product.title, handle: resolved.product.handle },
+      strategy: describeStrategy(saved, ctx.now().getUTCMonth() + 1),
+      previous: current ? describeStrategy(current, ctx.now().getUTCMonth() + 1) : null,
+    };
   },
 };
 
@@ -3433,6 +3624,8 @@ export const ALL_TOOLS: McpTool[] = [
   footageTool,
   finishedAdsTool,
   footageTranscriptTool,
+  productStrategyTool,
+  productStrategySet,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

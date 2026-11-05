@@ -25,6 +25,8 @@ export interface HostedAuthConfig {
   resource: string;
   /** WorkOS user IDs (`sub`) allowed in. Empty admits no one. */
   allowedUsers: Set<string>;
+  /** Display names from `id=Name` entries, recorded as who asked for a write. */
+  userNames: Map<string, string>;
   /** When set, a token must name it in `aud`. */
   audience?: string;
 }
@@ -46,13 +48,20 @@ export function parseHostedAuthConfig(
 
   const origin = (url: string) => url.replace(/\/+$/, "");
   const base = origin(publicUrl!);
+  // `user_01ABC=Matt, user_01DEF`: a name is optional, the ID is what admits.
+  const entries = (env.MCP_ALLOWED_USERS ?? "").split(",").map((s) => s.trim()).filter(Boolean)
+    .map((entry) => {
+      const [id, ...name] = entry.split("=");
+      return { id: id.trim(), name: name.join("=").trim() };
+    });
   return {
     ok: true,
     config: {
       authServer: origin(domain!.startsWith("https://") ? domain! : `https://${domain}`),
       publicUrl: base,
       resource: `${base}/mcp`,
-      allowedUsers: new Set((env.MCP_ALLOWED_USERS ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
+      allowedUsers: new Set(entries.map((e) => e.id)),
+      userNames: new Map(entries.filter((e) => e.name !== "").map((e) => [e.id, e.name])),
       audience: env.MCP_TOKEN_AUDIENCE?.trim() || undefined,
     },
   };

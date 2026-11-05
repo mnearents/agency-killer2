@@ -32,6 +32,7 @@ export function buildInventoryItemsQuery(db: Db, since: Date) {
   return db
     .select({
       variantId: shopifyInventory.id,
+      productId: shopifyInventory.productId,
       productTitle: shopifyInventory.productTitle,
       variantTitle: shopifyInventory.variantTitle,
       sku: shopifyInventory.sku,
@@ -52,6 +53,7 @@ export async function getInventoryItems(db: Db): Promise<InventoryItem[]> {
 
   return rows.map((r) => ({
     variantId: r.variantId,
+    productId: r.productId,
     productTitle: r.productTitle,
     variantTitle: r.variantTitle,
     sku: r.sku,

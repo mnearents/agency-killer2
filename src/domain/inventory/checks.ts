@@ -21,6 +21,8 @@ const MAX_LISTED_SLOW_MOVERS = 3;
 
 export interface InventoryItem {
   variantId: string;
+  /** Shopify product GID, which a strategy role is keyed by. */
+  productId?: string | null;
   productTitle: string;
   variantTitle: string | null;
   sku: string | null;

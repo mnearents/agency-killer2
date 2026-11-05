@@ -19,6 +19,7 @@ const auth: HostedAuthConfig = {
   publicUrl: BASE,
   resource: `${BASE}/mcp`,
   allowedUsers: new Set(["user_matt"]),
+  userNames: new Map([["user_matt", "Matt"]]),
 };
 const ctx: McpToolContext = { db: {} as never, now: () => new Date("2026-11-05T18:00:00Z") };
 
@@ -137,5 +138,17 @@ describe("hosted MCP endpoint", () => {
 
   it("returns 404 for anything else", async () => {
     expect((await setup().handler(new Request(`${BASE}/admin`))).status).toBe(404);
+  });
+});
+
+// A write records who asked for it. Hosted, that is the signed-in person,
+// by the name MCP_ALLOWED_USERS gives them.
+describe("hosted MCP actor", () => {
+  it("hands each request's tools the signed-in person's name", async () => {
+    const server = await import("@/mcp/server");
+    const spy = vi.spyOn(server, "createMcpServer");
+    await setup().handler(rpc("tools/list"));
+    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ actor: "Matt" }), expect.anything());
+    spy.mockRestore();
   });
 });
