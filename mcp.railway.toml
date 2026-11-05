@@ -1,0 +1,17 @@
+# Hosted MCP server Railway config (src/mcp/serve.ts).
+# Set this as the config file path in the service settings:
+#   Railway Dashboard → MCP Service → Settings → Config File Path → /mcp.railway.toml
+#
+# No `next build` and no browser: this service imports neither. Migrations stay
+# with the web service; this one only reads.
+
+[build]
+builder = "nixpacks"
+buildCommand = "pnpm install --frozen-lockfile"
+
+[deploy]
+startCommand = "pnpm mcp:hosted"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

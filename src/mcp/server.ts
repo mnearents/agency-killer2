@@ -44,14 +44,25 @@ export async function runToolCall(
   }
 }
 
-export function createMcpServer(ctx: McpToolContext): Server {
+export interface McpServerOptions {
+  /**
+   * Offer only read-only tools, and refuse the others even when called by
+   * name. The hosted server sets this: there, nothing about reachability
+   * protects the write tools any more.
+   */
+  readOnly?: boolean;
+}
+
+export function createMcpServer(ctx: McpToolContext, options: McpServerOptions = {}): Server {
+  const tools = options.readOnly ? ALL_TOOLS.filter((t) => t.readOnly) : ALL_TOOLS;
+  const offered = new Set(tools.map((t) => t.name));
   const server = new Server(
     { name: "rad-and-happy", version: "1.0.0" },
     { capabilities: { tools: {} } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: ALL_TOOLS.map((tool) => ({
+    tools: tools.map((tool) => ({
       name: tool.name,
       title: tool.title,
       description: tool.description,
@@ -60,9 +71,16 @@ export function createMcpServer(ctx: McpToolContext): Server {
     })),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) =>
-    runToolCall(ctx, request.params.name, request.params.arguments)
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name } = request.params;
+    if (!offered.has(name) && ALL_TOOLS.some((t) => t.name === name)) {
+      return {
+        content: [{ type: "text" as const, text: `Tool "${name}" changes data and is not available on the hosted server. Use the local Claude Desktop server for it.` }],
+        isError: true,
+      };
+    }
+    return runToolCall(ctx, name, request.params.arguments);
+  });
 
   return server;
 }

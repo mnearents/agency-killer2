@@ -247,7 +247,9 @@ from `seal_subscriptions` or from `is_subscriber`.
 ### MCP server (Claude Desktop)
 
 A third entry point (`pnpm mcp`, stdio) that lets Claude Desktop read the
-system directly. Local only — no internet-facing endpoint, no auth layer.
+system directly. That one is local — no internet-facing endpoint, no auth
+layer. A fourth (`pnpm mcp:hosted`) serves the same tools over the internet;
+see **Hosted** below.
 
 Division of labour with the scheduler: **crons own ingestion and deterministic
 alerting** (no judgment, must run unattended, no token cost); **Claude owns
@@ -313,6 +315,28 @@ Railway URL — the internal one does not resolve off-platform.
 
 That entry is the *development* one: it runs from the working tree, so an edit
 to `src/mcp/` takes effect on the next Claude Desktop restart.
+
+#### Hosted (claude.ai connector)
+
+`src/mcp/serve.ts` runs as its own Railway service (`mcp.railway.toml`) and
+speaks Streamable HTTP at `<MCP_PUBLIC_URL>/mcp`, so Claude Desktop, the web
+app and the phone reach it as a custom connector with nothing installed.
+
+- **Sign-in is WorkOS AuthKit, not ours.** Claude registers itself with
+  AuthKit (dynamic client registration), the person signs in there, and the
+  server only verifies AuthKit's signed token against its published keys
+  (`hosted-auth.ts`). No password or client secret is held here.
+- **A valid login is not permission.** The token's WorkOS user ID must be in
+  `MCP_ALLOWED_USERS`. Empty admits no one; every refusal is logged with the
+  ID, so adding a person is reading one log line.
+- **Read-only tools only.** Locally the write tools were protected partly by
+  nothing being able to reach them. Hosted, that is gone, so they are not
+  listed and are refused by name. `segment_push` additionally has no client:
+  `serve.ts` never builds one.
+- **It refuses to start** without `MCP_AUTHKIT_DOMAIN` and `MCP_PUBLIC_URL`
+  rather than serve an endpoint with no login in front of it.
+- Each request gets a new stateless server — no sessions to leak between
+  people — and the log names who called which tool.
 
 #### Installing on a machine that does not have this repo
 
@@ -418,6 +442,9 @@ src/
 ├── mcp/                    # MCP server (Claude Desktop pilots the app)
 │   ├── index.ts            # stdio entry point
 │   ├── server.ts           # Transport-agnostic server construction
+│   ├── serve.ts            # Hosted entry point (HTTP, Railway)
+│   ├── hosted.ts           # Hosted HTTP surface: discovery, auth gate, read-only
+│   ├── hosted-auth.ts      # WorkOS AuthKit token verification + allow list
 │   ├── tools.ts            # Tool surface over the domain query layer
 │   ├── args.ts             # Fail-closed argument validation
 │   ├── install.ts          # Installer logic — pure, for the portable bundle

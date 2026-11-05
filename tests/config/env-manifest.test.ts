@@ -171,7 +171,7 @@ describe("the manifest, .env.example and the code agree", () => {
       .map((s) => s.trim())
       .filter(Boolean)
       // Node's own, and the ones a test or build sets rather than an operator.
-      .filter((n) => !["NODE_ENV", "JOB_TMP", "TZ", "CI"].includes(n));
+      .filter((n) => !["NODE_ENV", "JOB_TMP", "TZ", "CI", "PORT"].includes(n));
 
     expect(used.length, "the grep found no variables, so this check is vacuous").toBeGreaterThan(10);
 
@@ -194,7 +194,7 @@ describe("the manifest, .env.example and the code agree", () => {
   it("names DATABASE_URL required on every surface", () => {
     const db = ENV_MANIFEST.find((v) => v.name === "DATABASE_URL")!;
     expect(db.severity).toBe("required");
-    expect(db.surfaces.sort()).toEqual(["mcp", "web", "worker"]);
+    expect(db.surfaces.sort()).toEqual(["mcp", "mcp-hosted", "web", "worker"]);
   });
 });
 

@@ -26,7 +26,7 @@
  *   Presence only, by construction.
  */
 
-export type Surface = "worker" | "web" | "mcp";
+export type Surface = "worker" | "web" | "mcp" | "mcp-hosted";
 export type EnvSeverity = "required" | "degraded";
 
 export interface EnvVariable {
@@ -40,13 +40,13 @@ export interface EnvVariable {
 export const ENV_MANIFEST: EnvVariable[] = [
   {
     name: "DATABASE_URL",
-    surfaces: ["worker", "web", "mcp"],
+    surfaces: ["worker", "web", "mcp", "mcp-hosted"],
     severity: "required",
     impact: "Nothing can read or write the warehouse. Every surface is dead without it.",
   },
   {
     name: "ANALYTICS_DATABASE_URL",
-    surfaces: ["mcp"],
+    surfaces: ["mcp", "mcp-hosted"],
     severity: "degraded",
     impact:
       "The `query` tool is unavailable, so ad-hoc SQL cannot be run from Claude Desktop. The other MCP tools still work.",
@@ -60,7 +60,7 @@ export const ENV_MANIFEST: EnvVariable[] = [
   },
   {
     name: "OPENAI_API_KEY",
-    surfaces: ["worker", "mcp"],
+    surfaces: ["worker", "mcp", "mcp-hosted"],
     severity: "degraded",
     impact:
       "Knowledge-base embeddings stop, so RAG retrieval degrades to whatever is already indexed. On the MCP surface `kb_search` falls back to literal substring matching and labels itself `text` rather than passing a worse search off as the semantic one.",
@@ -236,6 +236,34 @@ export const ENV_MANIFEST: EnvVariable[] = [
     severity: "degraded",
     impact:
       "The /api/generate route rejects every request, so the Figma plugin cannot generate email copy.",
+  },
+  {
+    name: "MCP_AUTHKIT_DOMAIN",
+    surfaces: ["mcp-hosted"],
+    severity: "required",
+    impact:
+      "Nobody can sign in, so the hosted MCP server refuses to start rather than serve an endpoint with no login in front of it.",
+  },
+  {
+    name: "MCP_PUBLIC_URL",
+    surfaces: ["mcp-hosted"],
+    severity: "required",
+    impact:
+      "The hosted MCP server cannot tell Claude where to sign in for it, so it refuses to start.",
+  },
+  {
+    name: "MCP_ALLOWED_USERS",
+    surfaces: ["mcp-hosted"],
+    severity: "required",
+    impact:
+      "Every sign-in to the hosted MCP server is refused. Each refusal is logged with the WorkOS user ID, which is what goes here.",
+  },
+  {
+    name: "MCP_TOKEN_AUDIENCE",
+    surfaces: ["mcp-hosted"],
+    severity: "degraded",
+    impact:
+      "Tokens are not checked for which resource they were issued for, so any token from the same AuthKit environment is accepted — the allow list still decides who gets in.",
   },
 ];
 

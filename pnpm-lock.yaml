@@ -20,6 +20,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(postgres@3.4.9)
+      jose:
+        specifier: ^6.2.10
+        version: 6.2.10
       next:
         specifier: ^15.5.20
         version: 15.5.20(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
