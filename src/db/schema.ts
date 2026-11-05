@@ -2241,3 +2241,39 @@ export const fulfilmentInvoices = pgTable(
 );
 
 export type FulfilmentInvoiceRow = typeof fulfilmentInvoices.$inferSelect;
+
+/**
+ * What each ad is — source, concept, hook, format — keyed to the Meta ad it
+ * ran as. Meta knows the spend; only this knows the ad came from Arcads
+ * rather than a cut of the October shoot. See `domain/meta/ad-assets.ts`.
+ */
+export const adAssets = pgTable(
+  "ad_assets",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** footage_cut | arcads | creatify | other */
+    source: text("source").notNull(),
+    concept: text("concept"),
+    hookText: text("hook_text"),
+    body: text("body"),
+    /** ugc, talking head, demo, static… free text, lowercased. */
+    format: text("format"),
+    /** The name it ran under in Meta. Matched ignoring case and spacing. */
+    metaAdName: text("meta_ad_name"),
+    /** The Meta ad ID, when known — exact, and preferred over the name. */
+    metaAdId: text("meta_ad_id"),
+    /** The finished-ad file in /RAD/Footage/Finished Ads it was cut as. */
+    finishedAdDropboxId: text("finished_ad_dropbox_id"),
+    notes: text("notes"),
+    author: text("author").notNull(),
+    requestedBy: text("requested_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("ad_assets_meta_ad_id_idx").on(table.metaAdId),
+    index("ad_assets_meta_ad_name_idx").on(table.metaAdName),
+  ]
+);

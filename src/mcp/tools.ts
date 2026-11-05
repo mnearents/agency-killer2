@@ -108,6 +108,7 @@ import {
 import { getRevenueByLine } from "@/domain/economics/queries";
 import { loadFulfilmentModel } from "@/domain/economics/fulfilment-queries";
 import { getRevenueByLandingPage } from "@/domain/shopify/attribution";
+import { AD_SOURCES, matchAssets, rollUp, listAdAssets, getAdAsset, saveAdAsset, type AdAsset } from "@/domain/meta/ad-assets";
 import type { FulfilmentModel } from "@/domain/economics/fulfilment-model";
 import {
   PRODUCT_ROLES,
@@ -358,30 +359,55 @@ const adsCreativePerformance: McpTool = {
   name: "ads_creative_performance",
   title: "Meta ad creative performance",
   description:
-    "Per-ad performance with the creative headline, body copy and image URL attached. This is the tool for diagnosing creative fatigue — spend and ROAS per individual creative rather than per campaign.",
+    "Per-ad performance with the creative headline, body copy and image URL attached. This is the tool for diagnosing creative fatigue — spend and ROAS per individual creative rather than per campaign. " +
+    "Each ad carries its `asset` from the ad registry (ad_assets): where it came from (footage_cut, arcads, creatify), its concept, hook and format — null when nobody registered it. `bySource`, `byFormat` and `byHook` total every ad in the window by those, which is how to tell which sources, formats and hooks win; `registry` says how many ads are registered, and unregistered spend is grouped and named rather than dropped.",
   readOnly: true,
   schema: { ...RANGE_SCHEMA, limit: { type: "integer", min: 1, max: 200, default: 25 } },
   async run(ctx, args) {
     const range = resolveRange(args, ctx.now(), 30);
     const limit = args.limit as number;
-    const ads = await getInsightsByAdCreative(ctx.db, range.startDate, range.endDate);
+    const [ads, registry] = await Promise.all([
+      getInsightsByAdCreative(ctx.db, range.startDate, range.endDate),
+      listAdAssets(ctx.db),
+    ]);
+    const matched = matchAssets(ads, registry);
+    const totals = (rows: (typeof ads)[number]["rows"]) => ({
+      spendCents: rows.reduce((s, r) => s + Number(r.spendCents), 0),
+      purchases: rows.reduce((s, r) => s + Number(r.purchases ?? 0), 0),
+      purchaseValueCents: rows.reduce((s, r) => s + Number(r.purchaseValueCents ?? 0), 0),
+    });
+    const byKey = (pick: (a: AdAsset) => string | null) =>
+      rollUp(ads.map((a) => {
+        const asset = matched.get(a.adId);
+        return { adId: a.adId, key: asset ? pick(asset) ?? "(not recorded)" : null, ...totals(a.rows) };
+      }));
 
     const ranked = ads
-      .map((a) => ({
-        adId: a.adId,
-        adName: a.adName,
-        campaignName: a.campaignName,
-        creativeTitle: a.creativeTitle,
-        creativeBody: a.creativeBody,
-        creativeImageUrl: a.creativeImageUrl,
-        ...aggregateAndCompute(a.rows),
-      }))
+      .map((a) => {
+        const asset = matched.get(a.adId);
+        return {
+          adId: a.adId,
+          adName: a.adName,
+          campaignName: a.campaignName,
+          creativeTitle: a.creativeTitle,
+          creativeBody: a.creativeBody,
+          creativeImageUrl: a.creativeImageUrl,
+          asset: asset
+            ? { id: asset.id, source: asset.source, concept: asset.concept, hookText: asset.hookText, format: asset.format }
+            : null,
+          ...aggregateAndCompute(a.rows),
+        };
+      })
       .sort((a, b) => b.spendDollars - a.spendDollars);
 
     return {
       range: describeRange(range),
       adsMatched: ranked.length,
       adsReturned: Math.min(limit, ranked.length),
+      registry: { adsInWindow: ads.length, registered: matched.size },
+      bySource: byKey((a) => a.source),
+      byFormat: byKey((a) => a.format),
+      byHook: byKey((a) => a.hookText),
       ads: ranked.slice(0, limit),
     };
   },
@@ -1244,7 +1270,7 @@ const finishedAdsTool: McpTool = {
   description:
     "The edited ad videos exported to Dropbox /RAD/Footage/Finished Ads, each with the hook, angle, product, call to action and format read from what is said in it, plus its transcript. `usage` tallies the angles, products and formats used across every ad. Check it before suggesting new ads, so a suggestion is new rather than a repeat, and so a hook that has already run is not offered as untried.\n" +
     "IMPORTANT: the analysis reads the ad's SPEECH. It cannot see the picture. A hook or offer that appears only as on-screen text is invisible to it, so a null `hook` means none was spoken — NOT that the ad has no hook. A `no-audio` ad (music and on-screen text) is listed with no analysis at all for the same reason.\n" +
-    "These ads are not linked to Meta results: this says what has been made, not how it performed. For performance use ads_creative_performance, and do not attribute a result to an ad here by guessing which Meta ad it became.\n" +
+    "These ads are not linked to Meta results by themselves: this says what has been made, not how it performed. To connect one, register it with ad_asset_set (finishedAdId = its `id`, plus the Meta ad name or ID it ran as); ads_creative_performance then reports it. Never attribute a result by guessing which Meta ad a file became.\n" +
     "Filter by `angle`, `product` or `format` (whole value, case-insensitive). Pages hold at most 100 ads; when `nextOffset` is not null, call again with `offset` set to it. For when each line is said in an ad, pass its `id` to footage_transcript.",
   readOnly: true,
   schema: {
@@ -1564,6 +1590,76 @@ const goalsPace: McpTool = {
       revenueDefinition:
         "Order totals after discounts, including tax and shipping — the same figure store_performance reports — placed in a line by what the order contained. Refunds are not subtracted.",
     };
+  },
+};
+
+const adAssetsTool: McpTool = {
+  name: "ad_assets",
+  title: "Ad asset registry",
+  description:
+    "Every registered ad: its source (footage_cut, arcads, creatify, other), concept, hook text, body, format, the Meta ad name or ID it ran as, and the finished-ad file it was cut as. Filter by `source`. " +
+    "An ad nobody registered is absent here and shows as `(unregistered)` in ads_creative_performance; register it with ad_asset_set.",
+  readOnly: true,
+  schema: { source: { type: "enum", values: AD_SOURCES } },
+  async run(ctx, args) {
+    const all = await listAdAssets(ctx.db);
+    const shown = args.source ? all.filter((a) => a.source === args.source) : all;
+    return {
+      total: all.length,
+      matched: shown.length,
+      assets: shown.map((a) => ({ ...a, createdAt: a.createdAt.toISOString(), updatedAt: a.updatedAt.toISOString() })),
+    };
+  },
+};
+
+const adAssetSet: McpTool = {
+  name: "ad_asset_set",
+  title: "Register an ad asset",
+  description:
+    "Record what an ad is: `source` (footage_cut, arcads, creatify, other), `concept`, `hookText`, `body`, `format`, and the Meta ad it ran as — `metaAdName` as it appears in Ads Manager, or `metaAdId` (exact, preferred). `finishedAdId` links the finished-ad file (the `id` from finished_ads). " +
+    "A new asset needs a source and a Meta ad name or ID — unlinked, it can never meet its results. Pass `id` to change an existing one; only the fields given change. Recorded as written by Claude for the signed-in person.",
+  readOnly: false,
+  schema: {
+    id: { type: "string" },
+    source: { type: "enum", values: AD_SOURCES },
+    concept: { type: "string" },
+    hookText: { type: "string" },
+    body: { type: "string" },
+    format: { type: "string" },
+    metaAdName: { type: "string" },
+    metaAdId: { type: "string" },
+    finishedAdId: { type: "string" },
+    notes: { type: "string" },
+  },
+  async run(ctx, args) {
+    const text = (k: string) => (typeof args[k] === "string" ? (args[k] as string).trim() || null : undefined);
+    const fields = {
+      source: args.source as string | undefined,
+      concept: text("concept"),
+      hookText: text("hookText"),
+      body: text("body"),
+      format: text("format")?.toLowerCase() ?? text("format"),
+      metaAdName: text("metaAdName"),
+      metaAdId: text("metaAdId"),
+      finishedAdDropboxId: text("finishedAdId"),
+      notes: text("notes"),
+    };
+    const given = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+
+    if (typeof args.id === "string") {
+      const existing = await getAdAsset(ctx.db, args.id);
+      if (!existing) return { error: `No ad asset with id ${args.id}. ad_assets lists them.` };
+      if (Object.keys(given).length === 0) throw new McpArgumentError("Nothing to change: pass at least one field.");
+      const saved = await saveAdAsset(ctx.db, { ...existing, ...given, id: existing.id, requestedBy: ctx.actor ?? existing.requestedBy });
+      return { written: true, asset: saved };
+    }
+
+    if (!fields.source) throw new McpArgumentError("A new ad asset needs a `source`: footage_cut, arcads, creatify or other.");
+    if (!fields.metaAdName && !fields.metaAdId) {
+      throw new McpArgumentError("A new ad asset needs the Meta ad it ran as — `metaAdName` or `metaAdId` — or it can never be matched to its results.");
+    }
+    const saved = await saveAdAsset(ctx.db, { ...given, source: fields.source, author: "claude", requestedBy: ctx.actor ?? null });
+    return { written: true, asset: saved };
   },
 };
 
@@ -3885,6 +3981,8 @@ export const ALL_TOOLS: McpTool[] = [
   goalsSet,
   goalsPace,
   revenueByLandingPage,
+  adAssetsTool,
+  adAssetSet,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

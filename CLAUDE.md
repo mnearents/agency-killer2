@@ -289,6 +289,16 @@ and `data_freshness` reports active products with none.
   author and the signed-in person (`MCP_ALLOWED_USERS` `id=Name`) as who
   asked. `role: null` means undecided, never "no role".
 
+### Ad asset registry
+
+`ad_assets` records what each ad IS — source (footage_cut, arcads,
+creatify, other), concept, hook, body, format — keyed to the Meta ad it ran
+as (ID preferred, else name ignoring case and spacing) and optionally to its
+finished-ad file. `ads_creative_performance` attaches it per ad and totals
+`bySource`, `byFormat` and `byHook` over every ad in the window, with
+unregistered spend grouped and named rather than dropped. A new asset must
+name its Meta ad: unlinked, it can never meet its results.
+
 ### Where orders came from
 
 Since 2026-11-05 the order sync requests Shopify's `customerJourneySummary`
@@ -349,10 +359,11 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; eleven are not.** The writers are
-  `calendar_add`, `calendar_update`, `calendar_remove`, `draft_save`,
-  `draft_record_decision`, `experiment_start`, `experiment_record_result`,
-  `goals_set`, `pilot_notes_add`, `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+- **Most tools are read-only; twelve are not.** The writers are
+  `ad_asset_set`, `calendar_add`, `calendar_update`, `calendar_remove`,
+  `draft_save`, `draft_record_decision`, `experiment_start`,
+  `experiment_record_result`, `goals_set`, `pilot_notes_add`,
+  `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and

@@ -177,6 +177,7 @@ describe("the tool catalogue", () => {
     const writers = ALL_TOOLS.filter((t) => !t.readOnly).map((t) => t.name).sort();
     expect(writers).toEqual(
       [
+        "ad_asset_set",
         "calendar_add",
         "calendar_remove",
         "calendar_update",
