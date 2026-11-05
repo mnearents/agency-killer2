@@ -11,7 +11,7 @@
  * than something a human has to infer from an absence.
  */
 
-import { MetaApiError } from "@/integrations/meta-api";
+import { MetaApiError, META_RATE_LIMIT_CODES } from "@/integrations/meta-api";
 
 /** Meta error codes that mean the credentials are the problem. */
 const AUTH_ERROR_CODES = new Set([
@@ -23,14 +23,8 @@ const AUTH_ERROR_CODES = new Set([
   10, // permission denied
 ]);
 
-/** Meta error codes that mean "slow down", not "you are broken". */
-const RATE_LIMIT_ERROR_CODES = new Set([
-  4, // application request limit reached
-  17, // user request limit reached
-  32, // page-level throttle
-  613, // calls per second limit
-  80000, 80001, 80002, 80003, 80004, // business use case throttling
-]);
+/** Meta error codes that mean "slow down", not "you are broken". Shared with the paging retry. */
+const RATE_LIMIT_ERROR_CODES = META_RATE_LIMIT_CODES;
 
 export type SyncOutcome =
   | "ok"

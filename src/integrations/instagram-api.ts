@@ -124,9 +124,29 @@ async function fetchJson<T>(url: string): Promise<T> {
   if (!response.ok) {
     const errorText = await response.text();
     console.error(`[instagram-api] Error ${response.status}: ${errorText.slice(0, 300)}`);
-    throw new Error(`Instagram API error (${response.status}): ${errorText}`);
+    throw new Error(describeInstagramError(response.status, errorText));
   }
   return response.json() as Promise<T>;
+}
+
+/**
+ * The error to raise, with the fix named where the cause is known. Code 100
+ * subcode 33 on the account means the token cannot see it — on a system user
+ * token, because no Page (and so no Instagram account) is assigned to it.
+ */
+export function describeInstagramError(status: number, body: string): string {
+  let hint = "";
+  try {
+    const e = (JSON.parse(body) as { error?: { code?: number; error_subcode?: number } }).error;
+    if (e?.code === 100 && e.error_subcode === 33) {
+      hint =
+        " — the token cannot see this Instagram account. Assign the Facebook Page and the Instagram account to the system user " +
+        "(Business Settings → System users → Assign assets), then the next sync reads it.";
+    }
+  } catch {
+    // Not JSON: nothing to add.
+  }
+  return `Instagram API error (${status}): ${body}${hint}`;
 }
 
 const MAX_PAGES = 20;

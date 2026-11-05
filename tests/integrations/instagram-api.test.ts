@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseInsightsResponse, type IgMediaInsight } from "@/integrations/instagram-api";
+import { describeInstagramError, parseInsightsResponse, type IgMediaInsight } from "@/integrations/instagram-api";
 
 describe("parseInsightsResponse", () => {
   it("extracts all metrics from a reel response", () => {
@@ -98,5 +98,18 @@ describe("parseInsightsResponse", () => {
 
     expect(result.impressions).toBe(0);
     expect(result.reach).toBe(500);
+  });
+});
+
+describe("describeInstagramError", () => {
+  // Synced daily for two weeks as an opaque Graph API error. The cause was a
+  // system user with no Page assigned; the message now says so.
+  it("names the missing asset assignment for code 100 subcode 33", () => {
+    const body = JSON.stringify({ error: { message: "Unsupported get request. Object with ID '17841401840899899' does not exist", code: 100, error_subcode: 33 } });
+    expect(describeInstagramError(400, body)).toMatch(/^Instagram API error \(400\): .*Assign the Facebook Page and the Instagram account to the system user/s);
+  });
+
+  it("leaves any other error as it was", () => {
+    expect(describeInstagramError(500, "boom")).toBe("Instagram API error (500): boom");
   });
 });

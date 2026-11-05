@@ -218,18 +218,75 @@ const INSIGHT_FIELDS = [
   "actions", "action_values",
 ].join(",");
 
+/** Meta error codes that mean "slow down", not "you are broken". */
+export const META_RATE_LIMIT_CODES = new Set([
+  4, // application request limit reached
+  17, // user request limit reached
+  32, // page-level throttle
+  613, // calls per second limit
+  80000, 80001, 80002, 80003, 80004, // business use case throttling
+]);
+
+/** The longest a daily sync will wait out a throttle before recording rate-limited. */
+const MAX_WAIT_MS = 5 * 60_000;
+const BACKOFF_MS = [30_000, 60_000, 120_000];
+
+export interface PagingOptions {
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+  /** Pause between page requests, so a long listing does not burst the account's quota. */
+  pageDelayMs?: number;
+  maxRetries?: number;
+}
+
+/**
+ * Minutes until Meta will serve this account again, from the
+ * x-business-use-case-usage header, when it says.
+ */
+function regainAccessMs(headers: Headers): number | null {
+  const raw = headers.get("x-business-use-case-usage");
+  if (!raw) return null;
+  try {
+    const usage = JSON.parse(raw) as Record<string, { estimated_time_to_regain_access?: number }[]>;
+    const minutes = Object.values(usage).flat().map((u) => u.estimated_time_to_regain_access ?? 0);
+    return minutes.length === 0 ? null : Math.max(...minutes) * 60_000;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetch all pages of a paginated Graph API response.
+ *
+ * A throttled page is waited out and retried — for as long as Meta says when
+ * it says, else 30s, 60s, 120s — rather than abandoning the listing. The
+ * creatives fetch was refused on the ad-account limit every day and gave up
+ * on the first refusal. A wait longer than five minutes is not attempted: the
+ * error is thrown and the run records rate-limited.
  */
-async function fetchAllPages<T>(url: string): Promise<T[]> {
+export async function fetchAllPages<T>(url: string, options: PagingOptions = {}): Promise<T[]> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const maxRetries = options.maxRetries ?? BACKOFF_MS.length;
   const results: T[] = [];
   let nextUrl: string | null = url;
+  let first = true;
 
   while (nextUrl) {
-    const response: Response = await fetch(nextUrl);
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw MetaApiError.fromResponseBody(errorText, response.status);
+    if (!first && options.pageDelayMs) await sleep(options.pageDelayMs);
+    first = false;
+
+    let response: Response;
+    for (let attempt = 0; ; attempt++) {
+      response = await fetchImpl(nextUrl);
+      if (response.ok) break;
+      const error = MetaApiError.fromResponseBody(await response.text(), response.status);
+      const throttled = error.code !== null && META_RATE_LIMIT_CODES.has(error.code);
+      if (!throttled || attempt >= maxRetries) throw error;
+      const wait = regainAccessMs(response.headers) ?? BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+      if (wait > MAX_WAIT_MS) throw error;
+      console.warn(`[meta-api] Throttled (code ${error.code}); waiting ${Math.round(wait / 1000)}s before retrying`);
+      await sleep(wait);
     }
 
     const json: { data?: T[]; paging?: { next?: string } } = await response.json();
@@ -318,7 +375,9 @@ export function createMetaApiClient(accessToken: string): MetaApiClient {
         fields: CREATIVE_FIELDS,
         limit: "50", // Lower limit — creatives are large objects, Meta rate-limits at 500
       });
-      return fetchAllPages<MetaApiCreative>(url);
+      // Paced: creatives are the heaviest listing and the one that kept
+      // hitting the ad-account limit.
+      return fetchAllPages<MetaApiCreative>(url, { pageDelayMs: 2_000 });
     },
 
     async getInsights(accountId, startDate, endDate) {
