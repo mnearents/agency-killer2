@@ -242,3 +242,72 @@ describe("transformOrderWithLineItems", () => {
     expect(result.lineItems[0].orderId).toBe("gid://shopify/Order/123");
   });
 });
+
+// ─── Recurring by contents (5b) ───────────────────────────────────────
+
+describe("transformOrder: recurring from what the order contains", () => {
+  // Renewals billed by the subscription app before the Seal migration carry
+  // no tag. They still carry the plan itself, and that is what makes an order
+  // a subscription order — not a tag one app wrote and another did not.
+  it("flags an untagged order that contains a Subscription product", () => {
+    const order = {
+      ...BASE_ORDER,
+      tags: [],
+      lineItems: { nodes: [{ ...BASE_LINE_ITEM, product: { id: "gid://shopify/Product/9", productType: "Subscription" } }] },
+    };
+    expect(transformOrder(order, SYNCED_AT).isRecurring).toBe(1);
+  });
+
+  it("leaves an untagged product order unflagged", () => {
+    expect(transformOrder({ ...BASE_ORDER, tags: [], lineItems: { nodes: [BASE_LINE_ITEM] } }, SYNCED_AT).isRecurring).toBe(0);
+  });
+});
+
+// ─── Customer journey (7) ─────────────────────────────────────────────
+
+describe("transformOrder: where the order came from", () => {
+  const journey = {
+    ready: true,
+    firstVisit: {
+      landingPage: "https://radandhappy.com/blogs/news/homeschool-planner-guide?utm_source=pinterest",
+      referrerUrl: "https://www.pinterest.com/",
+      source: "Pinterest",
+      sourceType: null,
+      utmParameters: { source: "pinterest", medium: "social", campaign: "fall", content: null, term: null },
+    },
+    lastVisit: {
+      landingPage: "https://radandhappy.com/collections/planners",
+      referrerUrl: "https://www.google.com/",
+      source: "Google",
+      sourceType: "SEO",
+      utmParameters: null,
+    },
+  };
+
+  // First touch is what a blog post is credited with: it brought the customer.
+  it("records the first visit's landing path, referrer, source and UTMs", () => {
+    const r = transformOrder({ ...BASE_ORDER, customerJourneySummary: journey }, SYNCED_AT);
+    expect(r).toMatchObject({
+      landingPath: "/blogs/news/homeschool-planner-guide",
+      referringSite: "https://www.pinterest.com/",
+      journeySource: "Pinterest",
+      utmSource: "pinterest",
+      utmMedium: "social",
+      utmCampaign: "fall",
+      utmContent: null,
+      lastLandingPath: "/collections/planners",
+      journeyReady: 1,
+    });
+  });
+
+  // An order with no journey is unknown, not "direct".
+  it("leaves everything null when Shopify has no journey for the order", () => {
+    const r = transformOrder({ ...BASE_ORDER, customerJourneySummary: null }, SYNCED_AT);
+    expect(r).toMatchObject({ landingPath: null, journeySource: null, utmSource: null, journeyReady: 0 });
+  });
+
+  it("keeps a checkout-domain landing page as the full URL's path", () => {
+    const r = transformOrder({ ...BASE_ORDER, customerJourneySummary: { ...journey, firstVisit: { ...journey.firstVisit, landingPage: "https://shop.app/checkout/1/cn/x" } } }, SYNCED_AT);
+    expect(r.landingPath).toBe("shop.app/checkout/1/cn/x");
+  });
+});

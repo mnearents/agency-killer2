@@ -13,6 +13,7 @@
 import type {
   ShopifyApiOrder,
   ShopifyApiLineItem,
+  ShopifyApiVisit,
 } from "@/integrations/shopify-api";
 import type {
   NewShopifyOrder,
@@ -38,10 +39,47 @@ function dollarsToCentsOrNull(value: string | undefined | null): number | null {
   return Math.round(parseFloat(value) * 100);
 }
 
+const STORE_HOSTS = new Set(["radandhappy.com", "www.radandhappy.com"]);
+
+/** "/blogs/news/x" for a page on the store; "shop.app/checkout/..." for one elsewhere. Query strings dropped. */
+export function landingPathOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    return STORE_HOSTS.has(u.hostname) ? path : `${u.hostname}${path === "/" ? "" : path}`;
+  } catch {
+    return null;
+  }
+}
+
+function journeyOf(raw: ShopifyApiOrder) {
+  const j = raw.customerJourneySummary ?? null;
+  const first: ShopifyApiVisit | null = j?.firstVisit ?? null;
+  const utm = first?.utmParameters ?? null;
+  return {
+    referringSite: first?.referrerUrl || null,
+    utmSource: utm?.source ?? null,
+    utmMedium: utm?.medium ?? null,
+    utmCampaign: utm?.campaign ?? null,
+    utmContent: utm?.content ?? null,
+    utmTerm: utm?.term ?? null,
+    landingPage: first?.landingPage ?? null,
+    landingPath: landingPathOf(first?.landingPage),
+    journeySource: first?.source ?? null,
+    journeySourceType: first?.sourceType ?? null,
+    lastLandingPath: landingPathOf(j?.lastVisit?.landingPage),
+    journeyReady: j?.ready ? 1 : 0,
+  };
+}
+
 export function transformOrder(
   raw: ShopifyApiOrder,
   syncedAt: Date
 ): NewShopifyOrder {
+  // A subscription order by its contents as well as its tags: renewals billed
+  // by the app before the Seal migration carry no tag, but they carry the plan.
+  const hasPlan = (raw.lineItems?.nodes ?? []).some((li) => li.product?.productType === "Subscription");
   return {
     id: raw.id,
     orderNumber: raw.name,
@@ -54,8 +92,8 @@ export function transformOrder(
     fulfillmentStatus: raw.displayFulfillmentStatus ?? null,
     customerId: raw.customer?.id ?? null,
     sourceName: raw.sourceIdentifier ?? null,
-    referringSite: null,
-    isRecurring: isSubscriptionOrder(raw.tags) ? 1 : 0,
+    ...journeyOf(raw),
+    isRecurring: isSubscriptionOrder(raw.tags) || hasPlan ? 1 : 0,
     tags: raw.tags,
     discountCodes: raw.discountCodes,
     orderCreatedAt: new Date(raw.createdAt),

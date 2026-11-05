@@ -23,7 +23,21 @@ export interface ShopifyApiOrder {
   tags: string[];
   discountCodes: string[];
   sourceIdentifier: string | null;
+  /** Where the customer came from. Null when Shopify recorded no visit. */
+  customerJourneySummary?: {
+    ready: boolean;
+    firstVisit: ShopifyApiVisit | null;
+    lastVisit: ShopifyApiVisit | null;
+  } | null;
   lineItems: { nodes: ShopifyApiLineItem[] };
+}
+
+export interface ShopifyApiVisit {
+  landingPage: string | null;
+  referrerUrl: string | null;
+  source: string | null;
+  sourceType: string | null;
+  utmParameters: { source: string | null; medium: string | null; campaign: string | null; content: string | null; term: string | null } | null;
 }
 
 export interface ShopifyApiLineItem {
@@ -189,6 +203,11 @@ const ORDERS_QUERY = `
         tags
         discountCodes
         sourceIdentifier
+        customerJourneySummary {
+          ready
+          firstVisit { landingPage referrerUrl source sourceType utmParameters { source medium campaign content term } }
+          lastVisit { landingPage referrerUrl source sourceType utmParameters { source medium campaign content term } }
+        }
         lineItems(first: 50) {
           nodes {
             id title quantity

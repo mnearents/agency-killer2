@@ -292,6 +292,23 @@ export const shopifyOrders = pgTable(
     utmCampaign: text("utm_campaign"),
     utmContent: text("utm_content"),
     utmTerm: text("utm_term"),
+    /**
+     * Where the customer came from, from Shopify's customerJourneySummary —
+     * FIRST visit, which is what brought them (a blog post is credited with
+     * the customers it brought, not the ones who passed through it). The
+     * utm_* and referring_site columns above are filled from the same visit.
+     * Null on orders synced before this was requested, and on orders Shopify
+     * has no visit for: unknown, not direct.
+     */
+    landingPage: text("landing_page"),
+    /** Path of the first landing page on the store; host + path elsewhere. */
+    landingPath: text("landing_path"),
+    journeySource: text("journey_source"),
+    journeySourceType: text("journey_source_type"),
+    /** The last visit's landing path — the page that closed the sale. */
+    lastLandingPath: text("last_landing_path"),
+    /** 1 once Shopify had finished computing the journey. */
+    journeyReady: integer("journey_ready").notNull().default(0),
 
     // Subscription tracking
     isRecurring: integer("is_recurring").notNull().default(0), // 0 = false, 1 = true

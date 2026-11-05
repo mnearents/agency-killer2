@@ -11,9 +11,9 @@
  * rather than a judgement.
  */
 
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, and, gte } from "drizzle-orm";
 import type { Db } from "./client";
-import { shopifyLineItems, shopifyProducts } from "./schema";
+import { shopifyLineItems, shopifyProducts, shopifyOrders } from "./schema";
 
 export interface RawQualityCheck {
   check: string;
@@ -96,8 +96,23 @@ export function buildStrategyCoverageQuery(db: Db) {
     .where(eq(shopifyProducts.status, "ACTIVE"));
 }
 
-export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
-  const [[lineItems], [strategy]] = await Promise.all([buildQualityQuery(db), buildStrategyCoverageQuery(db)]);
+/** Non-renewal orders from the last 30 days, and how many have no first landing page. */
+export function buildJourneyCoverageQuery(db: Db, now: Date) {
+  return db
+    .select({
+      total: sql<number>`COUNT(*)`,
+      missing: sql<number>`COUNT(*) FILTER (WHERE ${shopifyOrders.landingPath} IS NULL)`,
+    })
+    .from(shopifyOrders)
+    .where(and(eq(shopifyOrders.isRecurring, 0), gte(shopifyOrders.orderCreatedAt, new Date(now.getTime() - 30 * 86_400_000))));
+}
+
+export async function getDataQuality(db: Db, now: Date = new Date()): Promise<QualityCheckResult[]> {
+  const [[lineItems], [strategy], [journeys]] = await Promise.all([
+    buildQualityQuery(db),
+    buildStrategyCoverageQuery(db),
+    buildJourneyCoverageQuery(db, now),
+  ]);
 
   const total = Number(lineItems?.total ?? 0);
 
@@ -125,6 +140,14 @@ export async function getDataQuality(db: Db): Promise<QualityCheckResult[]> {
         "Nobody has said what these products are for, so any recommendation about them rests on sales alone — which is how a product that is not meant to grow gets pitched for promotion. Set roles with product_strategy_set; product_strategy with role none lists them.",
       affected: Number(strategy?.undecided ?? 0),
       total: Number(strategy?.total ?? 0),
+    },
+    {
+      check: "recent orders with no landing page",
+      table: "shopify_orders",
+      detail:
+        "Non-renewal orders from the last 30 days that carry no customer journey, so revenue_by_landing_page cannot credit them to a page. Some orders genuinely have none (draft orders, POS, marketplace); a share that climbs means the order sync stopped reading customerJourneySummary.",
+      affected: Number(journeys?.missing ?? 0),
+      total: Number(journeys?.total ?? 0),
     },
   ]);
 }

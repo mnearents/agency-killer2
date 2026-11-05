@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createDb } from "@/db/client";
-import { buildQualityQuery, buildStrategyCoverageQuery, classifyQuality, type RawQualityCheck } from "@/db/quality";
+import { buildQualityQuery, buildStrategyCoverageQuery, buildJourneyCoverageQuery, classifyQuality, type RawQualityCheck } from "@/db/quality";
 
 function raw(overrides: Partial<RawQualityCheck> = {}): RawQualityCheck {
   return {
@@ -87,6 +87,18 @@ describe("buildStrategyCoverageQuery", () => {
     expect(sql).toContain('ps.product_id = "shopify_products"."id"');
     expect(sql).toMatch(/limit 1/i);
     expect(sql).toMatch(/"shopify_products"\."status" = \$1/);
+  });
+});
+
+describe("buildJourneyCoverageQuery", () => {
+  const { sql } = buildJourneyCoverageQuery(createDb("postgres://user:pass@localhost:5432/test"), new Date("2026-11-05T00:00:00Z")).toSQL();
+
+  // Renewals have no visit behind them; counting them would make a healthy
+  // journey feed look half empty.
+  it("counts only non-renewal orders from the last 30 days", () => {
+    expect(sql).toMatch(/"is_recurring" = \$\d/);
+    expect(sql).toMatch(/"order_created_at" >= \$\d/);
+    expect(sql).toMatch(/"landing_path" is null/i);
   });
 });
 

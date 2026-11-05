@@ -289,6 +289,25 @@ and `data_freshness` reports active products with none.
   author and the signed-in person (`MCP_ALLOWED_USERS` `id=Name`) as who
   asked. `role: null` means undecided, never "no role".
 
+### Where orders came from
+
+Since 2026-11-05 the order sync requests Shopify's `customerJourneySummary`
+and stores the FIRST visit's landing path, referrer, source and UTMs on each
+order (`landing_path`, `referring_site`, `utm_*`), plus the last visit's
+landing path. The utm and referrer columns were empty on every order before
+— the sync never asked. Journeys exist for old orders in Shopify, so
+`!sync shopify 365` backfills a year; the daily sync covers 30 days.
+
+`revenue_by_landing_page` credits first touch by default (what brought the
+customer — how a blog post is judged), excludes renewals, and reports what
+share of orders carry a journey so an unmeasured page is never read as one
+that earned nothing. `web_traffic` takes `page` (exact) and `pagePrefix`.
+Meta ad orders carry the ad's IDs in their UTMs (`utm_content` is the ad ID).
+
+The same sync now marks an order recurring when it contains a Subscription
+product, not only when it carries a subscription tag (5b): pre-Seal renewals
+had the plan but no tag. Migration 0052 applied the rule to stored orders.
+
 ### Goals and pace
 
 `goals` holds revenue targets by period (YYYY or YYYY-MM) and line (total,

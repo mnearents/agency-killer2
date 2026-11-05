@@ -107,6 +107,7 @@ import {
 } from "@/domain/strategy/goals";
 import { getRevenueByLine } from "@/domain/economics/queries";
 import { loadFulfilmentModel } from "@/domain/economics/fulfilment-queries";
+import { getRevenueByLandingPage } from "@/domain/shopify/attribution";
 import type { FulfilmentModel } from "@/domain/economics/fulfilment-model";
 import {
   PRODUCT_ROLES,
@@ -311,7 +312,7 @@ const dataFreshness: McpTool = {
   async run(ctx) {
     const [sources, quality, environment] = await Promise.all([
       getDataFreshness(ctx.db, ctx.now()),
-      getDataQuality(ctx.db),
+      getDataQuality(ctx.db, ctx.now()),
       getEnvHealth(ctx.db, ctx.now()),
     ]);
     return {
@@ -1762,17 +1763,26 @@ const webTraffic: McpTool = {
     "Shopify session counts, overall or by referrer source, referrer name or landing page. " +
     "CRITICAL: Shopify's session counting step-changed on " + SESSION_MEASUREMENT_BREAK + " (#74). Before it, Search Console clicks ran at 82-107% of Shopify search sessions; after, never below ~130% and averaging ~170%. It moved on one day and only one side moved. " +
     "Any window spanning that date mixes two measurement regimes, and `crossesMeasurementBreak` says so — a year-over-year decline read across it is partly an artefact. Dec 2025 to Jan 2026 is -18% by Search Console clicks and -56% by Shopify sessions; both cannot be right. " +
-    "Use search_performance for anything that has to be comparable across that boundary.",
+    "Use search_performance for anything that has to be comparable across that boundary. " +
+    "`page` looks up one landing page exactly (a path like /blogs/news/my-post); `pagePrefix` narrows to every page under a path (e.g. /blogs/). Either implies dimension landing_page. For revenue by landing page, use revenue_by_landing_page.",
   readOnly: true,
   schema: {
     dimension: { type: "enum", values: SESSION_DIMENSIONS, default: "total" },
     startDate: { type: "date" },
     endDate: { type: "date" },
     limit: { type: "integer", min: 1, max: 200, default: 25 },
+    page: { type: "string" },
+    pagePrefix: { type: "string" },
   },
   async run(ctx, args) {
     const range = seoRange(ctx, args);
-    const dimension = args.dimension as SessionDimension;
+    const pageFilter = typeof args.page === "string" ? { exact: normalisePagePath(args.page) }
+      : typeof args.pagePrefix === "string" ? { prefix: args.pagePrefix.trim() }
+      : null;
+    if (pageFilter && args.dimension !== "total" && args.dimension !== "landing_page") {
+      throw new McpArgumentError("`page` and `pagePrefix` filter landing pages; use them with dimension landing_page (or none).");
+    }
+    const dimension = (pageFilter ? "landing_page" : args.dimension) as SessionDimension;
     const crosses = crossesSessionBreak(range);
 
     const [totals, crossCheck] = await Promise.all([
@@ -1811,8 +1821,75 @@ const webTraffic: McpTool = {
 
     if (dimension === "total") return base;
 
-    const { rows, matched } = await getSessionsByDimension(ctx.db, dimension, range, args.limit as number);
-    return { ...base, dimension, matched, returned: rows.length, rows };
+    const { rows, matched } = pageFilter
+      ? await getSessionsByDimension(ctx.db, dimension, range, args.limit as number, pageFilter)
+      : await getSessionsByDimension(ctx.db, dimension, range, args.limit as number);
+    return {
+      ...base,
+      dimension,
+      ...(pageFilter ? { filter: pageFilter } : {}),
+      matched,
+      returned: rows.length,
+      rows,
+      ...(pageFilter && matched === 0 ? { note: "No sessions recorded for that page in this window. Paths are as Shopify records them — no domain, no trailing slash, no query string." } : {}),
+    };
+  },
+};
+
+/** "/blogs/news/x/" and "https://radandhappy.com/blogs/news/x?y" both become "/blogs/news/x". */
+function normalisePagePath(input: string): string {
+  let p = input.trim();
+  try {
+    if (/^https?:\/\//.test(p)) p = new URL(p).pathname;
+  } catch {
+    // Not a URL: treat as a path.
+  }
+  p = p.split("?")[0];
+  if (!p.startsWith("/")) p = `/${p}`;
+  return p.length > 1 ? p.replace(/\/+$/, "") : p;
+}
+
+const revenueByLandingPage: McpTool = {
+  name: "revenue_by_landing_page",
+  title: "Revenue by landing page",
+  description:
+    "Orders and revenue by the page the customer landed on, from Shopify's customer journey on each order. `touch: first` (default) credits the page of the customer's FIRST visit — what brought them, which is how a blog post is judged; `touch: last` credits the page of the visit that closed the sale. " +
+    "`page` looks up one path exactly; `pagePrefix: /blogs/` gives every blog post. Subscription renewals are excluded by default (`includeRenewals` adds them): they bill on the 1st with no visit behind them. " +
+    "Journeys are recorded only on orders synced since the order sync began requesting them (2026-11-05); older orders have none until re-synced (`!sync shopify 365`). `coverage` says what share of orders in the window carry one — a page absent from the rows is unmeasured, not unprofitable, until that share is high. Revenue is order totals after discounts, including tax and shipping, as store_performance reports.",
+  readOnly: true,
+  schema: {
+    days: { type: "integer", min: 1, max: 730, default: 90 },
+    touch: { type: "enum", values: ["first", "last"], default: "first" },
+    page: { type: "string" },
+    pagePrefix: { type: "string" },
+    includeRenewals: { type: "boolean", default: false },
+    limit: { type: "integer", min: 1, max: 200, default: 25 },
+  },
+  async run(ctx, args) {
+    const until = ctx.now();
+    const since = new Date(until.getTime() - (args.days as number) * 86_400_000);
+    const exact = typeof args.page === "string" ? normalisePagePath(args.page) : undefined;
+    const prefix = typeof args.pagePrefix === "string" ? args.pagePrefix.trim() : undefined;
+    const r = await getRevenueByLandingPage(ctx.db, {
+      since, until, touch: args.touch as "first" | "last", exact, prefix,
+      excludeRecurring: !args.includeRenewals, limit: args.limit as number,
+    });
+    const sharePct = r.coverage.orders === 0 ? null : Math.round((100 * r.coverage.withJourney) / r.coverage.orders);
+    return {
+      window: { since: since.toISOString(), until: until.toISOString(), days: args.days },
+      touch: args.touch,
+      filter: { page: exact ?? null, pagePrefix: prefix ?? null, includeRenewals: args.includeRenewals },
+      coverage: {
+        ...r.coverage,
+        sharePct,
+        ...(sharePct !== null && sharePct < 80
+          ? { warning: `Only ${sharePct}% of orders in this window carry a journey, so a page missing from these rows is unmeasured, not zero. Re-sync older orders with !sync shopify 365, or use a window after 2026-11-05.` }
+          : {}),
+      },
+      matched: r.matched,
+      returned: r.rows.length,
+      rows: r.rows.map((row) => ({ landingPath: row.landingPath, orders: row.orders, revenueDollars: dollars(row.revenueCents) })),
+    };
   },
 };
 
@@ -3807,6 +3884,7 @@ export const ALL_TOOLS: McpTool[] = [
   goalsTool,
   goalsSet,
   goalsPace,
+  revenueByLandingPage,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

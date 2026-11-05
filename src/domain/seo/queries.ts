@@ -176,11 +176,15 @@ export async function getSessionsByDimension(
   dimension: SessionDimension,
   range: DateRange,
   limit: number,
+  /** Narrow to one value exactly, or to every value starting with a prefix. */
+  filter: { exact?: string; prefix?: string } = {},
 ): Promise<{ rows: SessionRow[]; matched: number }> {
   const base = and(
     eq(webSessions.dimension, dimension),
     gte(webSessions.date, range.from),
     lte(webSessions.date, range.to),
+    filter.exact !== undefined ? eq(webSessions.value, filter.exact) : undefined,
+    filter.prefix !== undefined ? sql`starts_with(${webSessions.value}, ${filter.prefix})` : undefined,
   );
 
   const [{ matched }] = await db
