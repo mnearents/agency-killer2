@@ -231,6 +231,15 @@ describe("parseInvoiceLines on the later layout", () => {
   });
 });
 
+describe("normaliseCategory on the 720698 reissue", () => {
+  it("reads a truncated 'Recurring charg' as recurring", () => {
+    expect(normaliseCategory("Recurring charg")).toBe("recurring");
+  });
+  it("keeps returns postage as its own category", () => {
+    expect(normaliseCategory("Returns postage")).toBe("returns_postage");
+  });
+});
+
 describe("isShippingOnlyInvoice", () => {
   it("recognises an invoice whose only item is Shipping", () => {
     expect(isShippingOnlyInvoice(["Invoice no.: 20980", "1. Shipping $81.47", "Total", "$81.47"])).toBe(true);

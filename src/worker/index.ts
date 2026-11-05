@@ -442,7 +442,7 @@ async function main() {
       console.log(
         `[sync:invoices] ${result.pdfs} PDF(s) in the folder: ${result.imported} imported ` +
           `(${Object.entries(result.byKind).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}), ` +
-          `${result.unchanged} unchanged, ${result.failed} failed` + (result.notPdf > 0 ? `, ${result.notPdf} not PDFs` : ""),
+          `${result.unchanged} unchanged, ${result.superseded} superseded by a reissue, ${result.failed} failed` + (result.notPdf > 0 ? `, ${result.notPdf} not PDFs` : ""),
       );
       if (result.errors.length > 0) console.error("[sync:invoices] Errors:", result.errors);
       if (result.failed > 0 && result.imported === 0 && result.unchanged === 0) {

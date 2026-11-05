@@ -71,6 +71,8 @@ export function normaliseInvoiceDate(text: string | null): string | null {
 export function normaliseCategory(description: string): string {
   // "Monthly minimum - September": the top-up to the 3PL's monthly minimum.
   if (/^monthly\s+minimum/i.test(description.trim())) return "minimum";
+  // The reissued 720698 prints "Recurring charg": the PDF truncates the cell.
+  if (/^recurring\b/i.test(description.trim())) return "recurring";
   return description
     .replace(/\s*charges?\s*$/i, "")
     .trim()

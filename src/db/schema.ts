@@ -2288,7 +2288,7 @@ export const fulfilmentInvoiceFiles = pgTable("fulfilment_invoice_files", {
   name: text("name").notNull(),
   md5: text("md5"),
   modifiedTime: text("modified_time").notNull(),
-  /** imported | failed */
+  /** imported | superseded (an older copy of a reissued invoice) | failed */
   outcome: text("outcome").notNull(),
   /** evobox | carrier | shipping */
   kind: text("kind"),

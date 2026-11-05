@@ -66,6 +66,30 @@ describe("syncInvoiceFolder", () => {
     expect(again.d.download).toHaveBeenCalledWith("broken");
   });
 
+  // Evobox reissued 720698 two hours later with the postage taken out of its
+  // order charges. Read in either order, the newer file must be what stands.
+  it("keeps the most recently modified file when two carry the same invoice number", async () => {
+    TEXT.billOld = ["Invoice no.: 762890", "Invoice date: 11/03/2026", "1. Sales Order charges 1 $291.24 $291.24", "Total", "$291.24", "Ful fi llment 10/17-10/30"];
+    const older = { ...file("billOld", "Invoice_762890_from_Evobox.pdf"), modifiedTime: "2026-11-03T18:00:00Z" };
+    const newer = { ...file("bill", "Invoice_762890_from_Evobox.pdf"), modifiedTime: "2026-11-03T20:00:00Z" };
+    for (const order of [[older, newer], [newer, older]]) {
+      const { d, stored, recorded } = deps(order);
+      const r = await syncInvoiceFolder(d);
+      expect(stored.at(-1)).toEqual([expect.objectContaining({ invoiceNumber: "762890", amountCents: 12_782 })]);
+      expect(r.superseded).toBe(1);
+      expect(recorded.find((x) => x.id === "billOld")?.outcome).toBe("superseded");
+    }
+  });
+
+  it("does not let an older version replace a newer one imported on an earlier run", async () => {
+    TEXT.billOld = ["Invoice no.: 762890", "Invoice date: 11/03/2026", "1. Sales Order charges 1 $291.24 $291.24", "Total", "$291.24", "Ful fi llment 10/17-10/30"];
+    const known = new Map([["bill", { md5: "m-bill", modifiedTime: "2026-11-03T20:00:00Z", outcome: "imported", invoiceNumber: "762890" }]]);
+    const { d } = deps([{ ...file("bill", "a.pdf"), modifiedTime: "2026-11-03T20:00:00Z" }, { ...file("billOld", "b.pdf"), modifiedTime: "2026-11-03T18:00:00Z" }], known);
+    const r = await syncInvoiceFolder(d);
+    expect(d.store).not.toHaveBeenCalled();
+    expect(r.superseded).toBe(1);
+  });
+
   it("ignores files that are not PDFs, and says how many", async () => {
     const { d } = deps([file("doc", "notes", "m", "application/vnd.google-apps.document")]);
     expect(await syncInvoiceFolder(d)).toMatchObject({ listed: 1, pdfs: 0, notPdf: 1 });

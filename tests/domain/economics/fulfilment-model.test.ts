@@ -19,6 +19,18 @@ describe("computeFulfilmentRates", () => {
     expect(r.coverage.handling).toMatchObject({ from: "2026-10-17", to: "2026-10-30", shippedOrders: 140, amountCents: 14_532 });
   });
 
+  // Return labels scale with orders like the returns they come with.
+  it("counts returns postage as handling", () => {
+    const r = computeFulfilmentRates([evobox("order", 13_580), evobox("returns_postage", 420)], shippedByDay, { start: "2026-10-18", end: "2026-10-29" });
+    expect(r.rates.handling!.perShippedOrderCents).toBe(100);
+  });
+
+  // A category nobody placed must be seen, not silently left out of COD.
+  it("names a billed category it does not know", () => {
+    const r = computeFulfilmentRates([evobox("order", 14_000), evobox("pallet_fee", 5_000)], shippedByDay, { start: "2026-10-18", end: "2026-10-29" });
+    expect(r.notes.join(" ")).toMatch(/pallet_fee.*\$50\.00/);
+  });
+
   // Storage and the API fee do not grow with orders: overhead, not COD.
   it("keeps storage, the recurring fee and the minimum top-up out of the per-order rate", () => {
     const r = computeFulfilmentRates([evobox("order", 14_000), evobox("storage", 38_478), evobox("recurring", 12_500), evobox("minimum", 16_183)], shippedByDay, { start: "2026-10-18", end: "2026-10-29" });

@@ -24,7 +24,9 @@ import {
 export interface KnownFile {
   md5: string | null;
   modifiedTime: string;
+  /** imported | superseded | failed */
   outcome: string;
+  invoiceNumber?: string | null;
 }
 
 export interface InvoiceFolderDeps {
@@ -33,7 +35,7 @@ export interface InvoiceFolderDeps {
   toLines: (bytes: Uint8Array) => Promise<string[]>;
   known: () => Promise<Map<string, KnownFile>>;
   store: (rows: NewInvoiceRow[]) => Promise<number>;
-  record: (file: DriveFile, outcome: "imported" | "failed", detail?: string, kind?: string, invoiceNumber?: string) => Promise<void>;
+  record: (file: DriveFile, outcome: "imported" | "superseded" | "failed", detail?: string, kind?: string, invoiceNumber?: string) => Promise<void>;
 }
 
 export interface InvoiceFolderResult {
@@ -42,6 +44,8 @@ export interface InvoiceFolderResult {
   notPdf: number;
   unchanged: number;
   imported: number;
+  /** Older copies of an invoice a newer file replaced (Evobox reissues). */
+  superseded: number;
   failed: number;
   byKind: Record<string, number>;
   rowsWritten: number;
@@ -54,12 +58,22 @@ export async function syncInvoiceFolder(deps: InvoiceFolderDeps): Promise<Invoic
   const pdfs = files.filter((f) => f.mimeType === "application/pdf" || /\.pdf$/i.test(f.name));
   const result: InvoiceFolderResult = {
     listed: files.length, pdfs: pdfs.length, notPdf: files.length - pdfs.length,
-    unchanged: 0, imported: 0, failed: 0, byKind: {}, rowsWritten: 0, errors: [],
+    unchanged: 0, imported: 0, superseded: 0, failed: 0, byKind: {}, rowsWritten: 0, errors: [],
   };
 
+  // The newest file already standing for each invoice number. A file older
+  // than that is a superseded copy and must not replace it.
+  const newest = new Map<string, string>();
+  for (const k of known.values()) {
+    if (k.outcome === "imported" && k.invoiceNumber && (newest.get(k.invoiceNumber) ?? "") < k.modifiedTime) newest.set(k.invoiceNumber, k.modifiedTime);
+  }
+
+  // Read every new or changed file first, so that which copy wins does not
+  // depend on the order Drive lists them in.
+  const parsed: { file: DriveFile; kind: string; rows: NewInvoiceRow[] }[] = [];
   for (const file of pdfs) {
     const prior = known.get(file.id);
-    const same = prior && prior.outcome === "imported" && (prior.md5 ?? null) === (file.md5Checksum ?? null) && prior.modifiedTime === file.modifiedTime;
+    const same = prior && prior.outcome !== "failed" && (prior.md5 ?? null) === (file.md5Checksum ?? null) && prior.modifiedTime === file.modifiedTime;
     if (same) {
       result.unchanged++;
       continue;
@@ -71,16 +85,31 @@ export async function syncInvoiceFolder(deps: InvoiceFolderDeps): Promise<Invoic
         kind === "carrier" ? carrierInvoiceRows(parseCarrierInvoice(lines), file.name)
         : kind === "shipping" ? shippingInvoiceRows(lines, file.name)
         : evoboxInvoiceRows(parseInvoiceLines(lines), file.name);
-      result.rowsWritten += await deps.store(rows);
-      await deps.record(file, "imported", undefined, kind, rows[0]?.invoiceNumber);
-      result.imported++;
-      result.byKind[kind] = (result.byKind[kind] ?? 0) + 1;
+      parsed.push({ file, kind, rows });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await deps.record(file, "failed", message);
       result.failed++;
       result.errors.push(`${file.name}: ${message}`);
     }
+  }
+
+  for (const p of parsed) {
+    const number = p.rows[0]?.invoiceNumber ?? "";
+    if (p.file.modifiedTime > (newest.get(number) ?? "")) newest.set(number, p.file.modifiedTime);
+  }
+
+  for (const { file, kind, rows } of parsed.sort((a, b) => a.file.modifiedTime.localeCompare(b.file.modifiedTime))) {
+    const number = rows[0]?.invoiceNumber;
+    if (number && (newest.get(number) ?? "") > file.modifiedTime) {
+      await deps.record(file, "superseded", `A newer file replaces invoice ${number}.`, kind, number);
+      result.superseded++;
+      continue;
+    }
+    result.rowsWritten += await deps.store(rows);
+    await deps.record(file, "imported", undefined, kind, number);
+    result.imported++;
+    result.byKind[kind] = (result.byKind[kind] ?? 0) + 1;
   }
   return result;
 }

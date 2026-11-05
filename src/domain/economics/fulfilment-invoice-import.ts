@@ -113,15 +113,17 @@ export function shippingInvoiceRows(lines: string[], sourceFile: string): NewInv
 }
 
 /** What the Drive folder sync has already read, by Drive file ID. */
-export async function getKnownInvoiceFiles(db: Db): Promise<Map<string, { md5: string | null; modifiedTime: string; outcome: string }>> {
+export async function getKnownInvoiceFiles(
+  db: Db,
+): Promise<Map<string, { md5: string | null; modifiedTime: string; outcome: string; invoiceNumber: string | null }>> {
   const rows = await db.select().from(fulfilmentInvoiceFiles);
-  return new Map(rows.map((r) => [r.driveFileId, { md5: r.md5, modifiedTime: r.modifiedTime, outcome: r.outcome }]));
+  return new Map(rows.map((r) => [r.driveFileId, { md5: r.md5, modifiedTime: r.modifiedTime, outcome: r.outcome, invoiceNumber: r.invoiceNumber }]));
 }
 
 export async function recordInvoiceFile(
   db: Db,
   file: { id: string; name: string; md5Checksum?: string; modifiedTime: string },
-  outcome: "imported" | "failed",
+  outcome: "imported" | "superseded" | "failed",
   detail?: string,
   kind?: string,
   invoiceNumber?: string,

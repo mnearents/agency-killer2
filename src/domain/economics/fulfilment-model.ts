@@ -30,7 +30,8 @@ export interface InvoiceLineInput {
   shipments: number | null;
 }
 
-const HANDLING = new Set(["order", "ad_hoc", "returns"]);
+/** Scales with orders. Returns postage rides with the returns it comes with. */
+const HANDLING = new Set(["order", "ad_hoc", "returns", "returns_postage"]);
 const OVERHEAD = new Set(["storage", "recurring", "minimum"]);
 
 const DAY = 86_400_000;
@@ -87,6 +88,14 @@ export function computeFulfilmentRates(
   };
 
   const evobox = invoices.filter((l) => l.source === "evobox");
+  // A category nobody placed is named, never silently left out of cost.
+  const unplaced = new Map<string, number>();
+  for (const l of evobox) {
+    if (!HANDLING.has(l.category) && !OVERHEAD.has(l.category)) unplaced.set(l.category, (unplaced.get(l.category) ?? 0) + l.amountCents);
+  }
+  for (const [category, cents] of unplaced) {
+    notes.push(`The 3PL billed "${category}" ($${(cents / 100).toFixed(2)} in total), which is neither handling nor overhead here, so it is in no figure. Place it in fulfilment-model.ts.`);
+  }
   const handlingLines = cover(evobox.filter((l) => HANDLING.has(l.category)));
   let handling: FulfilmentModel["coverage"]["handling"] = null;
   let handlingRate: FulfilmentRates["handling"] = null;

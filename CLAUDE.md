@@ -252,9 +252,14 @@ for shipped orders, labelled `measured` inside invoiced days and `estimated`
 beyond them. Storage, the API fee and minimum top-ups are overhead, reported
 per month and kept OUT of COD. Postage being an average is why the
 free-shipping verdict still carries a caveat: label cost rises with order
-size and an average cannot show it. Bill 720698's order charges included
-$129.74 of postage that may also appear on the Aug 31 carrier invoice — a
-small double count in the earliest week.
+size and an average cannot show it. **Evobox reissues invoices.** 720698 exists
+twice in the folder: the 18:47 copy ($811.28) had $129.74 of postage folded
+into order charges — the gap the ledger reconciliation found — and the 20:53
+copy ($685.69) takes it out, since postage is on the weekly Shipping
+invoice. When two files carry one invoice number the most recently modified
+wins (`superseded` on the other), whatever order they are read in. Returns
+postage counts as handling; a category the model does not place is named in
+its notes rather than dropped.
 
 Statlas (CTC) has no API. Its data is imported manually.
 
