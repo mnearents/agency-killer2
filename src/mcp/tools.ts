@@ -108,6 +108,7 @@ import {
 import { getRevenueByLine } from "@/domain/economics/queries";
 import { loadFulfilmentModel } from "@/domain/economics/fulfilment-queries";
 import { getRevenueByLandingPage } from "@/domain/shopify/attribution";
+import { getWatchDashboard } from "@/domain/meta/watch-store";
 import { AD_SOURCES, matchAssets, rollUp, listAdAssets, getAdAsset, saveAdAsset, type AdAsset } from "@/domain/meta/ad-assets";
 import type { FulfilmentModel } from "@/domain/economics/fulfilment-model";
 import {
@@ -1660,6 +1661,95 @@ const adAssetSet: McpTool = {
     }
     const saved = await saveAdAsset(ctx.db, { ...given, source: fields.source, author: "claude", requestedBy: ctx.actor ?? null });
     return { written: true, asset: saved };
+  },
+};
+
+/** One section of marketing_context: the tool's answer, or why it has none. Never both. */
+async function section<T>(build: () => Promise<T>): Promise<T | { error: string }> {
+  try {
+    const r = await build();
+    if (r && typeof r === "object" && "error" in (r as Record<string, unknown>)) return { error: String((r as unknown as { error: unknown }).error) };
+    return r;
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+type Json = Record<string, any>;
+
+const marketingContext: McpTool = {
+  name: "marketing_context",
+  title: "Everything the weekly brief starts from",
+  description:
+    "START HERE for any weekly plan or brief. One call returns: `goalsPace` (revenue against plan by line); `products` (top and bottom 10 by revenue over 30 days, each with its strategy role); `metaCampaigns` (live campaigns with 7- and 14-day results); `emailSms` (the last 14 days of sends, with how current the Attentive data is); `calendar` (the next 12 weeks); `strategyNotes` (open pilot notes in the strategy category); `rejectedDrafts` (recent rejections and why); `freshness` (stale sources and data-quality issues). " +
+    "Each section is the same answer its own tool gives, trimmed; a section that failed carries `{ error }` and the others still answer. Read `freshness` and each section's caveats before drawing a conclusion — a quiet section may be a stale feed.",
+  readOnly: true,
+  schema: {},
+  async run(ctx) {
+    const call = (name: string, args: Record<string, unknown> = {}) => dispatchTool(ctx, name, args) as Promise<Json>;
+    const [goalsPace, top, bottom, ads7, ads14, watch, email, calendar, notes, rejected, freshness] = await Promise.all([
+      section(() => call("goals_pace")),
+      section(() => call("store_top_products", { days: 30, limit: 10 })),
+      section(() => call("store_top_products", { days: 30, limit: 10, order: "bottom" })),
+      section(() => call("ads_performance", { days: 7 })),
+      section(() => call("ads_performance", { days: 14 })),
+      section(() => getWatchDashboard(ctx.db)),
+      section(() => call("email_campaign_detail", { days: 14 })),
+      section(() => call("calendar_entries", { days: 84 })),
+      section(() => call("pilot_notes_get", { status: "open", category: "strategy" })),
+      section(() => call("drafts_list", { status: "rejected", limit: 10 })),
+      section(() => call("data_freshness")),
+    ]);
+
+    const results = (r: Json, id: string) => {
+      if ("error" in r) return { error: r.error };
+      const c = (r.campaigns as Json[]).find((x) => x.campaignId === id);
+      return c ? { spendDollars: c.spendDollars, revenueDollars: c.revenueDollars, roas: c.roas, purchases: c.purchases, costPerPurchaseDollars: c.costPerPurchaseDollars } : { spendDollars: 0, note: "No delivery in this window." };
+    };
+    const metaCampaigns = "error" in watch
+      ? { error: watch.error }
+      : {
+          checkedAt: watch.checkedAt?.toISOString() ?? null,
+          ...(watch.checkedAt === null ? { note: "The ad account watch has not recorded the account yet, so which campaigns are live is unknown." } : {}),
+          live: watch.campaigns.map((c) => ({
+            campaignId: c.id,
+            name: c.name,
+            dailyBudgetDollars: c.dailyBudgetCents === null ? null : c.dailyBudgetCents / 100,
+            activeAds: c.activeAds,
+            last7Days: results(ads7 as Json, c.id),
+            last14Days: results(ads14 as Json, c.id),
+          })),
+        };
+
+    const f = freshness as Json;
+    return {
+      generatedAt: ctx.now().toISOString(),
+      goalsPace,
+      products: {
+        top: "error" in top ? top : (top as Json).products,
+        bottom: "error" in bottom ? bottom : (bottom as Json).products,
+      },
+      metaCampaigns,
+      emailSms: "error" in email ? email : {
+        coverage: (email as Json).coverage,
+        campaigns: ((email as Json).campaigns as Json[]).slice(0, 20),
+        campaignsMatched: ((email as Json).campaigns as Json[]).length,
+        messagingCost: (email as Json).messagingCost,
+        scheduledSends: (email as Json).scheduledSends,
+      },
+      calendar,
+      strategyNotes: notes,
+      rejectedDrafts: "error" in rejected ? rejected : {
+        matched: (rejected as Json).matched,
+        drafts: ((rejected as Json).drafts as Json[]).map((d) => ({ id: d.id, channel: d.channel, type: d.type, title: d.title, status: d.status, feedbackHistory: d.feedbackHistory })),
+      },
+      freshness: "error" in f ? f : {
+        anyStale: f.anyStale,
+        stale: (f.sources as Json[]).filter((s) => s.stale).map((s) => ({ source: s.source, lastAt: s.lastAt, ageHours: s.ageHours, lastRun: s.lastRun })),
+        qualityIssues: (f.quality as Json[]).filter((q) => q.status !== "ok").map((q) => ({ check: q.check, affected: q.affected, total: q.total, status: q.status })),
+        anyEnvProblem: f.anyEnvProblem,
+      },
+    };
   },
 };
 
@@ -3983,6 +4073,7 @@ export const ALL_TOOLS: McpTool[] = [
   revenueByLandingPage,
   adAssetsTool,
   adAssetSet,
+  marketingContext,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

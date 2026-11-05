@@ -289,6 +289,17 @@ and `data_freshness` reports active products with none.
   author and the signed-in person (`MCP_ALLOWED_USERS` `id=Name`) as who
   asked. `role: null` means undecided, never "no role".
 
+### marketing_context — where the weekly brief starts
+
+One MCP call composing the others: goals pace, top and bottom products with
+roles, live Meta campaigns (from the ad account watch) with 7- and 14-day
+results, the last 14 days of email/SMS with Attentive coverage, the next 12
+weeks of calendar, open `strategy` pilot notes, recently rejected drafts and
+their feedback, and stale sources and quality issues. It calls the tools
+themselves (`dispatchTool`) rather than re-querying, so each section has the
+same shape and caveats as its tool; a section that fails carries `{ error }`
+and the rest still answer.
+
 ### Ad asset registry
 
 `ad_assets` records what each ad IS — source (footage_cut, arcads,
