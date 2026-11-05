@@ -2277,3 +2277,22 @@ export const adAssets = pgTable(
     index("ad_assets_meta_ad_name_idx").on(table.metaAdName),
   ]
 );
+
+/**
+ * Every invoice PDF the Drive folder sync has read, with the checksum it had
+ * then — so an unchanged file is skipped, a changed one re-imported and a
+ * failed one retried until it reads.
+ */
+export const fulfilmentInvoiceFiles = pgTable("fulfilment_invoice_files", {
+  driveFileId: text("drive_file_id").primaryKey(),
+  name: text("name").notNull(),
+  md5: text("md5"),
+  modifiedTime: text("modified_time").notNull(),
+  /** imported | failed */
+  outcome: text("outcome").notNull(),
+  /** evobox | carrier | shipping */
+  kind: text("kind"),
+  invoiceNumber: text("invoice_number"),
+  detail: text("detail"),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+});

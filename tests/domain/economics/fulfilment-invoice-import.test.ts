@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evoboxInvoiceRows, carrierInvoiceRows, classifyInvoicePdf } from "@/domain/economics/fulfilment-invoice-import";
+import { evoboxInvoiceRows, carrierInvoiceRows, classifyInvoicePdf, shippingInvoiceRows } from "@/domain/economics/fulfilment-invoice-import";
 import type { ThreeplInvoice } from "@/domain/economics/parse-threepl-invoice";
 import type { CarrierInvoice } from "@/domain/economics/parse-carrier-invoice";
 
@@ -51,7 +51,28 @@ describe("carrierInvoiceRows", () => {
 describe("classifyInvoicePdf", () => {
   it("tells the three kinds of PDF apart by content", () => {
     expect(classifyInvoicePdf(["SUMMARY OF CHARGES BY CARRIER", "Cirro 21 $182.91"])).toBe("carrier");
-    expect(classifyInvoicePdf(["Invoice no.: 20980", "1. Shipping $81.47", "Total", "$81.47"])).toBe("shipping-only");
+    expect(classifyInvoicePdf(["Invoice no.: 20980", "1. Shipping $81.47", "Total", "$81.47"])).toBe("shipping");
     expect(classifyInvoicePdf(["Invoice no.: 762890", "1. Sales Order charges 1 $127.82 $127.82"])).toBe("evobox");
+  });
+});
+
+describe("shippingInvoiceRows", () => {
+  // Invoice 20621, dated Tuesday 09/08, is the $178.63 carrier bill for Mon
+  // 8/31 to Sun 9/6: the week ending the Sunday before the invoice.
+  it("stores the weekly Shipping invoice as postage for the week before its date", () => {
+    const rows = shippingInvoiceRows(["Invoice no.: 20621", "Invoice date: 09/08/2026", "1. Shipping $178.63", "Total", "$178.63"], "Invoice_20621_from_Evobox.pdf");
+    expect(rows).toEqual([expect.objectContaining({
+      source: "evobox-shipping", invoiceNumber: "20621", issued: "2026-09-08", periodStart: "2026-08-31", periodEnd: "2026-09-06",
+      periodInferred: 1, category: "postage", carrier: null, shipments: null, amountCents: 17_863,
+    })]);
+  });
+
+  it("takes the previous week when the invoice is dated on a Monday", () => {
+    const rows = shippingInvoiceRows(["Invoice no.: 20664", "Invoice date: 09/14/2026", "1. Shipping $212.01", "Total", "$212.01"], "x.pdf");
+    expect(rows[0]).toMatchObject({ periodStart: "2026-09-07", periodEnd: "2026-09-13" });
+  });
+
+  it("refuses an invoice whose line does not match its total", () => {
+    expect(() => shippingInvoiceRows(["Invoice no.: 1", "Invoice date: 09/14/2026", "1. Shipping $212.01", "Total", "$9.99"], "x.pdf")).toThrow(/add up/);
   });
 });

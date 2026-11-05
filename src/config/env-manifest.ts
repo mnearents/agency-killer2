@@ -238,6 +238,13 @@ export const ENV_MANIFEST: EnvVariable[] = [
       "The /api/generate route rejects every request, so the Figma plugin cannot generate email copy.",
   },
   {
+    name: "FULFILMENT_INVOICES_FOLDER_ID",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact:
+      "Invoices stop importing from the Drive folder, so fulfilment and postage in every margin run on the last averages loaded and go stale.",
+  },
+  {
     name: "MCP_AUTHKIT_DOMAIN",
     surfaces: ["mcp-hosted"],
     severity: "required",

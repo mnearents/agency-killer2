@@ -3073,7 +3073,7 @@ function describeFulfilment(m: FulfilmentModel) {
   return {
     handlingPerShippedOrder: m.rates.handling ? dollarsFrom(m.rates.handling.perShippedOrderCents) : null,
     handlingBasis: m.rates.handling?.basis ?? "missing",
-    postagePerShipment: m.rates.postage ? dollarsFrom(m.rates.postage.perShipmentCents) : null,
+    postagePerShippedOrder: m.rates.postage ? dollarsFrom(m.rates.postage.perShippedOrderCents) : null,
     postageBasis: m.rates.postage?.basis ?? "missing",
     invoicedHandling: m.coverage.handling && {
       from: m.coverage.handling.from, to: m.coverage.handling.to, daysInvoiced: m.coverage.handling.daysInvoiced,
@@ -3081,7 +3081,7 @@ function describeFulfilment(m: FulfilmentModel) {
     },
     invoicedPostage: m.coverage.postage && {
       from: m.coverage.postage.from, to: m.coverage.postage.to, daysInvoiced: m.coverage.postage.daysInvoiced,
-      billed: dollarsFrom(m.coverage.postage.amountCents), shipments: m.coverage.postage.shipments,
+      billed: dollarsFrom(m.coverage.postage.amountCents), shippedOrders: m.coverage.postage.shippedOrders,
     },
     // Storage, the API fee and minimum top-ups do not scale with orders, so
     // they are overhead rather than cost of delivery.
@@ -3195,7 +3195,7 @@ const marginByOrderValue: McpTool = {
   description:
     "Contribution margin banded by order value, for the question #34 poses: is free shipping over $60 subsidising the worst orders? " +
     "Returns a verdict comparing the $50-60 and $60-70 bands directly, plus every band's margin. " +
-    "Margin is net of product cost, payment fees, fulfilment handling and postage. Postage comes from weekly carrier invoices with no per-order detail, so it is an AVERAGE per shipment applied to every band — the threshold question really turns on how label cost rises with order size, which an average cannot show; `caveat` says so. " +
+    "Margin is net of product cost, payment fees, fulfilment handling and postage. Postage comes from weekly invoices with no per-order detail, so it is an AVERAGE per shipped order applied to every band — the threshold question really turns on how label cost rises with order size, which an average cannot show; `caveat` says so. " +
     "Physical orders only by default — a threshold on shipping means nothing for a subscription or a printable.",
   readOnly: true,
   schema: {
@@ -3255,7 +3255,7 @@ const marginByOrderValue: McpTool = {
         fulfilmentCaveat(fulfilment, "every margin here is a ceiling and the threshold verdict is provisional."),
         // True however complete the invoices are: they carry no per-order labels.
         fulfilment.rates.postage
-          ? "Postage is an AVERAGE per shipment, the same in every band. A heavier, pricier order costs more to ship than that, so the bands above the threshold are flattered relative to the ones below it."
+          ? "Postage is an AVERAGE per shipped order, the same in every band. A heavier, pricier order costs more to ship than that, so the bands above the threshold are flattered relative to the ones below it."
           : undefined,
       ].filter(Boolean).join(" ") || undefined,
     };
@@ -3418,7 +3418,7 @@ const amerTool: McpTool = {
     // Only when both are invoiced: half a fulfilment cost is still a missing one.
     const { handling, postage } = fulfilment.rates;
     const fulfilmentCents = handling && postage
-      ? byLine.flatMap((l) => l.orders).filter((o) => o.shipped).length * (handling.perShippedOrderCents + postage.perShipmentCents)
+      ? byLine.flatMap((l) => l.orders).filter((o) => o.shipped).length * (handling.perShippedOrderCents + postage.perShippedOrderCents)
       : undefined;
     const r = computeAmer({ spendCents, rates, byLine, fulfilmentCents });
 

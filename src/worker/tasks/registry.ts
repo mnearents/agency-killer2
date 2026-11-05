@@ -112,6 +112,13 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "invoices-sync",
+      name: "3PL and Postage Invoices from Drive",
+      // After the morning syncs; Evobox invoices arrive overnight.
+      schedule: { type: "daily", hour: 15, minute: 30 },
+      enabled: true,
+    },
+    {
       id: "meta-watch",
       name: "Meta Ad Account Watch",
       // Fraud watch. Also runs once at worker startup, so a deploy never
@@ -161,6 +168,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "customers-sync": "sync:customers",
     "social-sync": "sync:social",
     "footage-sync": "sync:footage",
+    "invoices-sync": "sync:invoices",
     "products-sync": "sync:products",
     "gsc-sync": "sync:gsc",
     "sessions-sync": "sync:sessions",

@@ -92,8 +92,8 @@ export type CostBasis = "measured" | "estimated" | "missing";
 export interface FulfilmentRates {
   /** Pick/pack, packaging, ad hoc and returns handling per shipped order. */
   handling: { perShippedOrderCents: number; basis: "measured" | "estimated" } | null;
-  /** Label cost per shipment. */
-  postage: { perShipmentCents: number; basis: "measured" | "estimated" } | null;
+  /** Label cost per shipped order. */
+  postage: { perShippedOrderCents: number; basis: "measured" | "estimated" } | null;
 }
 
 export interface CostComponent {
@@ -158,7 +158,7 @@ function fulfilmentComponents(orders: OrderForEconomics[], rates: FulfilmentRate
       ? { label: HANDLING_LABEL, cents: shipped * rates.handling.perShippedOrderCents, basis: rates.handling.basis }
       : { label: HANDLING_LABEL, cents: 0, basis: "missing" },
     rates?.postage
-      ? { label: POSTAGE_LABEL, cents: shipped * rates.postage.perShipmentCents, basis: rates.postage.basis }
+      ? { label: POSTAGE_LABEL, cents: shipped * rates.postage.perShippedOrderCents, basis: rates.postage.basis }
       : { label: POSTAGE_LABEL, cents: 0, basis: "missing" },
   ];
 }

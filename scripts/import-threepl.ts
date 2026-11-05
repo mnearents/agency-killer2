@@ -6,7 +6,7 @@
  *   pnpm threepl:import <shipments.csv>   # the shipping label export
  *   pnpm threepl:import <invoice.pdf>     # an Evobox bill: stored, and reconciled against the ledger
  *                                         # a weekly carrier label invoice: stored as postage
- *                                         # a shipping-only Evobox invoice: skipped, not a fulfilment bill
+ *                                         # a weekly Evobox "Shipping" invoice: stored as that week's postage
  *   ... --write                           # actually write; dry run is the default
  *   pnpm threepl:import <directory>       # every file in it, in dependency order
  *
@@ -29,6 +29,7 @@ import {
   classifyInvoicePdf,
   evoboxInvoiceRows,
   carrierInvoiceRows,
+  shippingInvoiceRows,
   storeInvoiceRows,
 } from "@/domain/economics/fulfilment-invoice-import";
 
@@ -117,8 +118,10 @@ async function doInvoice(db: Db, path: string, write: boolean) {
   const lines = await pdfToLines(new Uint8Array(readFileSync(path)));
   const kind = classifyInvoicePdf(lines);
 
-  if (kind === "shipping-only") {
-    console.log(`  excluded: a shipping-only invoice, not a fulfilment bill.`);
+  if (kind === "shipping") {
+    const rows = shippingInvoiceRows(lines, basename(path));
+    console.log(`  weekly postage ${rows[0].invoiceNumber}   ${rows[0].periodStart} .. ${rows[0].periodEnd}   ${money(rows[0].amountCents)}`);
+    if (write) console.log(`  written: ${await storeInvoiceRows(db, rows)} rows.`);
     return;
   }
 

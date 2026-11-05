@@ -32,10 +32,10 @@ const shippedOrder = (totalPriceCents: number) => ({
 });
 
 const model = (basis: "measured" | "estimated"): FulfilmentModel => ({
-  rates: { handling: { perShippedOrderCents: 150, basis }, postage: { perShipmentCents: 800, basis } },
+  rates: { handling: { perShippedOrderCents: 150, basis }, postage: { perShippedOrderCents: 800, basis } },
   coverage: {
     handling: { from: "2026-08-22", to: "2026-10-30", daysInvoiced: 70, amountCents: 100_000, shippedOrders: 600 },
-    postage: { from: "2026-08-31", to: "2026-10-25", daysInvoiced: 35, amountCents: 144_049, shipments: 164 },
+    postage: { from: "2026-08-31", to: "2026-10-25", daysInvoiced: 35, amountCents: 144_049, shippedOrders: 170, shipments: 164 },
   },
   fixedOverheadMonthlyCents: 55_000,
   notes: basis === "estimated" ? ["Postage is an average from invoiced days applied beyond them: 20 of the window's 30 days have no invoice."] : [],
@@ -67,7 +67,7 @@ describe("unit_economics with invoiced fulfilment", () => {
     ]));
     expect(physical.complete).toBe(true);
     expect(r.caveat).toBeUndefined();
-    expect(r.fulfilment).toMatchObject({ handlingPerShippedOrder: 1.5, postagePerShipment: 8, fixedOverheadPerMonth: 550 });
+    expect(r.fulfilment).toMatchObject({ handlingPerShippedOrder: 1.5, postagePerShippedOrder: 8, fixedOverheadPerMonth: 550 });
   });
 
   it("says when the rates are averages applied beyond the invoiced days", async () => {

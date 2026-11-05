@@ -146,7 +146,7 @@ describe("computeUnitEconomics", () => {
   describe("with fulfilment rates from the 3PL and carrier invoices", () => {
     const measured: FulfilmentRates = {
       handling: { perShippedOrderCents: 500, basis: "measured" },
-      postage: { perShipmentCents: 800, basis: "measured" },
+      postage: { perShippedOrderCents: 800, basis: "measured" },
     };
 
     // A printable ships nothing, so it carries no pick/pack and no label.
@@ -166,7 +166,7 @@ describe("computeUnitEconomics", () => {
 
     it("counts an estimated component as present but names it", () => {
       const r = computeUnitEconomics([order({ shipped: true })], RATES, {
-        ...measured, postage: { perShipmentCents: 800, basis: "estimated" },
+        ...measured, postage: { perShippedOrderCents: 800, basis: "estimated" },
       });
       expect(r.complete).toBe(true);
       expect(r.estimated).toEqual(["Postage (shipping labels)"]);
@@ -378,7 +378,7 @@ describe("bandMargins", () => {
   it("takes handling and postage out of each shipped order's margin", () => {
     const rates: FulfilmentRates = {
       handling: { perShippedOrderCents: 300, basis: "measured" },
-      postage: { perShipmentCents: 700, basis: "measured" },
+      postage: { perShippedOrderCents: 700, basis: "measured" },
     };
     const [without] = bandMargins([o(6500, { shipped: true })], RATES).filter((b) => b.orders > 0);
     const [withCosts] = bandMargins([o(6500, { shipped: true })], RATES, rates).filter((b) => b.orders > 0);

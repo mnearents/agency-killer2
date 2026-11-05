@@ -224,15 +224,29 @@ Two PDFs, neither itemised by order:
   (`every_28_days`). Lines from bill 728554 on carry no date; the service
   period comes from the "Fulfillment 10/17-10/30" note (720698 has none, so
   a fortnight ending on its line date is inferred and flagged).
-- **Weekly carrier label invoices** ("Rad and Happy invoice …"): postage per
-  carrier — Cirro, USPS, DHL eCommerce, FedEx — with shipment counts. This is
-  where the DHL postage the shipment export showed as $0.00 is billed.
-- **Shipping-only Evobox invoices** (a single "Shipping" line: 20752, 20842,
-  20888, 20980) are skipped — not fulfilment bills.
+- **Weekly postage**, in two formats for the same bill: the carrier label
+  invoice ("Rad and Happy invoice …", per carrier with shipment counts) and
+  Evobox's one-line "Shipping" invoice (20xxx, the complete weekly series
+  back to May). 20621 and the Aug 31-Sep 6 carrier invoice are both $178.63.
+  A Shipping invoice covers Monday-Sunday of the week before its date; a
+  week with both is counted once, from the carrier invoice. An instruction to
+  exclude the Shipping invoices as "not fulfilment" was wrong — they are the
+  postage, and this is where the DHL postage the shipment export showed as
+  $0.00 is billed.
+
+**Imported daily from Google Drive** (`sync:invoices`, 15:30 UTC, and
+`!sync invoices`). Matt's email automation saves every Evobox invoice to the
+"Evobox Invoices" folder (`FULFILMENT_INVOICES_FOLDER_ID`), shared with the
+GOOGLE_SERVICE_ACCOUNT_JSON service account as a Viewer; Drive is read with
+`integrations/google-drive.ts` on the same sign-in as Search Console
+(`google-auth.ts`). Each file is remembered by Drive ID and checksum in
+`fulfilment_invoice_files`: unchanged files are skipped, changed ones
+re-imported (replacing that invoice's rows), failed ones retried every run
+and named until they read.
 
 `fulfilment-model.ts` turns them into averages: handling per shipped order
 (billed handling ÷ orders shipped on the billed days) and postage per
-shipment (the carrier invoices' own counts). `unit_economics`,
+shipped order, divided the same way. `unit_economics`,
 `margin_by_order_value`, `target_cpa` and `amer` add both to cost of delivery
 for shipped orders, labelled `measured` inside invoiced days and `estimated`
 beyond them. Storage, the API fee and minimum top-ups are overhead, reported
@@ -534,6 +548,8 @@ src/
 │   ├── shopify-analytics.ts # ShopifyQL (sessions)
 │   ├── instagram-api.ts    # Organic IG/FB
 │   ├── healthchecks.ts     # healthchecks.io heartbeat for the ad account watch
+│   ├── google-auth.ts      # Service account sign-in shared by Search Console and Drive
+│   ├── google-drive.ts     # Drive, read-only: the Evobox invoice folder
 │   ├── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 │   └── attentive-agent.ts  # Playwright scrape of Attentive reports (no API)
 ├── ai/                     # LLM orchestration layer

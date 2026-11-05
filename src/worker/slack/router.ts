@@ -150,6 +150,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     attentive: "sync:attentive",
     kb: "sync:knowledge-base",
     footage: "sync:footage",
+    invoices: "sync:invoices",
     all: "sync:all",
     "": "sync:all",
   },

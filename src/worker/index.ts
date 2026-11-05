@@ -40,6 +40,10 @@ import { prepareAndEvaluateSegments } from "@/domain/shopify/segments";
 import { syncSubscriptions } from "@/domain/subscriptions/sync";
 import { syncInventory } from "@/domain/inventory/sync";
 import { createSearchConsoleClient } from "@/integrations/search-console";
+import { createGoogleDriveClient } from "@/integrations/google-drive";
+import { syncInvoiceFolder, type InvoiceFolderResult } from "@/domain/economics/invoice-folder-sync";
+import { getKnownInvoiceFiles, recordInvoiceFile, storeInvoiceRows } from "@/domain/economics/fulfilment-invoice-import";
+import { pdfToLines } from "@/domain/economics/pdf-text";
 import { syncSearchConsole, plannedGscDays, getLatestGscDate } from "@/domain/seo/gsc-sync";
 import { createShopifyAnalyticsClient } from "@/integrations/shopify-analytics";
 import {
@@ -187,6 +191,11 @@ async function main() {
     gscCredentials && gscSiteUrl
       ? createSearchConsoleClient({ credentialsJson: gscCredentials, siteUrl: gscSiteUrl })
       : null;
+
+  // The "Evobox Invoices" Drive folder, shared with the same service account
+  // as a Viewer. Matt's email automation files every Evobox invoice into it.
+  const invoiceFolderId = getEnvOptional("FULFILMENT_INVOICES_FOLDER_ID");
+  const driveClient = gscCredentials ? createGoogleDriveClient({ credentialsJson: gscCredentials }) : null;
 
   const shopifyClient =
     getEnvOptional("SHOPIFY_ACCESS_TOKEN") && getEnvOptional("SHOPIFY_STORE_DOMAIN")
@@ -402,6 +411,48 @@ async function main() {
           `$${(result.summary.totalDailyBudgetCents / 100).toFixed(2)}/day, heartbeat ${metaWatchHeartbeat.configured ? "pinged" : "NOT configured"}`,
       );
       return { configured: true, rowsWritten: result.objects };
+    });
+    return outcome;
+  };
+
+  /**
+   * The invoice import from Drive, shared by the daily cron and `!sync
+   * invoices`. Returns null when the folder or the credential is not set;
+   * throws, after recording, when files failed and nothing imported.
+   */
+  const runInvoiceSync = async (): Promise<InvoiceFolderResult | null> => {
+    let outcome: InvoiceFolderResult | null = null;
+    await recorded("sync:invoices", async () => {
+      const drive = driveClient;
+      if (!drive || !invoiceFolderId) {
+        const missing = !drive ? "GOOGLE_SERVICE_ACCOUNT_JSON" : "FULFILMENT_INVOICES_FOLDER_ID";
+        console.error(`[sync:invoices] NOT CONFIGURED — ${missing} is not set, so no invoices are imported and margins run on old averages`);
+        return { configured: false, rowsWritten: 0 };
+      }
+      await drive.assertFolder(invoiceFolderId);
+      const result = await syncInvoiceFolder({
+        listFolder: () => drive.listFolder(invoiceFolderId),
+        download: (id) => drive.download(id),
+        toLines: (bytes) => pdfToLines(bytes),
+        known: () => getKnownInvoiceFiles(db),
+        store: (rows) => storeInvoiceRows(db, rows),
+        record: (file, out, detail, kind, invoiceNumber) => recordInvoiceFile(db, file, out, detail, kind, invoiceNumber),
+      });
+      outcome = result;
+      console.log(
+        `[sync:invoices] ${result.pdfs} PDF(s) in the folder: ${result.imported} imported ` +
+          `(${Object.entries(result.byKind).map(([k, n]) => `${n} ${k}`).join(", ") || "none"}), ` +
+          `${result.unchanged} unchanged, ${result.failed} failed` + (result.notPdf > 0 ? `, ${result.notPdf} not PDFs` : ""),
+      );
+      if (result.errors.length > 0) console.error("[sync:invoices] Errors:", result.errors);
+      if (result.failed > 0 && result.imported === 0 && result.unchanged === 0) {
+        throw new Error(`Every invoice failed to import: ${result.errors[0]}`);
+      }
+      return {
+        configured: true,
+        rowsWritten: result.rowsWritten,
+        errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+      };
     });
     return outcome;
   };
@@ -758,6 +809,10 @@ async function main() {
 
     "sync:footage": async () => {
       await runFootageSync();
+    },
+
+    "sync:invoices": async () => {
+      await runInvoiceSync();
     },
 
     "watch:meta": async () => {
@@ -1558,6 +1613,24 @@ async function main() {
         isError: false,
       };
     },
+    "sync:invoices": async () => {
+      let result: InvoiceFolderResult | null;
+      try {
+        result = await runInvoiceSync();
+      } catch (err) {
+        return { text: `Invoice import failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+      if (!result) {
+        return { text: "Invoice import unavailable — the Drive folder or the Google credential is not set.", isError: true };
+      }
+      const lines = [
+        `• ${result.pdfs} invoices in the folder`,
+        `• ${result.imported} newly imported${Object.keys(result.byKind).length > 0 ? ` (${Object.entries(result.byKind).map(([k, n]) => `${n} ${k === "evobox" ? "fulfilment" : k === "shipping" ? "weekly postage" : "carrier"}`).join(", ")})` : ""}, ${result.unchanged} already in`,
+      ];
+      if (result.failed > 0) lines.push(`• ${result.failed} could not be read:\n${result.errors.map((e) => `   – ${e}`).join("\n")}`);
+      return { text: `*Invoices imported from Drive*\n${lines.join("\n")}`, isError: result.failed > 0 };
+    },
+
     "sync:footage": async (args) => {
       let result: SyncFootageResult | null;
       try {

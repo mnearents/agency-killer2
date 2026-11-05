@@ -180,6 +180,7 @@ When the user asks a question:
               "• `!sync inventory` — Pull the latest stock levels from Shopify",
               "• `!sync footage` — Transcribe new videos in Dropbox /RAD/Footage and tidy up moved or deleted ones",
               "• `!sync footage retry` — Same, and try again any videos that failed to transcribe three times",
+              "• `!sync invoices` — Import new Evobox and postage invoices from the Drive folder",
               "• `!help` — Show this message",
               "",
               "Or just ask me anything in plain English!",

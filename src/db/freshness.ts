@@ -177,7 +177,7 @@ export const FRESHNESS_SOURCES = [
     // Imported by hand from PDFs. Bills are fortnightly and arrive a few days
     // after the period closes, so three weeks past the last covered day means
     // one was missed — and the margin tools are running on old averages.
-    { source: "3PL and carrier invoices", table: fulfilmentInvoices, name: "fulfilment_invoices", column: fulfilmentInvoices.periodEnd, basis: "latest-data" as const, staleAfterHours: 21 * 24 },
+    { source: "3PL and carrier invoices", table: fulfilmentInvoices, name: "fulfilment_invoices", column: fulfilmentInvoices.periodEnd, basis: "latest-data" as const, staleAfterHours: 21 * 24, task: "sync:invoices" },
     { source: "Pilot notes", table: pilotNotes, name: "pilot_notes", column: pilotNotes.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     // Authored, like pilot notes: an empty experiments table means nobody ran
     // an experiment, not that a feed died.

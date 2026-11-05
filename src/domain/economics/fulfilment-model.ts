@@ -1,10 +1,13 @@
 /**
  * Fulfilment cost per order, from what the 3PL and its carriers billed.
  *
- * Neither invoice names an order, so a per-order cost is an average: the
- * handling billed over a set of days divided by the orders shipped on those
- * days, and the postage billed divided by the shipments the carrier invoice
- * itself counts. Over a window inside the invoiced days that average is
+ * No invoice names an order, so a per-order cost is an average: what was
+ * billed over a set of days divided by the orders Shopify shipped on those
+ * days — for handling and for postage alike. Postage arrives in two formats
+ * for the same weekly bill: the carrier invoice (per-carrier breakdown and
+ * shipment counts) and Evobox's "Shipping" invoice (one line, the complete
+ * weekly series). A week billed in both is counted once, from the carrier
+ * invoice. Over a window inside the invoiced days that average is
  * measured; applied to days no invoice covers it is an estimate, and is
  * labelled so rather than passed off as the other.
  *
@@ -51,7 +54,8 @@ export interface FulfilmentModel {
   rates: FulfilmentRates;
   coverage: {
     handling: (Coverage & { shippedOrders: number }) | null;
-    postage: (Coverage & { shipments: number }) | null;
+    /** `shipments` is what carrier invoices counted, where they did; the rate divides by shipped orders. */
+    postage: (Coverage & { shippedOrders: number; shipments: number }) | null;
   };
   /** Storage, recurring and minimum top-ups as a monthly figure. Overhead, not COD. */
   fixedOverheadMonthlyCents: number | null;
@@ -96,14 +100,21 @@ export function computeFulfilmentRates(
     }
   }
 
-  const postageLines = cover(invoices.filter((l) => l.source === "carrier"));
+  // One bill per week: a week with a carrier invoice drops its duplicate Shipping invoice.
+  const carrierWeeks = new Set(invoices.filter((l) => l.source === "carrier").map((l) => `${l.periodStart}/${l.periodEnd}`));
+  const postageRows = invoices.filter((l) => l.category === "postage")
+    .filter((l) => l.source === "carrier" || !carrierWeeks.has(`${l.periodStart}/${l.periodEnd}`));
+  const postageLines = cover(postageRows);
   let postage: FulfilmentModel["coverage"]["postage"] = null;
   let postageRate: FulfilmentRates["postage"] = null;
   if (postageLines) {
-    const shipments = invoices.filter((l) => l.source === "carrier").reduce((s, l) => s + (l.shipments ?? 0), 0);
-    postage = { ...postageLines.coverage, shipments };
-    if (shipments > 0) {
-      postageRate = { perShipmentCents: Math.round(postageLines.coverage.amountCents / shipments), basis: basisFor(postageLines.days, "Postage") };
+    const shippedOrders = [...postageLines.days].reduce((s, d) => s + (shippedByDay.get(d) ?? 0), 0);
+    const shipments = postageRows.reduce((s, l) => s + (l.shipments ?? 0), 0);
+    postage = { ...postageLines.coverage, shippedOrders, shipments };
+    if (shippedOrders === 0) {
+      notes.push("Postage was billed over days with no shipped orders on record, so no per-order rate can be formed.");
+    } else {
+      postageRate = { perShippedOrderCents: Math.round(postageLines.coverage.amountCents / shippedOrders), basis: basisFor(postageLines.days, "Postage") };
     }
   }
 
