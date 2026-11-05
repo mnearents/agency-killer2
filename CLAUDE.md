@@ -214,6 +214,34 @@ Other traps:
 Import with `pnpm threepl:import <file|directory>`; it detects which kind of
 file it was given and writes nothing without `--write`.
 
+**Invoices are now stored and priced into margin** (`fulfilment_invoices`).
+Two PDFs, neither itemised by order:
+
+- **Evobox fulfilment bills** (fortnightly): order (pick/pack), ad hoc,
+  returns — and on every OTHER bill, recurring ($125 API) and storage
+  (~$385), i.e. every 28 days, plus a "Monthly minimum" top-up. The API fee
+  was recorded per bill and normalised to $270.83/month; it is $135.79
+  (`every_28_days`). Lines from bill 728554 on carry no date; the service
+  period comes from the "Fulfillment 10/17-10/30" note (720698 has none, so
+  a fortnight ending on its line date is inferred and flagged).
+- **Weekly carrier label invoices** ("Rad and Happy invoice …"): postage per
+  carrier — Cirro, USPS, DHL eCommerce, FedEx — with shipment counts. This is
+  where the DHL postage the shipment export showed as $0.00 is billed.
+- **Shipping-only Evobox invoices** (a single "Shipping" line: 20752, 20842,
+  20888, 20980) are skipped — not fulfilment bills.
+
+`fulfilment-model.ts` turns them into averages: handling per shipped order
+(billed handling ÷ orders shipped on the billed days) and postage per
+shipment (the carrier invoices' own counts). `unit_economics`,
+`margin_by_order_value`, `target_cpa` and `amer` add both to cost of delivery
+for shipped orders, labelled `measured` inside invoiced days and `estimated`
+beyond them. Storage, the API fee and minimum top-ups are overhead, reported
+per month and kept OUT of COD. Postage being an average is why the
+free-shipping verdict still carries a caveat: label cost rises with order
+size and an average cannot show it. Bill 720698's order charges included
+$129.74 of postage that may also appear on the Aug 31 carrier invoice — a
+small double count in the earliest week.
+
 Statlas (CTC) has no API. Its data is imported manually.
 
 ### Subscription data — read this before counting subscribers

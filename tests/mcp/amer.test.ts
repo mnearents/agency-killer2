@@ -22,6 +22,18 @@ vi.mock("@/domain/economics/queries", async (importOriginal) => {
   };
 });
 
+// Nothing invoiced: these tests are about cohorts and numerators, and
+// fulfilment-economics.test.ts covers the invoiced case.
+vi.mock("@/domain/economics/fulfilment-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/economics/fulfilment-queries")>()),
+  loadFulfilmentModel: vi.fn().mockResolvedValue({
+    rates: { handling: null, postage: null },
+    coverage: { handling: null, postage: null },
+    fixedOverheadMonthlyCents: null,
+    notes: [],
+  }),
+}));
+
 const NOW = new Date("2026-09-17T12:00:00Z");
 const ctx = { db: {} as never, now: () => NOW } as unknown as McpToolContext;
 

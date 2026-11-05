@@ -210,3 +210,22 @@ describe("web sessions freshness", () => {
     expect(source?.staleAfterHours).toBeGreaterThan(0);
   });
 });
+
+// Invoices are imported by hand. When nobody imports the next one, every
+// margin quietly runs on old averages — so a missing bill must show here.
+describe("fulfilment invoice freshness", () => {
+  it("is registered on the last day an invoice covers, and goes stale after three weeks", () => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === "fulfilment_invoices");
+    expect(source?.basis).toBe("latest-data");
+    expect(source?.staleAfterHours).toBe(21 * 24);
+  });
+});
+
+// The scrape recorded api-error every day, and data_freshness did not show
+// the outcome because the source had no task to read it from.
+describe("Attentive freshness", () => {
+  it("reads the sync's last outcome, so a failed login shows as stale", () => {
+    const source = FRESHNESS_SOURCES.find((s) => s.name === "attentive_campaigns");
+    expect(source && "task" in source ? source.task : null).toBe("sync:attentive");
+  });
+});

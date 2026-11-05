@@ -128,8 +128,9 @@ describe("planThreeplImport", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.plan.recurringInputs).toEqual([
+        // Every 28 days — on every other fortnightly bill, not every one.
         { name: "API CONNECTION", amountCents: 12500, effectiveFrom: "2026-08-22",
-          cadence: "per_bill_period", vendor: "3PL" },
+          cadence: "every_28_days", vendor: "3PL" },
       ]);
     }
   });

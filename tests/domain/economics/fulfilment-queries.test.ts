@@ -17,6 +17,12 @@ describe("monthlyEquivalentCents", () => {
     expect(monthlyEquivalentCents(12500, "per_bill_period")).not.toBe(25000);
   });
 
+  // The API fee and storage appear on every other fortnightly bill. Recorded
+  // per bill they read as $270.83/month; every 28 days they are $135.79.
+  it("converts an every-28-days charge at 365/28 a year", () => {
+    expect(monthlyEquivalentCents(12500, "every_28_days")).toBe(13579);
+  });
+
   // A cadence nobody normalised must not silently contribute zero to a total
   // that still looks complete.
   it("returns null for a cadence it cannot convert", () => {

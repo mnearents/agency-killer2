@@ -6,6 +6,7 @@ import {
   normaliseInvoiceDate,
   InvoiceParseError,
   ROUNDING_TOLERANCE_CENTS,
+  isShippingOnlyInvoice,
 } from "@/domain/economics/parse-threepl-invoice";
 
 /** The real invoice 720698, as pdfToLines renders it. */
@@ -187,5 +188,55 @@ describe("reconcileInvoice", () => {
 
   it("uses a tolerance below anything that could hide a real fee", () => {
     expect(ROUNDING_TOLERANCE_CENTS).toBeLessThanOrEqual(100);
+  });
+});
+
+/** Invoice 741600 as pdfToLines renders it: undated lines, a service-period note, a monthly minimum. */
+const INVOICE_741600 = [
+  "INVOICE", "Evobox", "Invoice details",
+  "Invoice no.: 741600", "Terms: Due on receipt", "Invoice date: 10/06/2026", "Due date: 10/06/2026",
+  "#", "Date Product or service Description Qty Rate Amount",
+  "1. Sales Order charges 1 $311.59 $311.59",
+  "2. Sales Ad_hoc charges 1 $22.75 $22.75",
+  "3. Sales Returns charges 1 $1.65 $1.65",
+  "4. Sales Recurring charges 1 $125.00 $125.00",
+  "5. Sales Storage charges 1 $385.624 $385.62",
+  "6. Sales Monthly minimum - September 1 $161.83 $161.83",
+  "Total", "$1,008.44",
+  "Note to customer", "Ful fi llment 09/19-10/02",
+];
+
+describe("parseInvoiceLines on the later layout", () => {
+  // From 728554 on, lines carry no date. The parser read only the first
+  // layout, so every later bill would have been refused as empty.
+  it("reads line items that carry no date", () => {
+    const inv = parseInvoiceLines(INVOICE_741600);
+    expect(inv.lines.map((l) => l.category)).toEqual(["order", "ad_hoc", "returns", "recurring", "storage", "minimum"]);
+    expect(inv.totalCents).toBe(100_844);
+  });
+
+  it("reads the service period from the note, in the invoice's year", () => {
+    expect(parseInvoiceLines(INVOICE_741600).servicePeriod).toEqual({ start: "2026-09-19", end: "2026-10-02", inferred: false });
+  });
+
+  // 720698 has no note; its lines are dated with the period's last day.
+  it("infers a fortnight ending on the line date when there is no note, and says it inferred it", () => {
+    expect(parseInvoiceLines(INVOICE_720698).servicePeriod).toEqual({ start: "2026-08-22", end: "2026-09-04", inferred: true });
+  });
+
+  // A period that spans New Year takes the earlier year for its start.
+  it("carries a December start into the previous year", () => {
+    const lines = [...INVOICE_741600.slice(0, 5), "Invoice date: 01/06/2027", ...INVOICE_741600.slice(6, -1), "Ful fi llment 12/20-01/02"];
+    expect(parseInvoiceLines(lines).servicePeriod).toEqual({ start: "2026-12-20", end: "2027-01-02", inferred: false });
+  });
+});
+
+describe("isShippingOnlyInvoice", () => {
+  it("recognises an invoice whose only item is Shipping", () => {
+    expect(isShippingOnlyInvoice(["Invoice no.: 20980", "1. Shipping $81.47", "Total", "$81.47"])).toBe(true);
+  });
+
+  it("does not mistake a fulfilment invoice for one", () => {
+    expect(isShippingOnlyInvoice(INVOICE_741600)).toBe(false);
   });
 });

@@ -23,7 +23,9 @@ import {
   draftDecisions,
   gscDaily,
   webSessions,
+  fulfilmentInvoices,
 } from "./schema";
+import { ATTENTIVE_SYNC_TASK } from "@/domain/attentive/coverage";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
 
@@ -169,7 +171,13 @@ export const FRESHNESS_SOURCES = [
     { source: "Shopify inventory", table: shopifyInventory, name: "shopify_inventory", column: shopifyInventory.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Subscriptions (Seal)", table: sealSubscriptions, name: "seal_subscriptions", column: sealSubscriptions.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Instagram/Facebook posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
-    { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS },
+    // The task makes a failed scrape (an unanswered 2FA code) stale at once,
+    // rather than only after a fortnight of missing days.
+    { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS, task: ATTENTIVE_SYNC_TASK },
+    // Imported by hand from PDFs. Bills are fortnightly and arrive a few days
+    // after the period closes, so three weeks past the last covered day means
+    // one was missed — and the margin tools are running on old averages.
+    { source: "3PL and carrier invoices", table: fulfilmentInvoices, name: "fulfilment_invoices", column: fulfilmentInvoices.periodEnd, basis: "latest-data" as const, staleAfterHours: 21 * 24 },
     { source: "Pilot notes", table: pilotNotes, name: "pilot_notes", column: pilotNotes.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     // Authored, like pilot notes: an empty experiments table means nobody ran
     // an experiment, not that a feed died.

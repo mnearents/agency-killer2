@@ -34,6 +34,7 @@ import {
   thresholdVerdict,
   type OrderForEconomics,
   type RateSettings,
+  type FulfilmentRates,
 } from "@/domain/economics/unit-economics";
 
 const RATES: RateSettings = { paymentPctRate: 0.027, paymentFixedCents: 30 };
@@ -135,10 +136,47 @@ describe("computeUnitEconomics", () => {
     expect(r.cogsCoveragePct).toBeCloseTo(0.5, 5);
   });
 
-  it("names fulfilment as missing rather than omitting it", () => {
+  it("names fulfilment and postage as missing rather than omitting them", () => {
     const r = computeUnitEconomics([order()], RATES);
-    expect(r.missing).toContain("Fulfilment (3PL labels, pick/pack, storage)");
+    expect(r.missing).toContain("Fulfilment handling (pick/pack, packaging, returns)");
+    expect(r.missing).toContain("Postage (shipping labels)");
     expect(r.components.find((c) => c.basis === "missing")).toBeTruthy();
+  });
+
+  describe("with fulfilment rates from the 3PL and carrier invoices", () => {
+    const measured: FulfilmentRates = {
+      handling: { perShippedOrderCents: 500, basis: "measured" },
+      postage: { perShipmentCents: 800, basis: "measured" },
+    };
+
+    // A printable ships nothing, so it carries no pick/pack and no label.
+    it("charges handling and postage to shipped orders only", () => {
+      const r = computeUnitEconomics([order({ shipped: true }), order({ shipped: false })], RATES, measured);
+      expect(r.components.find((c) => c.label.startsWith("Fulfilment handling"))!.cents).toBe(500);
+      expect(r.components.find((c) => c.label.startsWith("Postage"))!.cents).toBe(800);
+      expect(r.codCents).toBe(2 * 1442 + 2 * (122 + 30) + 500 + 800);
+    });
+
+    // The ceiling caveat existed because these were absent. Present, it goes.
+    it("is complete once product cost, handling and postage are all known", () => {
+      const r = computeUnitEconomics([order({ shipped: true })], RATES, measured);
+      expect(r.missing).toEqual([]);
+      expect(r.complete).toBe(true);
+    });
+
+    it("counts an estimated component as present but names it", () => {
+      const r = computeUnitEconomics([order({ shipped: true })], RATES, {
+        ...measured, postage: { perShipmentCents: 800, basis: "estimated" },
+      });
+      expect(r.complete).toBe(true);
+      expect(r.estimated).toEqual(["Postage (shipping labels)"]);
+    });
+
+    it("still names a component missing when only the other is known", () => {
+      const r = computeUnitEconomics([order({ shipped: true })], RATES, { handling: measured.handling, postage: null });
+      expect(r.missing).toEqual(["Postage (shipping labels)"]);
+      expect(r.complete).toBe(false);
+    });
   });
 
   /**
@@ -334,6 +372,18 @@ describe("bandMargins", () => {
     const bands = bandMargins([o(6000)], RATES);
     expect(bands.find((b) => b.label === "$60-70")!.orders).toBe(1);
     expect(bands.find((b) => b.label === "$50-60")!.orders).toBe(0);
+  });
+
+  // Free shipping costs the label, so a band's margin must carry it.
+  it("takes handling and postage out of each shipped order's margin", () => {
+    const rates: FulfilmentRates = {
+      handling: { perShippedOrderCents: 300, basis: "measured" },
+      postage: { perShipmentCents: 700, basis: "measured" },
+    };
+    const [without] = bandMargins([o(6500, { shipped: true })], RATES).filter((b) => b.orders > 0);
+    const [withCosts] = bandMargins([o(6500, { shipped: true })], RATES, rates).filter((b) => b.orders > 0);
+    expect(without.marginCents - withCosts.marginCents).toBe(1000);
+    expect(withCosts.fulfilmentCents).toBe(1000);
   });
 
   it("reports every band, including the empty ones", () => {

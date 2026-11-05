@@ -87,6 +87,13 @@ const LINE_FLAGS = sql.raw(`
                 AND li.product_type <> 'Subscription') AS has_known_physical_type`);
 
 /**
+ * Whether anything on the order ships. `requires_shipping` is null on lines
+ * synced before it was fetched; for those a tracked stock count stands in,
+ * since only a physical thing has one.
+ */
+const SHIPPED = sql.raw(`BOOL_OR(li.requires_shipping = 1 OR (li.requires_shipping IS NULL AND inv.tracked = 1)) AS shipped`);
+
+/**
  * Revenue per business line over [start, end): order totals as
  * store_performance counts them (after discounts, including tax and
  * shipping), so the two tools agree. Every order counts, drop-shipped lines
@@ -158,6 +165,7 @@ export async function getOrdersForEconomics(
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
         ${LINE_FLAGS},
+        ${SHIPPED},
         -- Cost of the goods, times quantity.
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         -- Coverage is measured over line revenue, so a partly-costed order
@@ -183,7 +191,7 @@ export async function getOrdersForEconomics(
       has_subscription_type, has_untyped_without_inventory,
       has_tracked_inventory, has_known_physical_type,
       total_price_cents, total_tax_cents, product_cost_cents,
-      line_revenue_cents, costed_line_revenue_cents
+      line_revenue_cents, costed_line_revenue_cents, shipped
     FROM per_order
   `)) as unknown as Array<{
     has_subscription_type: boolean;
@@ -195,6 +203,7 @@ export async function getOrdersForEconomics(
     product_cost_cents: number;
     line_revenue_cents: number;
     costed_line_revenue_cents: number;
+    shipped: boolean | null;
   }>;
 
   const byLine = new Map<BusinessLine, OrderForEconomics[]>(
@@ -208,6 +217,7 @@ export async function getOrdersForEconomics(
       productCostCents: Number(r.product_cost_cents),
       lineRevenueCents: Number(r.line_revenue_cents),
       costedLineRevenueCents: Number(r.costed_line_revenue_cents),
+      shipped: Boolean(r.shipped),
     });
   }
 
@@ -322,6 +332,7 @@ export async function getNewCustomerOrders(
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
         ${LINE_FLAGS},
+        ${SHIPPED},
         COALESCE(SUM(inv.unit_cost_cents * li.quantity), 0) AS product_cost_cents,
         COALESCE(SUM(li.price_cents * li.quantity), 0) AS line_revenue_cents,
         COALESCE(SUM(CASE WHEN inv.unit_cost_cents IS NOT NULL
@@ -342,7 +353,7 @@ export async function getNewCustomerOrders(
       has_subscription_type, has_untyped_without_inventory,
       has_tracked_inventory, has_known_physical_type,
       total_price_cents, total_tax_cents, product_cost_cents,
-      line_revenue_cents, costed_line_revenue_cents,
+      line_revenue_cents, costed_line_revenue_cents, shipped,
       whole_history_held
     FROM per_order
   `)) as unknown as Array<{
@@ -355,6 +366,7 @@ export async function getNewCustomerOrders(
     product_cost_cents: number;
     line_revenue_cents: number;
     costed_line_revenue_cents: number;
+    shipped: boolean | null;
     whole_history_held: boolean | null;
   }>;
 
@@ -375,6 +387,7 @@ export async function getNewCustomerOrders(
       productCostCents: Number(r.product_cost_cents),
       lineRevenueCents: Number(r.line_revenue_cents),
       costedLineRevenueCents: Number(r.costed_line_revenue_cents),
+      shipped: Boolean(r.shipped),
     });
   }
 

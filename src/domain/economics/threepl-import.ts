@@ -237,7 +237,9 @@ export function planThreeplImport(args: {
           name: r.fee,
           amountCents: r.cents,
           effectiveFrom: periodStart,
-          cadence: "per_bill_period",
+          // Recurring 3PL charges land on every other fortnightly bill
+          // (720698, 741600, 762890), so they recur every 28 days.
+          cadence: "every_28_days",
           vendor: "3PL",
         }));
 

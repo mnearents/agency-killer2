@@ -73,9 +73,28 @@ export interface OrderForEconomics {
    * surviving in the metric after it was fixed in the numerator.
    */
   costedLineRevenueCents: number;
+  /**
+   * Whether anything on the order ships. Only a shipped order carries pick,
+   * pack and a label; a printable carries neither. Absent counts as not shipped.
+   */
+  shipped?: boolean;
 }
 
 export type CostBasis = "measured" | "estimated" | "missing";
+
+/**
+ * Per-order fulfilment costs, from the 3PL's fortnightly bills and the weekly
+ * carrier invoices (`fulfilment-model.ts`). Neither invoice itemises orders,
+ * so these are averages over the shipped orders they covered — measured when
+ * the window lies inside invoiced periods, estimated when they are applied
+ * beyond them. Null when nothing is invoiced at all.
+ */
+export interface FulfilmentRates {
+  /** Pick/pack, packaging, ad hoc and returns handling per shipped order. */
+  handling: { perShippedOrderCents: number; basis: "measured" | "estimated" } | null;
+  /** Label cost per shipment. */
+  postage: { perShipmentCents: number; basis: "measured" | "estimated" } | null;
+}
 
 export interface CostComponent {
   label: string;
@@ -99,6 +118,8 @@ export interface UnitEconomicsResult {
   cogsCoveragePct: number;
   /** Cost categories not included. Non-empty means the COD is a floor. */
   missing: string[];
+  /** Components present as averages applied beyond the periods they were measured over. */
+  estimated: string[];
   /** False while any component is missing. A COD without fulfilment is not a COD. */
   complete: boolean;
   note?: string;
@@ -126,11 +147,26 @@ export function breakEvenAmer(codPct: number): number | null {
 }
 
 /** Named here so the string in the result and the one in `missing` cannot drift. */
-const FULFILMENT_LABEL = "Fulfilment (3PL labels, pick/pack, storage)";
+const HANDLING_LABEL = "Fulfilment handling (pick/pack, packaging, returns)";
+const POSTAGE_LABEL = "Postage (shipping labels)";
+
+/** The two fulfilment components for a set of orders. Storage and fees are overhead, not COD. */
+function fulfilmentComponents(orders: OrderForEconomics[], rates: FulfilmentRates | undefined): CostComponent[] {
+  const shipped = orders.filter((o) => o.shipped).length;
+  return [
+    rates?.handling
+      ? { label: HANDLING_LABEL, cents: shipped * rates.handling.perShippedOrderCents, basis: rates.handling.basis }
+      : { label: HANDLING_LABEL, cents: 0, basis: "missing" },
+    rates?.postage
+      ? { label: POSTAGE_LABEL, cents: shipped * rates.postage.perShipmentCents, basis: rates.postage.basis }
+      : { label: POSTAGE_LABEL, cents: 0, basis: "missing" },
+  ];
+}
 
 export function computeUnitEconomics(
   orders: OrderForEconomics[],
-  rates: RateSettings
+  rates: RateSettings,
+  fulfilment?: FulfilmentRates,
 ): UnitEconomicsResult {
   if (orders.length === 0) {
     return {
@@ -145,7 +181,8 @@ export function computeUnitEconomics(
       contributionMarginCents: 0,
       breakEvenAmer: null,
       cogsCoveragePct: 0,
-      missing: [FULFILMENT_LABEL],
+      missing: [HANDLING_LABEL, POSTAGE_LABEL],
+      estimated: [],
       complete: false,
       note: "No orders in this window, so nothing was computed.",
     };
@@ -177,7 +214,8 @@ export function computeUnitEconomics(
   }
 
   const paymentCents = percentageCents + fixedCents;
-  const codCents = productCostCents + paymentCents;
+  const fulfilmentParts = fulfilmentComponents(orders, fulfilment);
+  const codCents = productCostCents + paymentCents + fulfilmentParts.reduce((s, c) => s + c.cents, 0);
 
   // Over line revenue, named in the field's docstring. A coverage figure over
   // order revenue divides costed line revenue by a base that includes shipping
@@ -194,9 +232,9 @@ export function computeUnitEconomics(
       basis: cogsCoveragePct === 1 ? "measured" : "missing",
     },
     { label: "Payment processing", cents: paymentCents, basis: "measured" },
-    // Present with a zero and a basis of `missing`, rather than absent. A
-    // component nobody listed is a component nobody notices is unaccounted.
-    { label: FULFILMENT_LABEL, cents: 0, basis: "missing" },
+    // Present with a zero and a basis of `missing` when not invoiced, rather
+    // than absent. A component nobody listed is one nobody notices is unaccounted.
+    ...fulfilmentParts,
   ];
 
   const missing = components
@@ -219,6 +257,7 @@ export function computeUnitEconomics(
     breakEvenAmer: revenueCents === 0 ? null : breakEvenAmer(codCents / revenueCents),
     cogsCoveragePct,
     missing,
+    estimated: components.filter((c) => c.basis === "estimated").map((c) => c.label),
     complete: missing.length === 0,
   };
 }
@@ -255,12 +294,14 @@ export interface BandMargin {
   revenueCents: number;
   productCostCents: number;
   paymentCents: number;
+  /** Handling and postage on the band's shipped orders. Zero when not invoiced. */
+  fulfilmentCents: number;
   marginCents: number;
   /** Null when the band is empty — never 0, which would read as no margin. */
   marginPct: number | null;
 }
 
-export function bandMargins(orders: OrderForEconomics[], rates: RateSettings): BandMargin[] {
+export function bandMargins(orders: OrderForEconomics[], rates: RateSettings, fulfilment?: FulfilmentRates): BandMargin[] {
   // Every band is returned, including empty ones: an absent band reads as "no
   // data here" when it means "no orders here".
   return BANDS.map((band) => {
@@ -280,7 +321,8 @@ export function bandMargins(orders: OrderForEconomics[], rates: RateSettings): B
       paymentCents += paymentFeeCents(o.totalPriceCents, rates);
     }
 
-    const marginCents = revenueCents - productCostCents - paymentCents;
+    const fulfilmentCents = fulfilmentComponents(inBand, fulfilment).reduce((s, c) => s + c.cents, 0);
+    const marginCents = revenueCents - productCostCents - paymentCents - fulfilmentCents;
 
     return {
       label: band.label,
@@ -288,6 +330,7 @@ export function bandMargins(orders: OrderForEconomics[], rates: RateSettings): B
       revenueCents,
       productCostCents,
       paymentCents,
+      fulfilmentCents,
       marginCents,
       marginPct: revenueCents === 0 ? null : marginCents / revenueCents,
     };

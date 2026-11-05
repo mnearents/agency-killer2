@@ -25,6 +25,7 @@ function economics(over: Partial<UnitEconomicsResult> = {}): UnitEconomicsResult
     breakEvenAmer: 2,
     cogsCoveragePct: 1,
     missing: [],
+    estimated: [],
     complete: true,
     ...over,
   };

@@ -1948,7 +1948,7 @@ export const recurringCosts = pgTable(
     name: text("name").notNull(),
     vendor: text("vendor"),
     amountCents: integer("amount_cents").notNull(),
-    /** monthly | annual | per_bill_period — never normalised on write. */
+    /** monthly | annual | per_bill_period | every_28_days — never normalised on write. */
     cadence: text("cadence").notNull(),
     effectiveFrom: date("effective_from", { mode: "string" }).notNull(),
     /** Null while current. Closing a row is how a cost changes. */
@@ -2178,3 +2178,49 @@ export const goals = pgTable(
   },
   (table) => [index("goals_kind_period_line_created_idx").on(table.kind, table.period, table.line, table.createdAt)]
 );
+
+/**
+ * What the 3PL and its carriers actually billed, one row per invoice line.
+ *
+ * Two sources, neither itemised by order:
+ * - `evobox`: the fortnightly fulfilment bill — order (pick/pack), ad_hoc,
+ *   returns, and every 28 days recurring ($125 API) and storage (~$385),
+ *   plus a monthly-minimum top-up.
+ * - `carrier`: the weekly label invoice — postage per carrier with a
+ *   shipment count.
+ *
+ * Shipping-only Evobox invoices (a single "Shipping" line) are not stored:
+ * they are not fulfilment bills. An import replaces every row for its
+ * (source, invoice_number), so re-importing a file cannot double a bill.
+ */
+export const fulfilmentInvoices = pgTable(
+  "fulfilment_invoices",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** evobox | carrier */
+    source: text("source").notNull(),
+    invoiceNumber: text("invoice_number").notNull(),
+    issued: date("issued", { mode: "string" }),
+    /** The days the line covers, inclusive. */
+    periodStart: date("period_start", { mode: "string" }).notNull(),
+    periodEnd: date("period_end", { mode: "string" }).notNull(),
+    /** True when the period was inferred from a line date rather than printed. */
+    periodInferred: integer("period_inferred").notNull().default(0),
+    /** order | ad_hoc | returns | recurring | storage | minimum | postage */
+    category: text("category").notNull(),
+    /** For postage: Cirro, USPS, DHL eCommerce, FedEx. */
+    carrier: text("carrier"),
+    shipments: integer("shipments"),
+    amountCents: integer("amount_cents").notNull(),
+    sourceFile: text("source_file"),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("fulfilment_invoices_period_idx").on(table.periodStart, table.periodEnd),
+    index("fulfilment_invoices_invoice_idx").on(table.source, table.invoiceNumber),
+  ]
+);
+
+export type FulfilmentInvoiceRow = typeof fulfilmentInvoices.$inferSelect;

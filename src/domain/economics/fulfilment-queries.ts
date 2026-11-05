@@ -18,7 +18,8 @@
 
 import { sql, and, gte, lte, isNotNull } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { threeplCharges, threeplShipments, recurringCosts } from "@/db/schema";
+import { threeplCharges, threeplShipments, recurringCosts, fulfilmentInvoices } from "@/db/schema";
+import { computeFulfilmentRates, type FulfilmentModel, type InvoiceLineInput } from "./fulfilment-model";
 
 export interface ChargePeriod {
   billNumber: string;
@@ -242,7 +243,56 @@ export function monthlyEquivalentCents(amountCents: number, cadence: string): nu
     // 26 bill periods a year, not 24 — the 3PL bills fortnightly.
     case "per_bill_period":
       return Math.round((amountCents * 26) / 12);
+    // The 3PL's recurring fee and storage: every other fortnightly bill.
+    case "every_28_days":
+      return Math.round((amountCents * 365) / 28 / 12);
     default:
       return null;
   }
+}
+
+/**
+ * ─── Invoiced fulfilment (fulfilment_invoices) ───────────────────────
+ */
+
+export async function getFulfilmentInvoiceLines(db: Db): Promise<InvoiceLineInput[]> {
+  return db
+    .select({
+      source: fulfilmentInvoices.source,
+      category: fulfilmentInvoices.category,
+      amountCents: fulfilmentInvoices.amountCents,
+      periodStart: fulfilmentInvoices.periodStart,
+      periodEnd: fulfilmentInvoices.periodEnd,
+      shipments: fulfilmentInvoices.shipments,
+    })
+    .from(fulfilmentInvoices);
+}
+
+/**
+ * Orders with anything to ship, per UTC day. The same test as the economics
+ * queries' `shipped`: requires_shipping, or a tracked stock count where the
+ * line predates that field.
+ */
+export async function getShippedOrdersByDay(db: Db, from: string, to: string): Promise<Map<string, number>> {
+  const rows = (await db.execute(sql`
+    select to_char(day, 'YYYY-MM-DD') as day, count(*)::int as orders from (
+      select o.id, (o.order_created_at at time zone 'UTC')::date as day
+      from shopify_orders o
+      join shopify_line_items li on li.order_id = o.id
+      left join shopify_inventory inv on inv.id = li.variant_id
+      where o.order_created_at >= ${from}::date and o.order_created_at < (${to}::date + 1)
+      group by o.id, day
+      having bool_or(li.requires_shipping = 1 or (li.requires_shipping is null and inv.tracked = 1))
+    ) shipped
+    group by day`)) as unknown as { day: string; orders: number }[];
+  return new Map(rows.map((r) => [r.day, Number(r.orders)]));
+}
+
+/** The fulfilment model for a window, from everything invoiced so far. */
+export async function loadFulfilmentModel(db: Db, window: { start: string; end: string }): Promise<FulfilmentModel> {
+  const lines = await getFulfilmentInvoiceLines(db);
+  if (lines.length === 0) return computeFulfilmentRates([], new Map(), window);
+  const from = lines.reduce((m, l) => (l.periodStart < m ? l.periodStart : m), lines[0].periodStart);
+  const to = lines.reduce((m, l) => (l.periodEnd > m ? l.periodEnd : m), lines[0].periodEnd);
+  return computeFulfilmentRates(lines, await getShippedOrdersByDay(db, from, to), window);
 }

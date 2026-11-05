@@ -106,6 +106,8 @@ import {
   recordGoal,
 } from "@/domain/strategy/goals";
 import { getRevenueByLine } from "@/domain/economics/queries";
+import { loadFulfilmentModel } from "@/domain/economics/fulfilment-queries";
+import type { FulfilmentModel } from "@/domain/economics/fulfilment-model";
 import {
   PRODUCT_ROLES,
   CLEARABLE,
@@ -2803,13 +2805,52 @@ const segmentPushHistory: McpTool = {
 
 const dollarsFrom = (cents: number) => Math.round(cents) / 100;
 
+/** What the 3PL and carrier invoices say per order, for the margin tools' answers. */
+function describeFulfilment(m: FulfilmentModel) {
+  return {
+    handlingPerShippedOrder: m.rates.handling ? dollarsFrom(m.rates.handling.perShippedOrderCents) : null,
+    handlingBasis: m.rates.handling?.basis ?? "missing",
+    postagePerShipment: m.rates.postage ? dollarsFrom(m.rates.postage.perShipmentCents) : null,
+    postageBasis: m.rates.postage?.basis ?? "missing",
+    invoicedHandling: m.coverage.handling && {
+      from: m.coverage.handling.from, to: m.coverage.handling.to, daysInvoiced: m.coverage.handling.daysInvoiced,
+      billed: dollarsFrom(m.coverage.handling.amountCents), shippedOrders: m.coverage.handling.shippedOrders,
+    },
+    invoicedPostage: m.coverage.postage && {
+      from: m.coverage.postage.from, to: m.coverage.postage.to, daysInvoiced: m.coverage.postage.daysInvoiced,
+      billed: dollarsFrom(m.coverage.postage.amountCents), shipments: m.coverage.postage.shipments,
+    },
+    // Storage, the API fee and minimum top-ups do not scale with orders, so
+    // they are overhead rather than cost of delivery.
+    fixedOverheadPerMonth: m.fixedOverheadMonthlyCents === null ? null : dollarsFrom(m.fixedOverheadMonthlyCents),
+    notes: m.notes,
+  };
+}
+
+/**
+ * The caveat a margin tool's answer needs, from what is actually invoiced:
+ * none when handling and postage are measured over the window, an estimate
+ * warning when they are averages applied beyond the invoiced days, and the
+ * floor/ceiling warning only for what is still missing.
+ */
+function fulfilmentCaveat(m: FulfilmentModel, consequence: string): string | undefined {
+  const missing = [!m.rates.handling && "Fulfilment handling", !m.rates.postage && (m.rates.handling ? "Postage" : "postage")].filter(Boolean);
+  if (missing.length > 0) {
+    return `${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not invoiced in the database, so ${consequence}`;
+  }
+  if (m.rates.handling!.basis === "estimated" || m.rates.postage!.basis === "estimated") {
+    return "Handling and postage are averages per shipped order from the 3PL and carrier invoices, applied to days no invoice covers — estimates, not measurements. See `fulfilment`.";
+  }
+  return undefined;
+}
+
 const unitEconomics: McpTool = {
   name: "unit_economics",
   title: "Cost of delivery and contribution margin",
   description:
     "Cost of delivery, contribution margin and break-even aMER, split by business line and never blended — a single COD across a subscription at ~8% and physical goods at 50-65% is true of neither. " +
     "Revenue EXCLUDES tax; payment fees are charged on the full captured amount including it, and are computed per transaction as (amount x pct) + fixed rather than as a flat rate. That distinction matters here: the 30c fixed fee is the larger half on ~50,000 subscription orders averaging $6.56. " +
-    "Read `complete` and `missing` before quoting any figure. Fulfilment costs are not in the database yet, so every COD below is a FLOOR — the real one is higher. " +
+    "Read `complete`, `missing` and `estimated` before quoting any figure. Fulfilment handling and postage come from the 3PL and carrier invoices as averages per shipped order (`fulfilment` says over which days); applied beyond those days they are estimates. Storage and the 3PL's fixed fees are overhead (`fulfilment.fixedOverheadPerMonth`), not cost of delivery. " +
     "`cogsCoveragePct` is the share of revenue whose landed product cost is actually recorded; a COD over uncosted orders is a guess.",
   readOnly: true,
   schema: {
@@ -2836,13 +2877,16 @@ const unitEconomics: McpTool = {
       };
     }
 
-    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+    const [byLine, fulfilment] = await Promise.all([
+      getOrdersForEconomics(ctx.db, startDate, endDate),
+      loadFulfilmentModel(ctx.db, { start: startDate, end: endDate }),
+    ]);
     const wanted = args.businessLine as string | undefined;
 
     const lines = byLine
       .filter((l) => wanted === undefined || l.line === wanted)
       .map(({ line, orders }) => {
-        const r = computeUnitEconomics(orders, rates);
+        const r = computeUnitEconomics(orders, rates, fulfilment.rates);
         return {
           businessLine: line,
           orders: r.orders,
@@ -2865,6 +2909,7 @@ const unitEconomics: McpTool = {
           cogsCoveragePct: Number((100 * r.cogsCoveragePct).toFixed(1)),
           complete: r.complete,
           missing: r.missing,
+          estimated: r.estimated,
           ...(r.note ? { note: r.note } : {}),
         };
       });
@@ -2873,11 +2918,10 @@ const unitEconomics: McpTool = {
       window: { startDate, endDate, days: args.days },
       rates: { paymentPct: rates.paymentPctRate, paymentFixedCents: rates.paymentFixedCents },
       lines,
-      // Repeated at the top level so a caller reading only the summary still
-      // sees it. A COD missing a whole cost category is not a COD.
-      caveat:
-        "Fulfilment (3PL labels, pick/pack, storage) is not yet in the database. " +
-        "Every cost of delivery here is a floor and every contribution margin a ceiling.",
+      fulfilment: describeFulfilment(fulfilment),
+      // At the top level so a caller reading only the summary still sees it.
+      // A COD missing a whole cost category is not a COD.
+      caveat: fulfilmentCaveat(fulfilment, "every cost of delivery here is a floor and every contribution margin a ceiling."),
     };
   },
 };
@@ -2888,7 +2932,7 @@ const marginByOrderValue: McpTool = {
   description:
     "Contribution margin banded by order value, for the question #34 poses: is free shipping over $60 subsidising the worst orders? " +
     "Returns a verdict comparing the $50-60 and $60-70 bands directly, plus every band's margin. " +
-    "PROVISIONAL by construction: the cost the threshold absorbs is the shipping label, which is not in the database, so this compares margin net of product cost and payment fees only. " +
+    "Margin is net of product cost, payment fees, fulfilment handling and postage. Postage comes from weekly carrier invoices with no per-order detail, so it is an AVERAGE per shipment applied to every band — the threshold question really turns on how label cost rises with order size, which an average cannot show; `caveat` says so. " +
     "Physical orders only by default — a threshold on shipping means nothing for a subscription or a printable.",
   readOnly: true,
   schema: {
@@ -2911,10 +2955,13 @@ const marginByOrderValue: McpTool = {
       };
     }
 
-    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+    const [byLine, fulfilment] = await Promise.all([
+      getOrdersForEconomics(ctx.db, startDate, endDate),
+      loadFulfilmentModel(ctx.db, { start: startDate, end: endDate }),
+    ]);
     const line = args.businessLine as string;
     const orders = byLine.find((l) => l.line === line)?.orders ?? [];
-    const bands = bandMargins(orders, rates);
+    const bands = bandMargins(orders, rates, fulfilment.rates);
     const verdict = thresholdVerdict(bands);
 
     return {
@@ -2936,12 +2983,18 @@ const marginByOrderValue: McpTool = {
         revenue: dollarsFrom(b.revenueCents),
         productCost: dollarsFrom(b.productCostCents),
         paymentFees: dollarsFrom(b.paymentCents),
+        fulfilment: dollarsFrom(b.fulfilmentCents),
         margin: dollarsFrom(b.marginCents),
         marginPct: b.marginPct === null ? null : Number((100 * b.marginPct).toFixed(1)),
       })),
-      caveat:
-        "Fulfilment (3PL labels, pick/pack, storage) is not in the database. Every margin here " +
-        "is a ceiling, and the threshold verdict is provisional until label costs are loaded.",
+      fulfilment: describeFulfilment(fulfilment),
+      caveat: [
+        fulfilmentCaveat(fulfilment, "every margin here is a ceiling and the threshold verdict is provisional."),
+        // True however complete the invoices are: they carry no per-order labels.
+        fulfilment.rates.postage
+          ? "Postage is an AVERAGE per shipment, the same in every band. A heavier, pricier order costs more to ship than that, so the bands above the threshold are flattered relative to the ones below it."
+          : undefined,
+      ].filter(Boolean).join(" ") || undefined,
     };
   },
 };
@@ -2982,7 +3035,10 @@ const targetCpa: McpTool = {
       };
     }
 
-    const byLine = await getOrdersForEconomics(ctx.db, startDate, endDate);
+    const [byLine, fulfilment] = await Promise.all([
+      getOrdersForEconomics(ctx.db, startDate, endDate),
+      loadFulfilmentModel(ctx.db, { start: startDate, end: endDate }),
+    ]);
 
     // Read once, for the subscription line only. `realisedChurnedLtv` picks
     // the cohort; nothing here can hand it a different one.
@@ -2993,7 +3049,7 @@ const targetCpa: McpTool = {
     const lines = byLine
       .filter((l) => wanted === undefined || l.line === wanted)
       .map(({ line, orders }) => {
-        const economics = computeUnitEconomics(orders, rates);
+        const economics = computeUnitEconomics(orders, rates, fulfilment.rates);
         const r = computeTargetCpa({
           businessLine: line,
           economics,
@@ -3048,9 +3104,8 @@ const targetCpa: McpTool = {
               "No finished, non-migrated subscription run is on record, so realised LTV could not be computed.",
           }),
       lines,
-      caveat:
-        "Fulfilment (3PL labels, pick/pack, storage) is not yet in the database, so every cost of " +
-        "delivery behind these figures is a floor and every CPA built on one is a ceiling.",
+      fulfilment: describeFulfilment(fulfilment),
+      caveat: fulfilmentCaveat(fulfilment, "every cost of delivery behind these figures is a floor and every CPA built on one is a ceiling."),
     };
   },
 };
@@ -3093,8 +3148,16 @@ const amerTool: McpTool = {
     );
     const spendCents = spendRows.reduce((sum, r) => sum + r.spendCents, 0);
 
-    const { byLine, undecidableOrders } = await getNewCustomerOrders(ctx.db, startDate, endDate);
-    const r = computeAmer({ spendCents, rates, byLine });
+    const [{ byLine, undecidableOrders }, fulfilment] = await Promise.all([
+      getNewCustomerOrders(ctx.db, startDate, endDate),
+      loadFulfilmentModel(ctx.db, { start: startDate, end: endDate }),
+    ]);
+    // Only when both are invoiced: half a fulfilment cost is still a missing one.
+    const { handling, postage } = fulfilment.rates;
+    const fulfilmentCents = handling && postage
+      ? byLine.flatMap((l) => l.orders).filter((o) => o.shipped).length * (handling.perShippedOrderCents + postage.perShipmentCents)
+      : undefined;
+    const r = computeAmer({ spendCents, rates, byLine, fulfilmentCents });
 
     return {
       window: { startDate, endDate, days: args.days },

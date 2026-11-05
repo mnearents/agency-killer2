@@ -30,6 +30,12 @@ export interface InvoiceLine {
 export interface ThreeplInvoice {
   invoiceNumber: string;
   invoiceDate: string | null;
+  /**
+   * The fortnight the bill covers, ISO dates inclusive. From the "Fulfillment
+   * 09/19-10/02" note where there is one; otherwise a fortnight ending on the
+   * line date, with `inferred` set. Null when neither exists.
+   */
+  servicePeriod: { start: string; end: string; inferred: boolean } | null;
   lines: InvoiceLine[];
   /** The printed total, not a sum of the lines — they are checked against each other. */
   totalCents: number;
@@ -63,6 +69,8 @@ export function normaliseInvoiceDate(text: string | null): string | null {
  * surplus in the other.
  */
 export function normaliseCategory(description: string): string {
+  // "Monthly minimum - September": the top-up to the 3PL's monthly minimum.
+  if (/^monthly\s+minimum/i.test(description.trim())) return "minimum";
   return description
     .replace(/\s*charges?\s*$/i, "")
     .trim()
@@ -91,14 +99,17 @@ export function parseInvoiceLines(lines: string[]): ThreeplInvoice {
   const dateMatch = joined.match(/Invoice\s*date:?\s*([\d/]+)/i);
   const invoiceDate = normaliseInvoiceDate(dateMatch ? dateMatch[1] : null);
 
-  // "1. 09/04/2026 Sales Storage charges 1 $385.196 $385.20"
+  // "1. 09/04/2026 Sales Storage charges 1 $385.196 $385.20", and from bill
+  // 728554 on the same line without its date.
   const lineItems: InvoiceLine[] = [];
+  let lineDate: string | null = null;
   for (const line of lines) {
     const m = line.match(
-      /^\s*\d+\.\s+\d{1,2}\/\d{1,2}\/\d{4}\s+\S+\s+(.+?)\s+(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)\s*$/,
+      /^\s*\d+\.\s+(?:(\d{1,2}\/\d{1,2}\/\d{4})\s+)?\S+\s+(.+?)\s+(\d+(?:\.\d+)?)\s+\$?([\d,]+\.\d+)\s+\$?([\d,]+\.\d+)\s*$/,
     );
     if (!m) continue;
-    const [, description, quantity, rate, amount] = m;
+    const [, dated, description, quantity, rate, amount] = m;
+    if (dated) lineDate = normaliseInvoiceDate(dated);
     const amountCents = money(amount);
     if (amountCents === null) continue;
     lineItems.push({
@@ -142,7 +153,38 @@ export function parseInvoiceLines(lines: string[]): ThreeplInvoice {
     );
   }
 
-  return { invoiceNumber, invoiceDate, lines: lineItems, totalCents };
+  return { invoiceNumber, invoiceDate, servicePeriod: servicePeriodOf(joined, invoiceDate, lineDate), lines: lineItems, totalCents };
+}
+
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * "Ful fi llment 09/19-10/02" — the PDF splits the ligature, so the word is
+ * matched loosely. Months and days only: the year is the invoice's, and a
+ * start month after the end month belongs to the year before.
+ */
+function servicePeriodOf(text: string, invoiceDate: string | null, lineDate: string | null): ThreeplInvoice["servicePeriod"] {
+  const note = text.match(/Ful\s*fi\s*llment\s+(\d{1,2})\/(\d{1,2})\s*-\s*(\d{1,2})\/(\d{1,2})/i);
+  if (note && invoiceDate) {
+    const [sm, sd, em, ed] = note.slice(1).map(Number);
+    const endYear = Number(invoiceDate.slice(0, 4)) - (em > Number(invoiceDate.slice(5, 7)) ? 1 : 0);
+    const startYear = sm > em ? endYear - 1 : endYear;
+    return { start: iso(new Date(Date.UTC(startYear, sm - 1, sd))), end: iso(new Date(Date.UTC(endYear, em - 1, ed))), inferred: false };
+  }
+  if (lineDate) {
+    const end = new Date(`${lineDate}T00:00:00Z`);
+    return { start: iso(new Date(end.getTime() - 13 * 86_400_000)), end: lineDate, inferred: true };
+  }
+  return null;
+}
+
+/**
+ * Evobox also sends invoices whose single item is "Shipping". They are not
+ * fulfilment bills and are kept out of the fulfilment figures.
+ */
+export function isShippingOnlyInvoice(lines: string[]): boolean {
+  const items = lines.filter((l) => /^\s*\d+\.\s+/.test(l));
+  return items.length > 0 && items.every((l) => /^\s*\d+\.\s+Shipping\s+\$?[\d,]+\.\d{2}\s*$/i.test(l));
 }
 
 export interface CategoryReconciliation {

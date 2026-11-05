@@ -4,7 +4,9 @@
  *
  *   pnpm threepl:import <charges.csv>     # the charge ledger
  *   pnpm threepl:import <shipments.csv>   # the shipping label export
- *   pnpm threepl:import <invoice.pdf>     # the invoice, reconciled against the ledger
+ *   pnpm threepl:import <invoice.pdf>     # an Evobox bill: stored, and reconciled against the ledger
+ *                                         # a weekly carrier label invoice: stored as postage
+ *                                         # a shipping-only Evobox invoice: skipped, not a fulfilment bill
  *   ... --write                           # actually write; dry run is the default
  *   pnpm threepl:import <directory>       # every file in it, in dependency order
  *
@@ -22,6 +24,13 @@ import { parseShipmentsCsv } from "@/domain/economics/parse-shipments-csv";
 import { planShipmentImport, importShipments } from "@/domain/economics/shipments-import";
 import { pdfToLines } from "@/domain/economics/pdf-text";
 import { parseInvoiceLines, reconcileInvoice } from "@/domain/economics/parse-threepl-invoice";
+import { parseCarrierInvoice } from "@/domain/economics/parse-carrier-invoice";
+import {
+  classifyInvoicePdf,
+  evoboxInvoiceRows,
+  carrierInvoiceRows,
+  storeInvoiceRows,
+} from "@/domain/economics/fulfilment-invoice-import";
 
 const money = (c: number) => `$${(c / 100).toFixed(2)}`;
 
@@ -104,9 +113,31 @@ async function doShipments(db: Db, path: string, write: boolean) {
   if (write) console.log(`  written.`);
 }
 
-async function doInvoice(db: Db, path: string) {
-  const invoice = parseInvoiceLines(await pdfToLines(new Uint8Array(readFileSync(path))));
-  console.log(`  invoice ${invoice.invoiceNumber}   ${invoice.invoiceDate}   ${money(invoice.totalCents)}`);
+async function doInvoice(db: Db, path: string, write: boolean) {
+  const lines = await pdfToLines(new Uint8Array(readFileSync(path)));
+  const kind = classifyInvoicePdf(lines);
+
+  if (kind === "shipping-only") {
+    console.log(`  excluded: a shipping-only invoice, not a fulfilment bill.`);
+    return;
+  }
+
+  if (kind === "carrier") {
+    const inv = parseCarrierInvoice(lines);
+    console.log(`  label invoice ${inv.invoiceNumber}   ${inv.periodStart} .. ${inv.periodEnd}   ${inv.shipments} shipments   ${money(inv.totalCents)}`);
+    for (const c of inv.carriers) console.log(`    ${c.carrier.padEnd(14)} ${String(c.shipments).padStart(4)} shipments ${money(c.amountCents).padStart(10)}`);
+    const rows = carrierInvoiceRows(inv, basename(path));
+    if (write) console.log(`  written: ${await storeInvoiceRows(db, rows)} rows.`);
+    return;
+  }
+
+  const invoice = parseInvoiceLines(lines);
+  const p = invoice.servicePeriod;
+  console.log(`  invoice ${invoice.invoiceNumber}   ${invoice.invoiceDate}   ${money(invoice.totalCents)}   ` +
+    (p ? `covers ${p.start} .. ${p.end}${p.inferred ? " (inferred from the line date)" : ""}` : "no service period"));
+  for (const l of invoice.lines) console.log(`    ${l.category.padEnd(12)} ${money(l.amountCents).padStart(10)}`);
+  const rows = evoboxInvoiceRows(invoice, basename(path));
+  if (write) console.log(`  written: ${await storeInvoiceRows(db, rows)} rows.`);
 
   const ledger = await db
     .select({ category: threeplCharges.category, totalCents: threeplCharges.totalCents })
@@ -114,7 +145,7 @@ async function doInvoice(db: Db, path: string) {
     .where(eq(threeplCharges.billNumber, invoice.invoiceNumber));
 
   if (ledger.length === 0) {
-    console.log(`  ! no charge rows stored for bill ${invoice.invoiceNumber} — import its CSV to reconcile.`);
+    console.log(`  (no charge ledger stored for bill ${invoice.invoiceNumber}, so there is nothing to reconcile against)`);
     return;
   }
 
@@ -162,7 +193,7 @@ async function main() {
     try {
       if (kind === "charges") await doCharges(db, path, write);
       else if (kind === "shipments") await doShipments(db, path, write);
-      else if (kind === "invoice") await doInvoice(db, path);
+      else if (kind === "invoice") await doInvoice(db, path, write);
       else console.log(`  ! not a recognised 3PL export — skipped.`);
     } catch (err) {
       console.error(`  REFUSED: ${err instanceof Error ? err.message : String(err)}`);
