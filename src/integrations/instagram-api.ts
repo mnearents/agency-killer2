@@ -36,6 +36,45 @@ export interface IgMediaInsights {
   shares: number;
   plays: number;
   totalInteractions: number;
+  /**
+   * The measures below are null when Instagram did not return them — a reel
+   * cannot report follows, a feed post has no watch time — never zero, so a
+   * measure that does not exist is not read as one that came to nothing.
+   */
+  views?: number | null;
+  reposts?: number | null;
+  /** Reels only. Milliseconds. */
+  avgWatchTimeMs?: number | null;
+  /** Reels only. Milliseconds, summed over every view. */
+  totalWatchTimeMs?: number | null;
+  /** Feed posts only: accounts that followed from this post. */
+  follows?: number | null;
+  /** Feed posts only. */
+  profileVisits?: number | null;
+}
+
+/**
+ * One day of account-level insight. Null is a measure Instagram returned
+ * nothing for, which happens for days beyond what it keeps.
+ */
+export interface IgAccountDay {
+  /** Accounts that started following that day. */
+  follows: number | null;
+  /** Accounts that stopped following that day. */
+  unfollows: number | null;
+  reach: number | null;
+  reachFollowers: number | null;
+  /** Reach outside the existing audience: what growth is made of. */
+  reachNonFollowers: number | null;
+  views: number | null;
+  viewsReel: number | null;
+  viewsPost: number | null;
+  viewsCarousel: number | null;
+  viewsStory: number | null;
+  /** Views of the account's content shown as ads — paid, not organic. */
+  viewsAd: number | null;
+  profileViews: number | null;
+  accountsEngaged: number | null;
 }
 
 export interface IgAccountInfo {
@@ -49,7 +88,9 @@ export interface InstagramApiClient {
   getAccountInfo(igUserId: string): Promise<IgAccountInfo>;
   getRecentMedia(igUserId: string, limit?: number): Promise<IgMedia[]>;
   getStories(igUserId: string): Promise<IgMedia[]>;
-  getMediaInsights(mediaId: string, mediaType: string): Promise<IgMediaInsights>;
+  getMediaInsights(mediaId: string, mediaType: string, mediaProductType?: string): Promise<IgMediaInsights>;
+  /** Account insight for one day, `YYYY-MM-DD`, requested as that UTC day. */
+  getAccountDay(igUserId: string, day: string): Promise<IgAccountDay>;
 }
 
 const MEDIA_FIELDS = [
@@ -91,30 +132,82 @@ export function parseInsightsResponse(
       ? (byName.get("views") ?? byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0)
       : (byName.get("ig_reels_video_view_total") ?? byName.get("plays") ?? 0),
     totalInteractions: byName.get("total_interactions") ?? 0,
+    views: byName.get("views") ?? null,
+    reposts: byName.get("reposts") ?? null,
+    avgWatchTimeMs: byName.get("ig_reels_avg_watch_time") ?? null,
+    totalWatchTimeMs: byName.get("ig_reels_video_view_total_time") ?? null,
+    follows: byName.get("follows") ?? null,
+    profileVisits: byName.get("profile_visits") ?? null,
   };
 }
 
 /**
- * Pick the right insight metrics based on media type.
+ * The insight metrics to request for a post.
  *
- * The IG API is picky about which metrics each media type supports.
- * Stories, older posts, and carousel children reject many metrics.
- * Use the safest common set per type to minimize 400 errors.
+ * One metric a type does not support fails the whole call, so each type asks
+ * for exactly its own set. Probed against the live account on 2026-11-09:
+ * reels refuse `follows`, `profile_visits` and `impressions`; feed posts
+ * refuse the `ig_reels_*` watch-time metrics; `plays` no longer exists.
+ *
+ * It is chosen by `media_product_type`, which is what separates a reel from a
+ * feed video — `media_type` is VIDEO for both.
  */
-function getMetricsForMediaType(mediaType: string, mediaProductType?: string): string {
+export function insightMetricsFor(mediaType: string, mediaProductType?: string): string {
   if (mediaProductType === "REELS") {
-    // Reels support reel-specific metrics
-    return "reach,saved,shares,total_interactions,ig_reels_avg_watch_time";
+    return "views,reach,saved,shares,reposts,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time";
   }
 
   if (mediaProductType === "STORY") {
-    // Stories only support a limited set
+    // Stories expire from the API after 24h and were not probed; account
+    // insight carries their views by day.
     return "reach";
   }
 
-  // IMAGE, CAROUSEL_ALBUM, VIDEO (non-reel)
-  // Use the most universally supported metrics
-  return "reach,saved,total_interactions";
+  // IMAGE, CAROUSEL_ALBUM, and feed VIDEO
+  return "views,reach,saved,shares,reposts,total_interactions,follows,profile_visits";
+}
+
+interface AccountInsightRow {
+  name: string;
+  total_value?: {
+    value?: number;
+    breakdowns?: Array<{ dimension_keys?: string[]; results?: Array<{ dimension_values: string[]; value: number }> }>;
+  };
+}
+
+/**
+ * Reads the three account insight responses for one day.
+ *
+ * `follows_and_unfollows` broken down by `follow_type` puts accounts that
+ * followed under FOLLOWER and accounts that unfollowed under NON_FOLLOWER.
+ * A breakdown with no results — what Instagram returns for a day it no longer
+ * holds — leaves both null rather than reporting a day nobody followed.
+ */
+export function parseAccountDay(input: { followsAndReach: AccountInsightRow[]; views: AccountInsightRow[]; totals: AccountInsightRow[] }): IgAccountDay {
+  const all = [...input.followsAndReach, ...input.views, ...input.totals];
+  const row = (name: string) => all.find((r) => r.name === name);
+  const part = (name: string, key: string): number | null => {
+    const results = row(name)?.total_value?.breakdowns?.[0]?.results;
+    if (!results) return null;
+    return results.find((r) => r.dimension_values[0] === key)?.value ?? 0;
+  };
+  const total = (name: string): number | null => row(name)?.total_value?.value ?? null;
+
+  return {
+    follows: part("follows_and_unfollows", "FOLLOWER"),
+    unfollows: part("follows_and_unfollows", "NON_FOLLOWER"),
+    reach: total("reach"),
+    reachFollowers: part("reach", "FOLLOWER"),
+    reachNonFollowers: part("reach", "NON_FOLLOWER"),
+    views: total("views"),
+    viewsReel: part("views", "REEL"),
+    viewsPost: part("views", "POST"),
+    viewsCarousel: part("views", "CAROUSEL_CONTAINER"),
+    viewsStory: part("views", "STORY"),
+    viewsAd: part("views", "AD"),
+    profileViews: total("profile_views"),
+    accountsEngaged: total("accounts_engaged"),
+  };
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -216,14 +309,26 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
       }));
     },
 
-    async getMediaInsights(mediaId, mediaType) {
-      const metrics = getMetricsForMediaType(mediaType);
+    async getMediaInsights(mediaId, mediaType, mediaProductType) {
+      const metrics = insightMetricsFor(mediaType, mediaProductType);
       const url = buildUrl(`${mediaId}/insights`, {
         metric: metrics,
       });
 
       const json = await fetchJson<{ data?: IgMediaInsight[] }>(url);
       return parseInsightsResponse(mediaId, json.data ?? []);
+    },
+
+    async getAccountDay(igUserId, day) {
+      const since = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000);
+      const range = { period: "day", metric_type: "total_value", since: String(since), until: String(since + 86_400) };
+      // Three calls because a call takes one breakdown for all its metrics.
+      const [followsAndReach, views, totals] = await Promise.all([
+        fetchJson<{ data?: AccountInsightRow[] }>(buildUrl(`${igUserId}/insights`, { ...range, metric: "follows_and_unfollows,reach", breakdown: "follow_type" })),
+        fetchJson<{ data?: AccountInsightRow[] }>(buildUrl(`${igUserId}/insights`, { ...range, metric: "views", breakdown: "media_product_type" })),
+        fetchJson<{ data?: AccountInsightRow[] }>(buildUrl(`${igUserId}/insights`, { ...range, metric: "profile_views,accounts_engaged" })),
+      ]);
+      return parseAccountDay({ followsAndReach: followsAndReach.data ?? [], views: views.data ?? [], totals: totals.data ?? [] });
     },
   };
 }

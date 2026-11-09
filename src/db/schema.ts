@@ -694,6 +694,32 @@ export const socialPosts = pgTable(
     totalInteractions: integer("total_interactions").notNull().default(0),
 
     /**
+     * Measures added for the weekly review. Null is "not measured": never
+     * requested before 2026-11-09 (reels were asked the feed set, so not one
+     * stored reel had views, shares or watch time), or not reported for this
+     * type — a reel has no follows, a feed post no watch time.
+     */
+    views: integer("views"),
+    reposts: integer("reposts"),
+    /** Reels only. */
+    avgWatchTimeMs: integer("avg_watch_time_ms"),
+    /** Reels only, summed over every view. */
+    totalWatchTimeMs: bigint("total_watch_time_ms", { mode: "number" }),
+    /** Feed posts only: accounts that followed from this post. */
+    follows: integer("follows"),
+    profileVisits: integer("profile_visits"),
+    /**
+     * ok | failed. A failed fetch keeps the numbers already held rather than
+     * overwriting them with zeros; a post never fetched stays at the column
+     * defaults and says `failed`, so its zeros are not read as a flop.
+     */
+    insightsStatus: text("insights_status"),
+    /** Length, as the transcriber measured it. Null for a reel never transcribed. */
+    durationMs: integer("duration_ms"),
+    /** What is said in the first three seconds — the hook, when it is spoken. */
+    openingWords: text("opening_words"),
+
+    /**
      * Why this post does or does not have a transcript.
      *
      * NULL       — never attempted (not a video, or not reached yet)
@@ -727,6 +753,121 @@ export const socialPosts = pgTable(
     index("social_posts_media_type_idx").on(table.mediaType),
     index("social_posts_ig_user_idx").on(table.igUserId),
   ]
+);
+
+/**
+ * A post's numbers as they stood on a day. One row per post per day, the last
+ * sync of the day winning; written only from a successful insights fetch, so
+ * every row is a measurement. What it adds is the shape of a post's life: a
+ * reel at 300 views on day one and 30,000 on day six took off late, which the
+ * latest figure alone cannot show.
+ */
+export const socialPostSnapshots = pgTable(
+  "social_post_snapshots",
+  {
+    postId: text("post_id").notNull(),
+    capturedOn: date("captured_on", { mode: "string" }).notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    /** Hours since posting at capture. */
+    ageHours: integer("age_hours").notNull(),
+    views: integer("views"),
+    reach: integer("reach").notNull(),
+    likes: integer("likes").notNull(),
+    comments: integer("comments").notNull(),
+    saved: integer("saved").notNull(),
+    shares: integer("shares").notNull(),
+    reposts: integer("reposts"),
+    follows: integer("follows"),
+    profileVisits: integer("profile_visits"),
+    avgWatchTimeMs: integer("avg_watch_time_ms"),
+    totalInteractions: integer("total_interactions").notNull(),
+  },
+  (table) => [uniqueIndex("social_post_snapshots_post_day_idx").on(table.postId, table.capturedOn)]
+);
+
+/**
+ * The account, one row per day: follows and unfollows, reach split into
+ * existing followers and everyone else, and views by surface. Null is a
+ * measure Instagram returned nothing for. `followersCount` is the total read
+ * at a sync on that day, so it exists only for days a sync ran.
+ */
+export const socialAccountDays = pgTable(
+  "social_account_days",
+  {
+    igUserId: text("ig_user_id").notNull(),
+    day: date("day", { mode: "string" }).notNull(),
+    followersCount: integer("followers_count"),
+    followersCapturedAt: timestamp("followers_captured_at", { withTimezone: true }),
+    follows: integer("follows"),
+    unfollows: integer("unfollows"),
+    reach: integer("reach"),
+    reachFollowers: integer("reach_followers"),
+    reachNonFollowers: integer("reach_non_followers"),
+    views: integer("views"),
+    viewsReel: integer("views_reel"),
+    viewsPost: integer("views_post"),
+    viewsCarousel: integer("views_carousel"),
+    viewsStory: integer("views_story"),
+    viewsAd: integer("views_ad"),
+    profileViews: integer("profile_views"),
+    accountsEngaged: integer("accounts_engaged"),
+    /** When the day's insight was read. Null: only a follower count is held. */
+    insightsFetchedAt: timestamp("insights_fetched_at", { withTimezone: true }),
+  },
+  (table) => [uniqueIndex("social_account_days_user_day_idx").on(table.igUserId, table.day)]
+);
+
+/**
+ * What a post was: its hook, the kind of hook, topic, approach, audience,
+ * product and call to action, read by Claude from the caption and, for a
+ * video, the transcript. It reads words only — a hook that is on-screen text
+ * or a visual is invisible to it, and `basis` says what it had.
+ */
+export const socialPostAnalyses = pgTable("social_post_analyses", {
+  postId: text("post_id").primaryKey(),
+  /** ok | error. An error is retried, up to three attempts. */
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  /** transcript | caption: what the analysis was made from. */
+  basis: text("basis"),
+  summary: text("summary"),
+  hook: text("hook"),
+  /** speech | caption */
+  hookSource: text("hook_source"),
+  hookType: text("hook_type"),
+  topic: text("topic"),
+  approach: text("approach"),
+  audience: text("audience"),
+  product: text("product"),
+  callToAction: text("call_to_action"),
+  detail: text("detail"),
+  analysedAt: timestamp("analysed_at", { withTimezone: true }).notNull(),
+});
+
+/**
+ * The weekly organic social review, written by Claude for Tara and read on
+ * the dashboard at /social/review. Append-only: a second review of a week is
+ * a new row, and the newest is the one shown.
+ */
+export const socialReviews = pgTable(
+  "social_reviews",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    weekStart: date("week_start", { mode: "string" }).notNull(),
+    weekEnd: date("week_end", { mode: "string" }).notNull(),
+    headline: text("headline").notNull(),
+    summary: text("summary").notNull(),
+    working: text("working").notNull(),
+    notWorking: text("not_working").notNull(),
+    why: text("why").notNull(),
+    tryNext: text("try_next").notNull(),
+    author: text("author").notNull(),
+    requestedBy: text("requested_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("social_reviews_week_created_idx").on(table.weekStart, table.createdAt)]
 );
 
 export type SocialPost = typeof socialPosts.$inferSelect;

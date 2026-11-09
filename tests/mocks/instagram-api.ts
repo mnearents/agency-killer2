@@ -22,6 +22,11 @@ export function createMockInstagramApiClient(
       plays: 0,
       totalInteractions: 0,
     }),
+    getAccountDay: vi.fn().mockResolvedValue({
+      follows: null, unfollows: null, reach: null, reachFollowers: null, reachNonFollowers: null,
+      views: null, viewsReel: null, viewsPost: null, viewsCarousel: null, viewsStory: null, viewsAd: null,
+      profileViews: null, accountsEngaged: null,
+    }),
     ...overrides,
   };
 }

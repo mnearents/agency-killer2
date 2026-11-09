@@ -69,7 +69,7 @@ import { retrieveContext } from "@/domain/knowledge/retrieval";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
-import { syncSocialPosts } from "@/domain/social/sync";
+import { syncSocialPosts, DEFAULT_MEDIA_LIMIT, type SyncSocialResult } from "@/domain/social/sync";
 import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
@@ -411,6 +411,49 @@ async function main() {
           `$${(result.summary.totalDailyBudgetCents / 100).toFixed(2)}/day, heartbeat ${metaWatchHeartbeat.configured ? "pinged" : "NOT configured"}`,
       );
       return { configured: true, rowsWritten: result.objects };
+    });
+    return outcome;
+  };
+
+  /**
+   * The Instagram sync, shared by the daily cron and `!sync social [posts]`:
+   * posts and their insights, daily snapshots, the account's days and
+   * follower count, transcripts, and what each post was (which needs the
+   * Anthropic client — without it the result says analysis is unconfigured).
+   * Returns null when Instagram is not configured.
+   */
+  const runSocialSync = async (limit = DEFAULT_MEDIA_LIMIT): Promise<SyncSocialResult | null> => {
+    let outcome: SyncSocialResult | null = null;
+    await recorded("sync:social", async () => {
+      if (!igClient || !igUserId) {
+        console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
+        return { configured: false, rowsWritten: 0 };
+      }
+      const result = await syncSocialPosts(
+        {
+          client: igClient,
+          db,
+          igUserId,
+          transcriber: assemblyAiClient ?? undefined,
+          embeddingClient: embeddingClient ?? undefined,
+          anthropic: anthropicClient ?? undefined,
+        },
+        limit,
+      );
+      outcome = result;
+      console.log(
+        `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed), ` +
+          `${result.snapshots} snapshot(s), followers ${result.followersCount ?? "UNREAD"}, ${result.accountDays} account day(s), ` +
+          `${result.transcribed} transcribed${result.retried > 0 ? ` (${result.retried} retries of earlier failures)` : ""}, ` +
+          (result.analysisConfigured ? `${result.analysed} analysed, ${result.analysisFailed} analysis failure(s)` : "analysis NOT configured (ANTHROPIC_API_KEY)"),
+      );
+      if (!result.analysisConfigured) console.error("[sync:social] ANTHROPIC_API_KEY not set — posts are not analysed, so the weekly review has no hooks or topics");
+      if (result.errors.length > 0) console.error("[sync:social] Errors:", result.errors);
+      return {
+        configured: true,
+        rowsWritten: result.posts,
+        errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+      };
     });
     return outcome;
   };
@@ -819,26 +862,9 @@ async function main() {
       await runMetaWatchTask();
     },
 
-    "sync:social": async () =>
-      recorded("sync:social", async () => {
-        if (!igClient || !igUserId) {
-          console.log("[sync:social] Skipped — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set");
-          return { configured: false, rowsWritten: 0 };
-        }
-        const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
-        console.log(
-          `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed), ` +
-            `${result.transcribed} transcribed${result.retried > 0 ? ` (${result.retried} retries of earlier failures)` : ""}`
-        );
-        if (result.errors.length > 0) {
-          console.error("[sync:social] Errors:", result.errors);
-        }
-        return {
-          configured: true,
-          rowsWritten: result.posts,
-          errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
-        };
-      }),
+    "sync:social": async () => {
+      await runSocialSync();
+    },
 
     "sync:attentive": async () => {
       const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
@@ -1562,21 +1588,29 @@ async function main() {
         isError: false,
       };
     },
-    "sync:social": async () => {
+    "sync:social": async (args) => {
       if (!igClient || !igUserId) {
         return { text: "Social sync unavailable — META_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID not set.", isError: true };
       }
-      const result = await syncSocialPosts({ client: igClient, db, igUserId, transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined });
+      // "!sync social 100" reaches back past the daily window; Instagram
+      // serves at most 100 posts a page and this reads one page.
+      const requested = args ? parseInt(args, 10) : NaN;
+      const limit = Number.isNaN(requested) ? DEFAULT_MEDIA_LIMIT : Math.min(Math.max(requested, 1), 100);
+      const result = await runSocialSync(limit);
+      if (!result) return { text: "Social sync did not run — see the worker log.", isError: true };
+      const lines = [
+        `• ${result.posts} posts synced (${result.insightsFetched} measured, ${result.insightsFailed} unavailable)`,
+        `• Followers: ${result.followersCount?.toLocaleString("en-US") ?? "could not be read"}`,
+        `• ${result.accountDays} day(s) of account insight read`,
+        ...(result.transcribed > 0 ? [`• ${result.transcribed} videos transcribed`] : []),
+        result.analysisConfigured
+          ? `• ${result.analysed} posts analysed${result.analysisFailed > 0 ? `, ${result.analysisFailed} could not be` : ""}`
+          : "• Posts NOT analysed — ANTHROPIC_API_KEY is not set",
+      ];
       if (result.errors.length > 0) {
-        return {
-          text: `Social sync completed with errors:\n${result.errors.map(e => `• ${e}`).join("\n")}\n\nSynced: ${result.posts} posts`,
-          isError: true,
-        };
+        return { text: `*Instagram sync finished with problems*\n${lines.join("\n")}\n\n${result.errors.map((e) => `• ${e}`).join("\n")}`, isError: true };
       }
-      return {
-        text: `*Instagram sync complete!*\n• ${result.posts} posts synced\n• ${result.insightsFetched} insights fetched\n• ${result.insightsFailed} insights unavailable${result.transcribed > 0 ? `\n• ${result.transcribed} videos transcribed` : ""}${result.retried > 0 ? `\n• ${result.retried} retried after an earlier failure` : ""}`,
-        isError: false,
-      };
+      return { text: `*Instagram sync complete!*\n${lines.join("\n")}`, isError: false };
     },
     "sync:attentive": async () => {
       const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");

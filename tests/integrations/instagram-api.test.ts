@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { describeInstagramError, parseInsightsResponse, type IgMediaInsight } from "@/integrations/instagram-api";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { createInstagramApiClient, describeInstagramError, insightMetricsFor, parseAccountDay, parseInsightsResponse, type IgMediaInsight } from "@/integrations/instagram-api";
 
 describe("parseInsightsResponse", () => {
   it("extracts all metrics from a reel response", () => {
@@ -22,6 +22,12 @@ describe("parseInsightsResponse", () => {
       shares: 42,
       plays: 5000, // views = plays for reels
       totalInteractions: 620,
+      views: 5000,
+      reposts: null,
+      avgWatchTimeMs: 12,
+      totalWatchTimeMs: null,
+      follows: null,
+      profileVisits: null,
     });
   });
 
@@ -50,6 +56,12 @@ describe("parseInsightsResponse", () => {
       shares: 0,
       plays: 0,
       totalInteractions: 0,
+      views: null,
+      reposts: null,
+      avgWatchTimeMs: null,
+      totalWatchTimeMs: null,
+      follows: null,
+      profileVisits: null,
     });
   });
 
@@ -111,5 +123,97 @@ describe("describeInstagramError", () => {
 
   it("leaves any other error as it was", () => {
     expect(describeInstagramError(500, "boom")).toBe("Instagram API error (500): boom");
+  });
+});
+
+describe("insight metrics by post type", () => {
+  // Probed live 2026-11-09: reels refuse follows and profile_visits, feed
+  // posts refuse the watch-time metrics, and one refused metric fails the
+  // whole call. So each type asks for exactly what it supports.
+  it("asks a reel for views, shares, reposts and watch time, and nothing a reel refuses", () => {
+    const metrics = insightMetricsFor("VIDEO", "REELS").split(",");
+    expect(metrics).toEqual(expect.arrayContaining(["views", "reach", "shares", "saved", "reposts", "ig_reels_avg_watch_time", "ig_reels_video_view_total_time"]));
+    expect(metrics).not.toContain("follows");
+    expect(metrics).not.toContain("profile_visits");
+  });
+
+  it("asks a feed post for follows and profile visits, and no watch time", () => {
+    const metrics = insightMetricsFor("CAROUSEL_ALBUM", "FEED").split(",");
+    expect(metrics).toEqual(expect.arrayContaining(["views", "reach", "shares", "saved", "follows", "profile_visits"]));
+    expect(metrics.some((m) => m.startsWith("ig_reels_"))).toBe(false);
+  });
+});
+
+describe("getMediaInsights at its call site", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // The bug: the client was handed media_type ("VIDEO") but chose metrics by
+  // media_product_type, so every reel was asked the feed set and no reel's
+  // shares, views or watch time was ever stored.
+  it("requests the reel metrics when told the post is a reel", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      urls.push(String(u));
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }));
+    await createInstagramApiClient("t").getMediaInsights("m1", "VIDEO", "REELS");
+    expect(new URL(urls[0]).searchParams.get("metric")).toContain("ig_reels_avg_watch_time");
+  });
+});
+
+describe("parseInsightsResponse — the measures added for the review", () => {
+  it("reads views, reposts, watch time, follows and profile visits", () => {
+    const r = parseInsightsResponse("m", [
+      { name: "views", period: "lifetime", values: [{ value: 2457 }] },
+      { name: "reposts", period: "lifetime", values: [{ value: 2 }] },
+      { name: "ig_reels_avg_watch_time", period: "lifetime", values: [{ value: 9552 }] },
+      { name: "ig_reels_video_view_total_time", period: "lifetime", values: [{ value: 19_315_845 }] },
+      { name: "follows", period: "lifetime", values: [{ value: 4 }] },
+      { name: "profile_visits", period: "lifetime", values: [{ value: 31 }] },
+    ]);
+    expect(r).toMatchObject({ views: 2457, reposts: 2, avgWatchTimeMs: 9552, totalWatchTimeMs: 19_315_845, follows: 4, profileVisits: 31 });
+  });
+
+  // A reel cannot report follows; recorded as zero it would read as a reel
+  // that won nobody over.
+  it("leaves a measure Instagram did not return as null, not zero", () => {
+    const r = parseInsightsResponse("m", [{ name: "reach", period: "lifetime", values: [{ value: 10 }] }]);
+    expect(r).toMatchObject({ views: null, reposts: null, avgWatchTimeMs: null, totalWatchTimeMs: null, follows: null, profileVisits: null });
+  });
+});
+
+describe("parseAccountDay", () => {
+  // Shapes from the live account, 2026-11-07.
+  const followsAndReach = [
+    { name: "follows_and_unfollows", total_value: { breakdowns: [{ dimension_keys: ["follow_type"], results: [{ dimension_values: ["FOLLOWER"], value: 14 }, { dimension_values: ["NON_FOLLOWER"], value: 11 }] }] } },
+    { name: "reach", total_value: { value: 7831, breakdowns: [{ dimension_keys: ["follow_type"], results: [{ dimension_values: ["NON_FOLLOWER"], value: 3045 }, { dimension_values: ["FOLLOWER"], value: 4597 }] }] } },
+  ];
+  const views = [
+    { name: "views", total_value: { value: 16518, breakdowns: [{ dimension_keys: ["media_product_type"], results: [{ dimension_values: ["REEL"], value: 349 }, { dimension_values: ["AD"], value: 2735 }, { dimension_values: ["CAROUSEL_CONTAINER"], value: 526 }, { dimension_values: ["STORY"], value: 9285 }, { dimension_values: ["POST"], value: 3623 }] }] } },
+  ];
+  const totals = [
+    { name: "profile_views", total_value: { value: 112 } },
+    { name: "accounts_engaged", total_value: { value: 240 } },
+  ];
+
+  // follows_and_unfollows broken down by follow_type: FOLLOWER is accounts
+  // that followed, NON_FOLLOWER accounts that unfollowed.
+  it("reads follows, unfollows, reach by follower and views by surface", () => {
+    expect(parseAccountDay({ followsAndReach, views, totals })).toEqual({
+      follows: 14, unfollows: 11,
+      reach: 7831, reachFollowers: 4597, reachNonFollowers: 3045,
+      views: 16518, viewsReel: 349, viewsPost: 3623, viewsCarousel: 526, viewsStory: 9285, viewsAd: 2735,
+      profileViews: 112, accountsEngaged: 240,
+    });
+  });
+
+  // Instagram returns the breakdown with no results for a day it holds
+  // nothing for (seen for 2025): unknown, not a day nobody followed.
+  it("reports a day with no breakdown results as unknown", () => {
+    const empty = [{ name: "follows_and_unfollows", total_value: { breakdowns: [{ dimension_keys: ["follow_type"] }] } }];
+    const r = parseAccountDay({ followsAndReach: empty, views: [], totals: [] });
+    expect(r.follows).toBeNull();
+    expect(r.unfollows).toBeNull();
+    expect(r.views).toBeNull();
   });
 });

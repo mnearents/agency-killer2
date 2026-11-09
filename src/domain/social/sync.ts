@@ -7,22 +7,41 @@
  * 2. Media insights (heavier — impressions, reach, saves, shares, plays)
  *
  * Insights can fail per-post (IG returns 400 for stories older than 24h,
- * or for posts with too few impressions). We degrade gracefully — store
- * the media data with zeroed insights.
+ * or for posts with too few impressions). A failure keeps whatever numbers
+ * are already held and says `failed` on a post never measured, so its zeros
+ * are not read as a flop.
+ *
+ * After the posts, each run also:
+ * 3. snapshots each measured post's numbers for the day, so the review can
+ *    see how a post's life went, not only where it ended;
+ * 4. reads the account — today's follower count, and the follows, unfollows,
+ *    reach to non-followers and views of every complete day it lacks;
+ * 5. transcribes videos (keeping length and the first three seconds' words);
+ * 6. asks Claude what each post was — hook, hook type, topic, approach,
+ *    audience — once its transcript, if it will have one, is in.
  */
 
 import type { InstagramApiClient, IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
-import type { AssemblyAiClient } from "@/integrations/assemblyai";
+import type { AssemblyAiClient, TranscriptResult } from "@/integrations/assemblyai";
+import type { AnthropicClient } from "@/integrations/anthropic";
 import type { EmbeddingClient } from "@/integrations/openai";
 import type { NewSocialPost } from "@/db/schema";
 import type { Db } from "@/db/client";
-import { socialPosts, kbDocuments } from "@/db/schema";
-import { sql, eq } from "drizzle-orm";
+import { socialPosts, kbDocuments, socialPostSnapshots, socialAccountDays, socialPostAnalyses } from "@/db/schema";
+import { sql, eq, and, gte, desc, ne } from "drizzle-orm";
 import {
   shouldAttemptTranscription,
   classifyTranscription,
+  MAX_TRANSCRIPTION_ATTEMPTS,
   type TranscriptionStatus,
 } from "./transcription";
+import { accountDaysToFetch, openingWords } from "./review";
+import {
+  buildPostAnalysisPrompt,
+  parsePostAnalysis,
+  readyForAnalysis,
+  shouldAnalysePost,
+} from "./post-analysis";
 
 export interface TransformInput {
   media: IgMedia;
@@ -50,10 +69,55 @@ export function transformMediaToPost(input: TransformInput): NewSocialPost {
     shares: insights?.shares ?? 0,
     plays: insights?.plays ?? 0,
     totalInteractions: insights?.totalInteractions ?? 0,
+    views: insights?.views ?? null,
+    reposts: insights?.reposts ?? null,
+    avgWatchTimeMs: insights?.avgWatchTimeMs ?? null,
+    totalWatchTimeMs: insights?.totalWatchTimeMs ?? null,
+    follows: insights?.follows ?? null,
+    profileVisits: insights?.profileVisits ?? null,
+    insightsStatus: insights ? "ok" : "failed",
     postedAt: new Date(media.timestamp),
     syncedAt,
   };
 }
+
+/**
+ * What an upsert overwrites on a post already stored. A failed insights fetch
+ * updates only what the media list itself carries, so the numbers last
+ * measured — and the `ok` that says they were — survive the failure.
+ */
+export function postUpsertSet(insightsOk: boolean): Record<string, ReturnType<typeof sql>> {
+  const media = {
+    caption: sql`EXCLUDED.caption`,
+    likeCount: sql`EXCLUDED.like_count`,
+    commentsCount: sql`EXCLUDED.comments_count`,
+    syncedAt: sql`EXCLUDED.synced_at`,
+    updatedAt: sql`NOW()`,
+  };
+  if (!insightsOk) return media;
+  return {
+    ...media,
+    impressions: sql`EXCLUDED.impressions`,
+    reach: sql`EXCLUDED.reach`,
+    saved: sql`EXCLUDED.saved`,
+    shares: sql`EXCLUDED.shares`,
+    plays: sql`EXCLUDED.plays`,
+    totalInteractions: sql`EXCLUDED.total_interactions`,
+    views: sql`EXCLUDED.views`,
+    reposts: sql`EXCLUDED.reposts`,
+    avgWatchTimeMs: sql`EXCLUDED.avg_watch_time_ms`,
+    totalWatchTimeMs: sql`EXCLUDED.total_watch_time_ms`,
+    follows: sql`EXCLUDED.follows`,
+    profileVisits: sql`EXCLUDED.profile_visits`,
+    insightsStatus: sql`EXCLUDED.insights_status`,
+  };
+}
+
+/** Days of account insight kept filled. Instagram serves about a month. */
+export const ACCOUNT_WINDOW_DAYS = 28;
+
+/** Posts analysed per run — enough to clear a backfill within days. */
+export const ANALYSE_PER_RUN = 30;
 
 export interface SyncSocialDeps {
   client: InstagramApiClient;
@@ -61,6 +125,10 @@ export interface SyncSocialDeps {
   igUserId: string;
   transcriber?: AssemblyAiClient;
   embeddingClient?: EmbeddingClient;
+  /** Analyses what each post was. Without it, analysis reports itself unconfigured. */
+  anthropic?: AnthropicClient;
+  now?: () => Date;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface SyncSocialResult {
@@ -70,6 +138,16 @@ export interface SyncSocialResult {
   transcribed: number;
   /** Transcriptions that were second or third attempts at a past failure. */
   retried: number;
+  /** Posts whose day was snapshotted — measured posts only. */
+  snapshots: number;
+  /** Null when it could not be read; the reason is in `errors`. */
+  followersCount: number | null;
+  /** Complete account days read this run. */
+  accountDays: number;
+  /** False when no Anthropic client was given — distinct from nothing to analyse. */
+  analysisConfigured: boolean;
+  analysed: number;
+  analysisFailed: number;
   errors: string[];
 }
 
@@ -95,7 +173,8 @@ export async function syncSocialPosts(
   limit = DEFAULT_MEDIA_LIMIT
 ): Promise<SyncSocialResult> {
   const { client, db, igUserId } = deps;
-  const syncedAt = new Date();
+  const syncedAt = (deps.now ?? (() => new Date()))();
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const errors: string[] = [];
 
   // Step 1: Fetch recent media + stories
@@ -132,7 +211,7 @@ export async function syncSocialPosts(
   for (const media of mediaList) {
     let insights: IgMediaInsights | null = null;
     try {
-      insights = await client.getMediaInsights(media.id, media.media_type);
+      insights = await client.getMediaInsights(media.id, media.media_type, media.media_product_type);
       insightsFetched++;
       if (rows.length < 3) {
         console.log(`[sync:social] Insights for ${media.id}: reach=${insights.reach} saved=${insights.saved} shares=${insights.shares}`);
@@ -155,33 +234,50 @@ export async function syncSocialPosts(
     }
 
     // Throttle: ~2 requests/second to stay under IG rate limits
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await sleep(500);
   }
 
   console.log(`[sync:social] Insights: ${insightsFetched} fetched, ${insightsFailed} failed. Upserting to DB...`);
 
-  // Step 3: Upsert to DB
+  // Step 3: Upsert to DB, and snapshot each measured post's day.
+  const capturedOn = syncedAt.toISOString().slice(0, 10);
+  let snapshots = 0;
   for (const row of rows) {
+    const ok = row.insightsStatus === "ok";
     await db
       .insert(socialPosts)
       .values(row)
-      .onConflictDoUpdate({
-        target: socialPosts.id,
-        set: {
-          caption: sql`EXCLUDED.caption`,
-          likeCount: sql`EXCLUDED.like_count`,
-          commentsCount: sql`EXCLUDED.comments_count`,
-          impressions: sql`EXCLUDED.impressions`,
-          reach: sql`EXCLUDED.reach`,
-          saved: sql`EXCLUDED.saved`,
-          shares: sql`EXCLUDED.shares`,
-          plays: sql`EXCLUDED.plays`,
-          totalInteractions: sql`EXCLUDED.total_interactions`,
-          syncedAt: sql`EXCLUDED.synced_at`,
-          updatedAt: sql`NOW()`,
-        },
-      });
+      .onConflictDoUpdate({ target: socialPosts.id, set: postUpsertSet(ok) });
+
+    if (!ok) continue;
+    const snapshot = {
+      postId: row.id,
+      capturedOn,
+      capturedAt: syncedAt,
+      ageHours: Math.max(0, Math.floor((syncedAt.getTime() - row.postedAt.getTime()) / 3_600_000)),
+      views: row.views ?? null,
+      reach: row.reach ?? 0,
+      likes: row.likeCount ?? 0,
+      comments: row.commentsCount ?? 0,
+      saved: row.saved ?? 0,
+      shares: row.shares ?? 0,
+      reposts: row.reposts ?? null,
+      follows: row.follows ?? null,
+      profileVisits: row.profileVisits ?? null,
+      avgWatchTimeMs: row.avgWatchTimeMs ?? null,
+      totalInteractions: row.totalInteractions ?? 0,
+    };
+    const { postId: _postId, capturedOn: _capturedOn, ...measures } = snapshot;
+    await db
+      .insert(socialPostSnapshots)
+      .values(snapshot)
+      .onConflictDoUpdate({ target: [socialPostSnapshots.postId, socialPostSnapshots.capturedOn], set: measures });
+    snapshots++;
   }
+
+  // The account. Each part reports its own failure and the rest carries on:
+  // the posts above are already stored whatever happens here.
+  const account = await syncAccount(deps, syncedAt, sleep, errors);
 
   // Step 4: Transcribe video posts that still need it.
   //
@@ -213,13 +309,16 @@ export async function syncSocialPosts(
       if (!decision.attempt) continue;
       if (decision.reason === "retryable") retried++;
 
+      let raw: TranscriptResult | null = null;
       const classified = await (async () => {
         try {
-          return classifyTranscription(await deps.transcriber!.transcribe(media.media_url!));
+          raw = await deps.transcriber!.transcribe(media.media_url!);
+          return classifyTranscription(raw);
         } catch (err) {
           return classifyTranscription(null, err);
         }
       })();
+      const heard = raw as TranscriptResult | null;
 
       // The outcome is recorded whatever it was, so the next run knows whether
       // to try again rather than inferring it from the absence of a document.
@@ -229,6 +328,9 @@ export async function syncSocialPosts(
           transcriptionStatus: classified.status,
           transcriptionAttempts: (state?.attempts ?? 0) + 1,
           transcriptionAttemptedAt: syncedAt,
+          ...(classified.status === "ok"
+            ? { durationMs: heard?.durationMs ?? null, openingWords: openingWords(heard?.words) }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(socialPosts.id, media.id));
@@ -283,12 +385,153 @@ export async function syncSocialPosts(
     }
   }
 
+  // Step 6: what each post was.
+  const analysis = deps.anthropic
+    ? await analysePosts(db, deps.anthropic, syncedAt, errors)
+    : { analysed: 0, analysisFailed: 0 };
+
   return {
     posts: rows.length,
     insightsFetched,
     insightsFailed,
     transcribed,
     retried,
+    snapshots,
+    followersCount: account.followersCount,
+    accountDays: account.days,
+    analysisConfigured: deps.anthropic !== undefined,
+    ...analysis,
     errors,
   };
+}
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Today's follower count, then every complete account day of the last four
+ * weeks not yet held (and the last three again, which Instagram revises).
+ * The follower count and a day's insight are written to the same row by
+ * different runs, so each write sets only its own columns.
+ */
+async function syncAccount(
+  deps: SyncSocialDeps,
+  now: Date,
+  sleep: (ms: number) => Promise<void>,
+  errors: string[],
+): Promise<{ followersCount: number | null; days: number }> {
+  const { client, db, igUserId } = deps;
+  const today = now.toISOString().slice(0, 10);
+
+  let followersCount: number | null = null;
+  try {
+    followersCount = (await client.getAccountInfo(igUserId)).followers_count;
+    const counted = { followersCount, followersCapturedAt: now };
+    await db
+      .insert(socialAccountDays)
+      .values({ igUserId, day: today, ...counted })
+      .onConflictDoUpdate({ target: [socialAccountDays.igUserId, socialAccountDays.day], set: counted });
+  } catch (err) {
+    errors.push(`Instagram follower count unavailable: ${errorText(err)}`);
+  }
+
+  const from = new Date(now.getTime() - ACCOUNT_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+  const held = await db
+    .select({ day: socialAccountDays.day })
+    .from(socialAccountDays)
+    .where(and(eq(socialAccountDays.igUserId, igUserId), gte(socialAccountDays.day, from), sql`${socialAccountDays.insightsFetchedAt} IS NOT NULL`));
+
+  let days = 0;
+  for (const day of accountDaysToFetch(new Set(held.map((h) => h.day)), today, ACCOUNT_WINDOW_DAYS)) {
+    try {
+      const insight = { ...(await client.getAccountDay(igUserId, day)), insightsFetchedAt: now };
+      await db
+        .insert(socialAccountDays)
+        .values({ igUserId, day, ...insight })
+        .onConflictDoUpdate({ target: [socialAccountDays.igUserId, socialAccountDays.day], set: insight });
+      days++;
+    } catch (err) {
+      errors.push(`Instagram account day ${day} unavailable: ${errorText(err)}`);
+    }
+    await sleep(300);
+  }
+  return { followersCount, days };
+}
+
+/**
+ * Asks Claude what each post was, newest first, ANALYSE_PER_RUN at a time.
+ * A reel waits for its transcript; an unreadable answer is recorded as an
+ * error and retried, never stored as an empty analysis.
+ */
+async function analysePosts(
+  db: Db,
+  anthropic: AnthropicClient,
+  now: Date,
+  errors: string[],
+): Promise<{ analysed: number; analysisFailed: number }> {
+  const candidates = await db
+    .select({
+      id: socialPosts.id,
+      caption: socialPosts.caption,
+      mediaType: socialPosts.mediaType,
+      mediaProductType: socialPosts.mediaProductType,
+      transcriptionStatus: socialPosts.transcriptionStatus,
+      transcriptionAttempts: socialPosts.transcriptionAttempts,
+      analysisStatus: socialPostAnalyses.status,
+      analysisAttempts: socialPostAnalyses.attempts,
+    })
+    .from(socialPosts)
+    .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPosts.id))
+    .where(and(sql`${socialPosts.mediaProductType} IS DISTINCT FROM 'STORY'`, sql`${socialPostAnalyses.status} IS DISTINCT FROM 'ok'`, ne(socialPosts.id, "")))
+    .orderBy(desc(socialPosts.postedAt))
+    .limit(ANALYSE_PER_RUN * 3);
+
+  let analysed = 0;
+  let analysisFailed = 0;
+  let tried = 0;
+  for (const post of candidates) {
+    if (tried >= ANALYSE_PER_RUN) break;
+    const prior = post.analysisStatus === null ? null : { status: post.analysisStatus, attempts: post.analysisAttempts ?? 0 };
+    if (!shouldAnalysePost(prior)) continue;
+    if (!readyForAnalysis({ ...post, transcriptionAttempts: post.transcriptionAttempts ?? 0 }, MAX_TRANSCRIPTION_ATTEMPTS)) continue;
+
+    let transcript: string | null = null;
+    if (post.transcriptionStatus === "ok") {
+      const [doc] = await db
+        .select({ content: kbDocuments.content })
+        .from(kbDocuments)
+        .where(and(eq(kbDocuments.sourceFile, `ig:${post.id}`), eq(kbDocuments.category, "social-transcript")))
+        .limit(1);
+      transcript = doc?.content?.split("\nTranscript:\n")[1] ?? null;
+    }
+    const format = post.mediaProductType === "REELS" ? "Reel" : post.mediaType === "CAROUSEL_ALBUM" ? "Carousel" : post.mediaType === "VIDEO" ? "Video" : "Image";
+    const built = buildPostAnalysisPrompt({ format, caption: post.caption, transcript });
+    if (built === null) continue;
+    tried++;
+
+    const attempts = (prior?.attempts ?? 0) + 1;
+    let parsed = null;
+    let detail: string | null = null;
+    try {
+      const result = await anthropic.generate(built.prompt, { maxTokens: 600, temperature: 0 });
+      parsed = parsePostAnalysis(result.text, built.basis);
+      if (parsed === null) detail = `unreadable answer: ${result.text.slice(0, 200)}`;
+    } catch (err) {
+      detail = errorText(err).slice(0, 300);
+    }
+
+    const row = parsed
+      ? { postId: post.id, status: "ok", attempts, basis: built.basis, ...parsed, detail: null, analysedAt: now }
+      : {
+          postId: post.id, status: "error", attempts, basis: built.basis, summary: null, hook: null, hookSource: null, hookType: null,
+          topic: null, approach: null, audience: null, product: null, callToAction: null, detail, analysedAt: now,
+        };
+    const { postId: _postId, ...set } = row;
+    await db.insert(socialPostAnalyses).values(row).onConflictDoUpdate({ target: socialPostAnalyses.postId, set });
+    if (parsed) analysed++;
+    else {
+      analysisFailed++;
+      if (attempts >= 3) errors.push(`Post ${post.id} could not be analysed after ${attempts} attempts: ${detail}`);
+    }
+  }
+  return { analysed, analysisFailed };
 }
