@@ -165,7 +165,7 @@ export interface SyncSocialResult {
   analysed: number;
   analysisFailed: number;
   /** What each post shows. `configured: false` without the video tools or Anthropic. */
-  visuals: { configured: boolean; analysed: number; failed: number; unavailable: number };
+  visuals: { configured: boolean; analysed: number; failed: number; unavailable: number; failures: Array<{ postId: string; detail: string }> };
   errors: string[];
 }
 
@@ -417,7 +417,7 @@ export async function syncSocialPosts(
   // Step 8: what each post shows.
   const visuals = deps.anthropic && deps.visuals
     ? { configured: true, ...(await syncVisuals({ db, client, anthropic: deps.anthropic, now: () => syncedAt, ...deps.visuals }, errors)) }
-    : { configured: false, analysed: 0, failed: 0, unavailable: 0 };
+    : { configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] };
 
   return {
     posts: rows.length,

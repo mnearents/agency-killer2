@@ -54,6 +54,8 @@ export interface VisualSyncResult {
   analysed: number;
   failed: number;
   unavailable: number;
+  /** Each failure this run and why — retried later, but named now. */
+  failures: Array<{ postId: string; detail: string }>;
 }
 
 const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
@@ -146,7 +148,7 @@ async function analyseOne(
   post: { id: string; caption: string | null; openingWords?: string | null; visualAttempts: number | null },
   look: () => Promise<Looked | null>,
   errors: string[],
-): Promise<"ok" | "error" | "unavailable"> {
+): Promise<{ outcome: "ok" | "error" | "unavailable"; detail?: string }> {
   const attempts = (post.visualAttempts ?? 0) + 1;
   const now = deps.now();
   let looked: Looked | null;
@@ -155,11 +157,11 @@ async function analyseOne(
   } catch (err) {
     await record(deps, { postId: post.id, account, status: "error", attempts, ...EMPTY, detail: errorText(err).slice(0, 300), analysedAt: now });
     if (attempts >= MAX_VISUAL_ATTEMPTS) errors.push(`Visuals for post ${post.id} could not be read after ${attempts} attempts: ${errorText(err)}`);
-    return "error";
+    return { outcome: "error", detail: errorText(err).slice(0, 300) };
   }
   if (looked === null) {
     await record(deps, { postId: post.id, account, status: "unavailable", attempts, ...EMPTY, detail: "Instagram gave nothing to look at", analysedAt: now });
-    return "unavailable";
+    return { outcome: "unavailable" };
   }
 
   const facts = looked.facts;
@@ -192,7 +194,7 @@ async function analyseOne(
   if (parsed === null) {
     await record(deps, { postId: post.id, account, status: "error", attempts, ...EMPTY, ...measured, contactSheet: null, detail, analysedAt: now });
     if (attempts >= MAX_VISUAL_ATTEMPTS) errors.push(`Visuals for post ${post.id} could not be analysed after ${attempts} attempts: ${detail}`);
-    return "error";
+    return { outcome: "error", detail: detail ?? "unknown" };
   }
   await record(deps, {
     postId: post.id, account, status: "ok", attempts, ...measured,
@@ -201,16 +203,18 @@ async function analyseOne(
     productVisible: flag(parsed.productVisible), productFirstSeen: parsed.productFirstSeen, setting: parsed.setting,
     emotion: parsed.emotion, branding: flag(parsed.branding), detail: null, analysedAt: now,
   });
-  return "ok";
+  return { outcome: "ok" };
 }
 
 export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promise<VisualSyncResult> {
   const now = deps.now();
-  const out: VisualSyncResult = { analysed: 0, failed: 0, unavailable: 0 };
-  const count = (r: "ok" | "error" | "unavailable") => {
-    if (r === "ok") out.analysed++;
-    else if (r === "error") out.failed++;
-    else out.unavailable++;
+  const out: VisualSyncResult = { analysed: 0, failed: 0, unavailable: 0, failures: [] };
+  const count = (postId: string, r: { outcome: "ok" | "error" | "unavailable"; detail?: string }) => {
+    if (r.outcome === "ok") out.analysed++;
+    else if (r.outcome === "error") {
+      out.failed++;
+      out.failures.push({ postId, detail: r.detail ?? "unknown" });
+    } else out.unavailable++;
   };
 
   const own = await deps.db
@@ -248,7 +252,7 @@ export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promi
     if (post.durationMs === null && measuredLength !== null) {
       await deps.db.update(socialPosts).set({ durationMs: measuredLength, updatedAt: now }).where(eq(socialPosts.id, post.id));
     }
-    count(result);
+    count(post.id, result);
   }
 
   const peers = await deps.db
@@ -272,7 +276,7 @@ export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promi
 
   for (const post of peers) {
     if (!shouldAnalyseVisual(post.visualStatus === null ? null : { status: post.visualStatus, attempts: post.visualAttempts ?? 0 })) continue;
-    count(await analyseOne(deps, "peer", post, () => lookAtPeer(deps, post), errors));
+    count(post.id, await analyseOne(deps, "peer", post, () => lookAtPeer(deps, post), errors));
   }
   return out;
 }

@@ -102,8 +102,10 @@ describe("syncVisuals — Tara's reels", () => {
   it("records a download that failed as an error and carries on", async () => {
     const errors: string[] = [];
     const { deps: d, inserts } = deps({ social_posts: [ownReel] }, { fetchMedia: vi.fn().mockRejectedValue(new Error("403 from cdn")) });
-    await syncVisuals(d, errors);
+    const r = await syncVisuals(d, errors);
     expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ status: "error", detail: expect.stringMatching(/403/) });
+    // Named on the run it happens, not only after the third attempt.
+    expect(r.failures).toEqual([{ postId: "r1", detail: expect.stringMatching(/403/) }]);
   });
 });
 

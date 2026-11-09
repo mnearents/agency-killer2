@@ -477,6 +477,6 @@ describe("syncSocialPosts — visuals", () => {
 
   it("says visuals are not configured without the video tools, rather than reporting none to do", async () => {
     const r = await syncSocialPosts({ client: client(), db: fakeDb().db, igUserId: "ig1", anthropic: createMockAnthropicClient(), now: () => NOW, sleep: noSleep });
-    expect(r.visuals).toEqual({ configured: false, analysed: 0, failed: 0, unavailable: 0 });
+    expect(r.visuals).toEqual({ configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] });
   });
 });

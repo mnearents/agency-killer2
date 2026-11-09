@@ -454,6 +454,7 @@ async function main() {
             ? `visuals: ${result.visuals.analysed} looked at, ${result.visuals.failed} failed, ${result.visuals.unavailable} with nothing to see`
             : "visuals NOT configured"),
       );
+      for (const f of result.visuals.failures) console.error(`[sync:social] Visuals failed for post ${f.postId} (retried next run): ${f.detail}`);
       if (!result.analysisConfigured) console.error("[sync:social] ANTHROPIC_API_KEY not set — posts are not analysed, so the weekly review has no hooks or topics");
       if (result.errors.length > 0) console.error("[sync:social] Errors:", result.errors);
       return {
@@ -1617,6 +1618,7 @@ async function main() {
         result.visuals.configured
           ? `• ${result.visuals.analysed} posts looked at for what they show${result.visuals.failed > 0 ? `, ${result.visuals.failed} could not be` : ""}`
           : "• What posts show was NOT looked at",
+        ...result.visuals.failures.slice(0, 5).map((f) => `   ◦ ${f.postId}: ${f.detail.slice(0, 160)}`),
       ];
       if (result.errors.length > 0) {
         return { text: `*Instagram sync finished with problems*\n${lines.join("\n")}\n\n${result.errors.map((e) => `• ${e}`).join("\n")}`, isError: true };
