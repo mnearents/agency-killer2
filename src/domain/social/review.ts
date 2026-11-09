@@ -41,6 +41,28 @@ export interface ReviewPostAnalysis {
   basis?: string | null;
 }
 
+/** What a post shows, as far as the pattern counting needs it. */
+export interface ReviewPostVisual {
+  /** frames | cover | image | slides — what the analysis looked at. */
+  basis: string | null;
+  visualType: string | null;
+  visualHook: string | null;
+  faceInFirst2s: boolean | null;
+  productVisible: boolean | null;
+  handDrawn: boolean | null;
+  audio: string | null;
+  cutsPerMinute: number | null;
+  summary?: string | null;
+  onScreenText?: Array<{ at: string; text: string }> | null;
+  firstFrame?: string | null;
+  setting?: string | null;
+  emotion?: string | null;
+  branding?: boolean | null;
+  productFirstSeen?: string | null;
+  cuts?: number | null;
+  hasContactSheet?: boolean;
+}
+
 export interface ReviewPost {
   id: string;
   caption: string | null;
@@ -62,6 +84,7 @@ export interface ReviewPost {
   insightsStatus: string | null;
   openingWords: string | null;
   analysis: ReviewPostAnalysis | null;
+  visual?: ReviewPostVisual | null;
 }
 
 export function formatGroup(mediaType: string, mediaProductType: string | null): FormatGroup {
@@ -162,6 +185,12 @@ export function scorePost(p: ReviewPost, baselines: Map<FormatGroup, Baseline>, 
   return { ...base, judgedOn, verdict };
 }
 
+/** Cuts a minute: under 10 slow, under 25 medium, else fast. */
+export function editPace(cutsPerMinute: number | null): string | null {
+  if (cutsPerMinute === null) return null;
+  return cutsPerMinute < 10 ? "slow" : cutsPerMinute < 25 ? "medium" : "fast";
+}
+
 export function lengthBucket(durationMs: number | null): string | null {
   if (durationMs === null) return null;
   if (durationMs < 15_000) return "under 15s";
@@ -171,7 +200,9 @@ export function lengthBucket(durationMs: number | null): string | null {
 }
 
 export interface Pattern {
-  dimension: "format" | "hookType" | "approach" | "audience" | "topic" | "length";
+  dimension:
+    | "format" | "hookType" | "approach" | "audience" | "topic" | "length"
+    | "visualType" | "onScreenHook" | "faceFirst2s" | "productVisible" | "handDrawn" | "audio" | "editPace";
   value: string;
   posts: number;
   /** Median of each post's views (else reach) as a multiple of her usual. */
@@ -206,6 +237,23 @@ export function findPatterns(posts: ReviewPost[], baselines: Map<FormatGroup, Ba
     add("audience", a?.audience, item);
     add("topic", a?.topic, item);
     if (item.p.format === "reel") add("length", lengthBucket(item.p.durationMs), item);
+
+    const v = item.p.visual;
+    if (v) {
+      const yesNo = (b: boolean | null | undefined) => (b === true ? "yes" : b === false ? "no" : null);
+      add("visualType", v.visualType, item);
+      add("productVisible", yesNo(v.productVisible), item);
+      add("handDrawn", yesNo(v.handDrawn), item);
+      add("audio", v.audio, item);
+      // Only frames show a reel's opening; a cover says nothing about it.
+      if (v.basis === "frames") {
+        add("onScreenHook", v.visualHook ? "yes" : "no", item);
+        add("faceFirst2s", yesNo(v.faceInFirst2s), item);
+        add("editPace", editPace(v.cutsPerMinute), item);
+      } else if (v.basis === "image" || v.basis === "slides") {
+        add("onScreenHook", v.visualHook ? "yes" : "no", item);
+      }
+    }
   }
   const med = (vals: Array<number | null>) => {
     const v = median(vals.filter((x): x is number => x !== null));
@@ -320,4 +368,58 @@ export function accountDaysToFetch(held: Set<string>, today: string, windowDays:
     if (i <= 3 || !held.has(d)) days.push(d);
   }
   return days;
+}
+
+
+export type TargetMetric = "followers" | "posts_per_week" | "reels_per_week";
+
+export interface ScorecardRow {
+  measure: TargetMetric;
+  actual: number | null;
+  /** For followers, where the straight line to the target says she should be. */
+  target: number | null;
+  status: "ahead" | "on-track" | "behind" | "no-target" | "not-enough-history";
+  note: string | null;
+}
+
+/**
+ * The week against its targets — arithmetic, so the review never estimates
+ * it. Followers are paced in a straight line from the first follower reading
+ * to the target date; posts and reels are counted in the week. A measure
+ * without a target says so; it is never a lead over zero.
+ */
+export function buildScorecard(input: {
+  readings: Array<{ day: string; followersCount: number | null }>;
+  targets: Array<{ metric: string; value: number | null; targetDate: string | null }>;
+  weekEnd: string;
+  postsInWeek: { all: number; reels: number };
+}): ScorecardRow[] {
+  const target = (m: TargetMetric) => input.targets.find((t) => t.metric === m && t.value !== null) ?? null;
+  const status = (actual: number, goal: number): ScorecardRow["status"] => (actual > goal ? "ahead" : actual === goal ? "on-track" : "behind");
+
+  const counts = input.readings.filter((r) => r.followersCount !== null && r.day <= input.weekEnd).sort((a, b) => a.day.localeCompare(b.day));
+  const first = counts[0];
+  const last = counts[counts.length - 1];
+  const ft = target("followers");
+  let followers: ScorecardRow;
+  if (!ft || !ft.targetDate) {
+    followers = { measure: "followers", actual: last?.followersCount ?? null, target: null, status: "no-target", note: null };
+  } else if (!first || first.day === last.day) {
+    followers = { measure: "followers", actual: last?.followersCount ?? null, target: null, status: "not-enough-history", note: "Pace needs two follower readings." };
+  } else {
+    const day = (d: string) => Date.parse(`${d}T00:00:00Z`) / 86_400_000;
+    const span = day(ft.targetDate) - day(first.day);
+    const elapsed = day(last.day) - day(first.day);
+    const pace = span > 0 ? Math.round(first.followersCount! + ((ft.value! - first.followersCount!) * Math.min(elapsed, span)) / span) : ft.value!;
+    followers = {
+      measure: "followers", actual: last.followersCount, target: pace, status: status(last.followersCount!, pace),
+      note: `${ft.value!.toLocaleString("en-US")} by ${ft.targetDate}, in a straight line from ${first.followersCount!.toLocaleString("en-US")} on ${first.day}`,
+    };
+  }
+
+  const weekly = (m: "posts_per_week" | "reels_per_week", actual: number): ScorecardRow => {
+    const t = target(m);
+    return t ? { measure: m, actual, target: t.value, status: status(actual, t.value!), note: null } : { measure: m, actual, target: null, status: "no-target", note: null };
+  };
+  return [followers, weekly("posts_per_week", input.postsInWeek.all), weekly("reels_per_week", input.postsInWeek.reels)];
 }

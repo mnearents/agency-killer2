@@ -191,6 +191,7 @@ describe("the tool catalogue", () => {
         "segment_push",
         "social_peer_set",
         "social_review_save",
+        "social_target_set",
       ].sort()
     );
   });

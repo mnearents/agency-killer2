@@ -13,7 +13,7 @@
  * Pure — no database, no clock.
  */
 
-import { SETTLE_HOURS, BASELINE_DAYS, MIN_BASELINE, type FormatGroup, type ReviewPostAnalysis, type Verdict } from "./review";
+import { SETTLE_HOURS, BASELINE_DAYS, MIN_BASELINE, type FormatGroup, type ReviewPostAnalysis, type ReviewPostVisual, type Verdict } from "./review";
 
 export interface PeerPost {
   id: string;
@@ -28,6 +28,7 @@ export interface PeerPost {
   /** Reels only. */
   viewCount: number | null;
   analysis: ReviewPostAnalysis | null;
+  visual?: ReviewPostVisual | null;
 }
 
 export interface PeerDay {
@@ -126,6 +127,9 @@ export function summarisePeer(username: string, allPosts: PeerPost[], days: Peer
       approach: p.analysis?.approach ?? null,
       topic: p.analysis?.topic ?? null,
       audience: p.analysis?.audience ?? null,
+      visual: p.visual
+        ? { looked: p.visual.basis, type: p.visual.visualType, onScreenText: p.visual.onScreenText ?? [], visualHook: p.visual.visualHook, productVisible: p.visual.productVisible, handDrawn: p.visual.handDrawn, emotion: p.visual.emotion ?? null, summary: p.visual.summary ?? null }
+        : null,
       ...s,
     };
   };

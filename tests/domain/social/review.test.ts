@@ -8,6 +8,7 @@ import {
   lengthBucket,
   openingWords,
   accountDaysToFetch,
+  buildScorecard,
   SETTLE_HOURS,
   type ReviewPost,
 } from "@/domain/social/review";
@@ -21,7 +22,7 @@ function reel(overrides: Partial<ReviewPost> = {}): ReviewPost {
   return {
     id: `r${n}`, caption: "c", permalink: null, thumbnailUrl: null, format: "reel", postedAt: daysAgo(10),
     views: 1000, reach: 800, likes: 40, comments: 4, saved: 4, shares: 2, reposts: 0, follows: null, profileVisits: null,
-    avgWatchTimeMs: 5000, durationMs: 20_000, insightsStatus: "ok", openingWords: null, analysis: null,
+    avgWatchTimeMs: 5000, durationMs: 20_000, insightsStatus: "ok", openingWords: null, analysis: null, visual: null,
     ...overrides,
   };
 }
@@ -197,5 +198,60 @@ describe("accountDaysToFetch", () => {
     expect(days).toContain("2026-10-12");
     expect(days).not.toContain("2026-11-05");
     expect(days).not.toContain("2026-11-09"); // today is not over
+  });
+});
+
+describe("findPatterns — what posts show", () => {
+  const usual = Array.from({ length: 6 }, () => reel({ views: 1000 }));
+  const v = (views: number, visual: Partial<NonNullable<ReviewPost["visual"]>>) =>
+    reel({ views, visual: { visualType: "illustration", visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: null, cutsPerMinute: null, basis: "frames", ...visual } });
+
+  it("groups reels by whether text on screen opened them", () => {
+    const posts = [...usual, v(3000, { visualHook: "Do you colour?" }), v(2800, { visualHook: "Stop!" }), v(2600, { visualHook: "Why?" }), v(500, {}), v(600, {}), v(400, {})];
+    const p = findPatterns(posts, buildBaselines(posts, NOW), NOW).filter((g) => g.dimension === "onScreenHook");
+    expect(p.map((g) => [g.value, g.posts])).toEqual([["yes", 3], ["no", 3]]);
+  });
+
+  // A cover cannot show the opening, so it says nothing about the hook.
+  it("leaves reels seen only by their cover out of the opening-seconds groups", () => {
+    const posts = [...usual, v(3000, { basis: "cover" }), v(3000, { basis: "cover" }), v(3000, { basis: "cover" })];
+    const p = findPatterns(posts, buildBaselines(posts, NOW), NOW);
+    expect(p.find((g) => g.dimension === "onScreenHook" && g.value === "no")?.posts ?? 0).toBe(0);
+    expect(p.find((g) => g.dimension === "faceFirst2s")).toBeUndefined();
+  });
+
+  it("groups by face in the first two seconds, sound and edit pace", () => {
+    const posts = [...usual, ...[1, 2, 3].map(() => v(2000, { faceInFirst2s: true, audio: "speech", cutsPerMinute: 30 }))];
+    const dims = findPatterns(posts, buildBaselines(posts, NOW), NOW).map((g) => `${g.dimension}:${g.value}`);
+    expect(dims).toEqual(expect.arrayContaining(["faceFirst2s:yes", "audio:speech", "editPace:fast"]));
+  });
+});
+
+describe("buildScorecard", () => {
+  const readings = [{ day: "2026-11-01", followersCount: 128_000 }, { day: "2026-11-08", followersCount: 128_300 }];
+
+  // Straight-line from the first reading to the target date.
+  it("measures followers against the straight-line pace to the target", () => {
+    const s = buildScorecard({ readings, targets: [{ metric: "followers", value: 140_000, targetDate: "2027-01-01" }], weekEnd: "2026-11-08", postsInWeek: { all: 9, reels: 5 } });
+    const followers = s.find((r) => r.measure === "followers")!;
+    expect(followers).toMatchObject({ actual: 128_300, target: 129_377, status: "behind" });
+  });
+
+  it("measures posts and reels in the week against their weekly targets", () => {
+    const s = buildScorecard({ readings, targets: [{ metric: "posts_per_week", value: 10, targetDate: null }, { metric: "reels_per_week", value: 5, targetDate: null }], weekEnd: "2026-11-08", postsInWeek: { all: 9, reels: 5 } });
+    expect(s.find((r) => r.measure === "posts_per_week")).toMatchObject({ actual: 9, target: 10, status: "behind" });
+    expect(s.find((r) => r.measure === "reels_per_week")).toMatchObject({ actual: 5, target: 5, status: "on-track" });
+  });
+
+  // No target is no target — never a lead over zero.
+  it("reports a measure without a target as having none", () => {
+    const s = buildScorecard({ readings, targets: [], weekEnd: "2026-11-08", postsInWeek: { all: 9, reels: 5 } });
+    expect(s.find((r) => r.measure === "posts_per_week")).toMatchObject({ actual: 9, target: null, status: "no-target" });
+    expect(s.find((r) => r.measure === "followers")).toMatchObject({ actual: 128_300, target: null, status: "no-target" });
+  });
+
+  it("cannot pace followers from a single reading", () => {
+    const s = buildScorecard({ readings: [readings[1]], targets: [{ metric: "followers", value: 140_000, targetDate: "2027-01-01" }], weekEnd: "2026-11-08", postsInWeek: { all: 0, reels: 0 } });
+    expect(s.find((r) => r.measure === "followers")).toMatchObject({ target: null, status: "not-enough-history" });
   });
 });

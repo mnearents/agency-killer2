@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { getTableName } from "drizzle-orm";
 import { createMockInstagramApiClient } from "../../mocks/instagram-api";
 import { createMockAssemblyAiClient } from "../../mocks/assemblyai";
 import { createMockAnthropicClient } from "../../mocks/anthropic";
+import { fakeDb } from "../../mocks/recording-db";
 import {
   transformMediaToPost,
   syncSocialPosts,
@@ -211,45 +211,6 @@ describe("DEFAULT_MEDIA_LIMIT", () => {
 });
 
 // ─── The sync at its call sites ────────────────────────────────────────
-
-type Write = { table: string; values: Record<string, unknown>; set?: Record<string, unknown> };
-
-/**
- * A database that records writes by table and answers every read with the
- * rows seeded for the table it reads from.
- */
-function fakeDb(seed: Record<string, Record<string, unknown>[]> = {}) {
-  const inserts: Write[] = [];
-  const updates: Write[] = [];
-  const chain = (rows: () => unknown[]) => {
-    const c: Record<string, unknown> = {};
-    for (const m of ["where", "limit", "orderBy", "leftJoin", "innerJoin"]) c[m] = () => c;
-    c.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => Promise.resolve(rows()).then(res, rej);
-    return c;
-  };
-  const db = {
-    select: () => ({
-      from: (t: Parameters<typeof getTableName>[0]) => chain(() => seed[getTableName(t)] ?? []),
-    }),
-    insert: (t: Parameters<typeof getTableName>[0]) => ({
-      values: (values: Record<string, unknown>) => {
-        const w: Write = { table: getTableName(t), values };
-        inserts.push(w);
-        const done = Promise.resolve();
-        return {
-          onConflictDoUpdate: async (o: { set: Record<string, unknown> }) => { w.set = o.set; },
-          then: done.then.bind(done),
-        };
-      },
-    }),
-    update: (t: Parameters<typeof getTableName>[0]) => ({
-      set: (values: Record<string, unknown>) => ({
-        where: async () => { updates.push({ table: getTableName(t), values }); },
-      }),
-    }),
-  };
-  return { db: db as never, inserts, updates };
-}
 
 const NOW = new Date("2026-11-09T12:00:00Z");
 const noSleep = async () => {};
@@ -484,5 +445,38 @@ describe("syncSocialPosts — peer accounts", () => {
     const r = await syncSocialPosts({ client: client(), db, igUserId: "ig1", anthropic, now: () => NOW, sleep: noSleep });
     expect(inserts.find((w) => w.table === "social_post_analyses")!.values).toMatchObject({ postId: "m1", basis: "caption", hookType: "question" });
     expect(r.analysed).toBe(1);
+  });
+});
+
+describe("syncSocialPosts — visuals", () => {
+  it("keeps a peer post's pictures, refreshed each sync because the links expire", async () => {
+    const c = client({
+      getPeerAccount: vi.fn().mockResolvedValue({ profile: { username: "p", name: null, followersCount: 1, mediaCount: 1 }, media: [{
+        id: "m1", caption: "c", mediaType: "IMAGE", mediaProductType: "FEED", permalink: null, thumbnailUrl: null, timestamp: "2026-11-05T00:00:00+0000",
+        likeCount: 1, commentsCount: 1, viewCount: null, imageUrls: ["https://cdn/a.jpg"],
+      }] }),
+    });
+    const { db, inserts } = fakeDb({ social_peers: [{ username: "p" }] });
+    await syncSocialPosts({ client: c, db, igUserId: "ig1", now: () => NOW, sleep: noSleep });
+    const post = inserts.find((w) => w.table === "social_peer_posts")!;
+    expect(post.values.imageUrls).toEqual(["https://cdn/a.jpg"]);
+    expect(Object.keys(post.set!)).toContain("imageUrls");
+  });
+
+  it("looks at what each post shows when given the video tools", async () => {
+    const c = client({ getMediaAssets: vi.fn().mockResolvedValue({ videoUrl: null, coverUrl: null, imageUrls: [] }) });
+    const anthropic = createMockAnthropicClient({ generate: vi.fn().mockResolvedValue({ text: "{}" }) });
+    const { db } = fakeDb({ social_posts: [{ id: "img-1", caption: "c", mediaType: "IMAGE", mediaProductType: "FEED", transcriptionStatus: null, transcriptionAttempts: 0, analysisStatus: null, analysisAttempts: null, visualStatus: null, visualAttempts: null, durationMs: null }] });
+    const r = await syncSocialPosts({
+      client: c, db, igUserId: "ig1", anthropic, now: () => NOW, sleep: noSleep,
+      visuals: { video: { inspect: vi.fn(), frames: vi.fn(), contactSheet: vi.fn() }, fetchMedia: vi.fn(), writeTemp: vi.fn() },
+    });
+    expect(c.getMediaAssets).toHaveBeenCalledWith("img-1");
+    expect(r.visuals).toMatchObject({ configured: true, unavailable: 1 });
+  });
+
+  it("says visuals are not configured without the video tools, rather than reporting none to do", async () => {
+    const r = await syncSocialPosts({ client: client(), db: fakeDb().db, igUserId: "ig1", anthropic: createMockAnthropicClient(), now: () => NOW, sleep: noSleep });
+    expect(r.visuals).toEqual({ configured: false, analysed: 0, failed: 0, unavailable: 0 });
   });
 });

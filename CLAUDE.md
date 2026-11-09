@@ -379,6 +379,27 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   to action — fixed vocabularies so patterns count, words only (on-screen
   text and visuals are invisible). A reel waits for its transcript;
   unreadable answers are errors, retried three times.
+- **What each post SHOWS** (`social_post_visuals`, `visual-sync.ts`):
+  Claude looks at what Instagram gives — a reel's frames (0, 1, 2, 3s, then
+  every 3s, via ffmpeg on the worker), an image, every carousel slide, or a
+  peer's image/slides/reel cover. It records type, on-screen text and the
+  on-screen hook, face in the first 2s, product shown, hand-drawn (her
+  illustration), setting, emotion and branding; ffmpeg measures length,
+  cuts per minute and loudness, and keeps a contact sheet (served at
+  `/api/social/sheet/<id>`, which does not expire like Instagram's links).
+  **Instagram withholds the video of reels with licensed music** (31 of 77
+  on 2026-11-09): those are read from their cover, their sound recorded as
+  `licensed-music-likely`, and nothing about their opening seconds is
+  claimed. Peers never give video, so never sound. 40 of hers and 20 of
+  theirs a run, newest first, over 90 and 30 days.
+- **Targets and the scorecard** (`social_targets`, `social_target_set`):
+  followers by a date (straight-line pace from the first reading), posts and
+  reels per week. The scorecard is arithmetic in `buildScorecard`, never
+  written by the model; no target reads "no target", never a lead over 0.
+  The review saves `plan` (a row per post) and `ideasTried` as rows — the
+  MCP `rows` argument type, whose fields are as strict as arguments.
+- **ManyChat has no reporting API** (its API lists flows, sends, and manages
+  subscribers), so keyword, DM and email counts are not in the review.
 - **`social_review`** (MCP) assembles a week: account vs the week before and
   the four before; each post's `vsUsual` against HER median for that format
   over 90 days (settled 48h+, five posts minimum) and a verdict; 90-day
@@ -440,12 +461,12 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; fourteen are not.** The writers are
+- **Most tools are read-only; fifteen are not.** The writers are
   `ad_asset_set`, `calendar_add`, `calendar_update`, `calendar_remove`,
   `draft_save`, `draft_record_decision`, `experiment_start`,
   `experiment_record_result`, `goals_set`, `pilot_notes_add`,
-  `product_strategy_set`, `segment_push`, `social_peer_set` and
-  `social_review_save`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+  `product_strategy_set`, `segment_push`, `social_peer_set`,
+  `social_review_save` and `social_target_set`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and
@@ -607,6 +628,8 @@ src/
 │   ├── healthchecks.ts     # healthchecks.io heartbeat for the ad account watch
 │   ├── google-auth.ts      # Service account sign-in shared by Search Console and Drive
 │   ├── google-drive.ts     # Drive, read-only: the Evobox invoice folder
+│   ├── video-frames.ts     # ffmpeg: length, cuts, loudness, frames, contact sheets
+│   ├── media-download.ts   # Fetching Instagram media for analysis
 │   ├── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 │   └── attentive-agent.ts  # Playwright scrape of Attentive reports (no API)
 ├── ai/                     # LLM orchestration layer

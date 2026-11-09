@@ -250,3 +250,46 @@ describe("getPeerAccount", () => {
     await expect(createInstagramApiClient("t").getPeerAccount("ig1", "bad name)", 50)).rejects.toThrow(/not an Instagram username/);
   });
 });
+
+describe("getMediaAssets", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const stub = (body: unknown) => vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })));
+
+  it("gives a carousel's slides in order, using a video slide's cover", async () => {
+    stub({ id: "c1", media_type: "CAROUSEL_ALBUM", children: { data: [
+      { media_type: "IMAGE", media_url: "https://cdn/1.jpg" },
+      { media_type: "VIDEO", media_url: "https://cdn/2.mp4", thumbnail_url: "https://cdn/2.jpg" },
+    ] } });
+    expect(await createInstagramApiClient("t").getMediaAssets("c1")).toEqual({ videoUrl: null, coverUrl: null, imageUrls: ["https://cdn/1.jpg", "https://cdn/2.jpg"] });
+  });
+
+  // Instagram leaves media_url off reels carrying licensed music.
+  it("gives a reel's cover when its video is withheld", async () => {
+    stub({ id: "r1", media_type: "VIDEO", media_product_type: "REELS", thumbnail_url: "https://cdn/cover.jpg" });
+    expect(await createInstagramApiClient("t").getMediaAssets("r1")).toEqual({ videoUrl: null, coverUrl: "https://cdn/cover.jpg", imageUrls: [] });
+  });
+
+  it("gives a reel's video and cover when both are there", async () => {
+    stub({ id: "r2", media_type: "VIDEO", media_url: "https://cdn/v.mp4", thumbnail_url: "https://cdn/c.jpg" });
+    expect(await createInstagramApiClient("t").getMediaAssets("r2")).toEqual({ videoUrl: "https://cdn/v.mp4", coverUrl: "https://cdn/c.jpg", imageUrls: [] });
+  });
+
+  it("gives an image as its own picture", async () => {
+    stub({ id: "i1", media_type: "IMAGE", media_url: "https://cdn/i.jpg" });
+    expect(await createInstagramApiClient("t").getMediaAssets("i1")).toEqual({ videoUrl: null, coverUrl: null, imageUrls: ["https://cdn/i.jpg"] });
+  });
+});
+
+describe("getPeerAccount — pictures", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("keeps each post's pictures: an image, a carousel's slides, a reel's cover", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ business_discovery: { username: "p", followers_count: 1, media_count: 3, media: { data: [
+      { id: "a", media_type: "IMAGE", timestamp: "2026-11-01T00:00:00+0000", media_url: "https://cdn/a.jpg" },
+      { id: "b", media_type: "CAROUSEL_ALBUM", timestamp: "2026-11-01T00:00:00+0000", media_url: "https://cdn/b0.jpg", children: { data: [{ media_type: "IMAGE", media_url: "https://cdn/b1.jpg" }, { media_type: "IMAGE", media_url: "https://cdn/b2.jpg" }] } },
+      { id: "c", media_type: "VIDEO", media_product_type: "REELS", timestamp: "2026-11-01T00:00:00+0000", thumbnail_url: "https://cdn/c.jpg" },
+    ] } } }), { status: 200 })));
+    const r = await createInstagramApiClient("t").getPeerAccount("ig", "p", 50);
+    expect(r.media.map((m) => m.imageUrls)).toEqual([["https://cdn/a.jpg"], ["https://cdn/b1.jpg", "https://cdn/b2.jpg"], ["https://cdn/c.jpg"]]);
+  });
+});

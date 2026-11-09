@@ -21,7 +21,9 @@
  *    newest posts' likes, comments and reel views;
  * 7. asks Claude what each post was — hook, hook type, topic, approach,
  *    audience — once its transcript, if it will have one, is in; a peer's
- *    post from its caption alone.
+ *    post from its caption alone;
+ * 8. asks Claude what each post SHOWS, from its frames, cover, slides or
+ *    image (`visual-sync.ts`).
  */
 
 import type { InstagramApiClient, IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
@@ -39,6 +41,7 @@ import {
   type TranscriptionStatus,
 } from "./transcription";
 import { accountDaysToFetch, openingWords } from "./review";
+import { syncVisuals, type VisualSyncDeps } from "./visual-sync";
 import {
   buildPostAnalysisPrompt,
   parsePostAnalysis,
@@ -136,6 +139,8 @@ export interface SyncSocialDeps {
   embeddingClient?: EmbeddingClient;
   /** Analyses what each post was. Without it, analysis reports itself unconfigured. */
   anthropic?: AnthropicClient;
+  /** ffmpeg and downloads, for what each post shows. Needs `anthropic` too. */
+  visuals?: Pick<VisualSyncDeps, "video" | "fetchMedia" | "writeTemp">;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -159,6 +164,8 @@ export interface SyncSocialResult {
   analysisConfigured: boolean;
   analysed: number;
   analysisFailed: number;
+  /** What each post shows. `configured: false` without the video tools or Anthropic. */
+  visuals: { configured: boolean; analysed: number; failed: number; unavailable: number };
   errors: string[];
 }
 
@@ -407,6 +414,11 @@ export async function syncSocialPosts(
     analysis = { analysed: own.analysed + theirs.analysed, analysisFailed: own.analysisFailed + theirs.analysisFailed };
   }
 
+  // Step 8: what each post shows.
+  const visuals = deps.anthropic && deps.visuals
+    ? { configured: true, ...(await syncVisuals({ db, client, anthropic: deps.anthropic, now: () => syncedAt, ...deps.visuals }, errors)) }
+    : { configured: false, analysed: 0, failed: 0, unavailable: 0 };
+
   return {
     posts: rows.length,
     insightsFetched,
@@ -419,6 +431,7 @@ export async function syncSocialPosts(
     peers,
     analysisConfigured: deps.anthropic !== undefined,
     ...analysis,
+    visuals,
     errors,
   };
 }
@@ -504,6 +517,7 @@ async function syncPeers(
           likeCount: m.likeCount,
           commentsCount: m.commentsCount,
           viewCount: m.viewCount,
+          imageUrls: m.imageUrls,
           syncedAt: now,
         };
         await db

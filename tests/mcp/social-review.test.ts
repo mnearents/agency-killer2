@@ -14,6 +14,8 @@ vi.mock("@/domain/social/review-queries", async (importOriginal) => ({
   getPeerPosts: vi.fn(),
   getPeerDays: vi.fn(),
   setPeer: vi.fn(),
+  getTargets: vi.fn(),
+  recordTarget: vi.fn(),
 }));
 
 const NOW = new Date("2026-11-09T12:00:00Z");
@@ -43,6 +45,7 @@ beforeEach(() => {
     Array.from({ length: 35 }, (_, i) => accountDay(new Date(Date.parse("2026-10-05T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10))),
   );
   vi.mocked(reviewQueries.getLatestReview).mockResolvedValue(null);
+  vi.mocked(reviewQueries.getTargets).mockResolvedValue([]);
   vi.mocked(reviewQueries.getPeers).mockResolvedValue([{ username: "pippipost.shop", notes: "bookish merch", active: true }]);
   vi.mocked(reviewQueries.getPeerPosts).mockResolvedValue([
     ...Array.from({ length: 6 }, (_, i) => ({ id: `u${i}`, username: "pippipost.shop", caption: "c", format: "reel" as const, permalink: null, thumbnailUrl: null, postedAt: daysAgo(15 + i), likeCount: 100, commentsCount: 10, viewCount: 10_000, analysis: null })),
@@ -96,10 +99,10 @@ describe("social_review", () => {
   it("returns the last review's suggestions", async () => {
     vi.mocked(reviewQueries.getLatestReview).mockResolvedValue({
       id: "rv1", weekStart: "2026-10-26", weekEnd: "2026-11-01", headline: "Questions win", summary: "s", working: "w", notWorking: "n", why: "y",
-      tryNext: "- Open with a question", fromPeers: null, author: "claude", requestedBy: "Matt", createdAt: NOW,
+      tryNext: "- Open with a question", fromPeers: null, ideasTried: null, plan: [{ day: "Mon", format: "reel", idea: "Question opener", keyword: null }], author: "claude", requestedBy: "Matt", createdAt: NOW,
     });
     const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
-    expect(r.previousReview).toMatchObject({ weekStart: "2026-10-26", headline: "Questions win", tryNext: "- Open with a question" });
+    expect(r.previousReview).toMatchObject({ weekStart: "2026-10-26", headline: "Questions win", tryNext: "- Open with a question", plan: [{ day: "Mon", idea: "Question opener" }] });
   });
 });
 
@@ -110,7 +113,7 @@ describe("social_review_save", () => {
   };
 
   it("saves the review as Claude's, for the signed-in person, and says where to read it", async () => {
-    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv2", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null }));
+    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv2", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null, ideasTried: r.ideasTried ?? null, plan: r.plan ?? null }));
     const r = (await dispatchTool(ctx, "social_review_save", review)) as Record<string, any>;
     expect(vi.mocked(reviewQueries.saveReview).mock.calls[0][1]).toMatchObject({ weekStart: "2026-11-02", author: "claude", requestedBy: "Matt" });
     expect(r).toMatchObject({ written: true, id: "rv2", path: "/social/review/rv2" });
@@ -165,11 +168,76 @@ describe("peer accounts", () => {
   });
 
   it("saves the optional ideas from peers with the review", async () => {
-    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv3", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null }));
+    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv3", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null, ideasTried: r.ideasTried ?? null, plan: r.plan ?? null }));
     await dispatchTool(ctx, "social_review_save", {
       weekStart: "2026-11-02", weekEnd: "2026-11-08", headline: "h", summary: "s", working: "w", notWorking: "n", why: "y", tryNext: "- t",
       fromPeers: "Pippi Post's question reel broke out.",
     });
     expect(vi.mocked(reviewQueries.saveReview).mock.calls[0][1]).toMatchObject({ fromPeers: "Pippi Post's question reel broke out." });
+  });
+});
+
+describe("what posts show", () => {
+  it("gives each post in the week what it shows", async () => {
+    vi.mocked(reviewQueries.getReviewPosts).mockResolvedValue([
+      reel({ id: "v1", postedAt: daysAgo(4), visual: { basis: "frames", visualType: "illustration", visualHook: "Do you colour?", faceInFirst2s: false, productVisible: true, handDrawn: true, audio: "speech", cutsPerMinute: 24, onScreenText: [{ at: "0s", text: "Do you colour?" }], hasContactSheet: true } }),
+    ]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.posts[0].visual).toMatchObject({ looked: "frames", visualHook: "Do you colour?", faceInFirst2s: false, audio: "speech", contactSheetPath: "/api/social/sheet/v1" });
+  });
+
+  it("says how many posts were looked at, and how", async () => {
+    vi.mocked(reviewQueries.getReviewPosts).mockResolvedValue([
+      reel({ postedAt: daysAgo(4), visual: { basis: "cover", visualType: "photo", visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: "licensed-music-likely", cutsPerMinute: null } }),
+      reel({ postedAt: daysAgo(3), visual: null }),
+    ]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.coverage).toMatchObject({ postsLookedAt: 1, reelsSeenByCoverOnly: 1 });
+    expect(r.coverage.notes.join(" ")).toMatch(/licensed music/);
+  });
+});
+
+describe("scorecard and targets", () => {
+  it("scores the week against the targets set", async () => {
+    vi.mocked(reviewQueries.getTargets).mockResolvedValue([{ metric: "reels_per_week", value: 5, targetDate: null, notes: null, setAt: NOW, requestedBy: "Matt" }]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.scorecard.find((s: { measure: string }) => s.measure === "reels_per_week")).toMatchObject({ actual: 1, target: 5, status: "behind" });
+    expect(r.scorecard.find((s: { measure: string }) => s.measure === "posts_per_week")).toMatchObject({ status: "no-target" });
+  });
+
+  it("records a follower target with its date, for the signed-in person", async () => {
+    const r = (await dispatchTool(ctx, "social_target_set", { metric: "followers", value: 140_000, targetDate: "2027-06-30" })) as Record<string, any>;
+    expect(vi.mocked(reviewQueries.recordTarget).mock.calls[0][1]).toEqual({ metric: "followers", value: 140_000, targetDate: "2027-06-30", notes: null, requestedBy: "Matt" });
+    expect(r.written).toBe(true);
+  });
+
+  it("refuses a follower target without a date", async () => {
+    await expect(dispatchTool(ctx, "social_target_set", { metric: "followers", value: 140_000 })).rejects.toThrow(/targetDate/);
+  });
+
+  it("clears a target", async () => {
+    await dispatchTool(ctx, "social_target_set", { metric: "posts_per_week", clear: true });
+    expect(vi.mocked(reviewQueries.recordTarget).mock.calls[0][1]).toMatchObject({ metric: "posts_per_week", value: null });
+  });
+});
+
+describe("plan and ideas tried", () => {
+  const review = { weekStart: "2026-11-02", weekEnd: "2026-11-08", headline: "h", summary: "s", working: "w", notWorking: "n", why: "y", tryNext: "- t" };
+
+  it("saves the week's plan and last week's ideas as rows", async () => {
+    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv4", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null, ideasTried: r.ideasTried ?? null, plan: r.plan ?? null }));
+    await dispatchTool(ctx, "social_review_save", {
+      ...review,
+      plan: [{ day: "Mon", format: "reel", idea: "Question opener", keyword: "COLOR" }],
+      ideasTried: [{ idea: "Open with a question", tried: "yes", result: "Twice her usual views" }],
+    });
+    expect(vi.mocked(reviewQueries.saveReview).mock.calls[0][1]).toMatchObject({
+      plan: [{ day: "Mon", format: "reel", idea: "Question opener", keyword: "COLOR" }],
+      ideasTried: [{ idea: "Open with a question", tried: "yes", result: "Twice her usual views" }],
+    });
+  });
+
+  it("refuses a plan row with a format that is not one", async () => {
+    await expect(dispatchTool(ctx, "social_review_save", { ...review, plan: [{ day: "Mon", format: "tiktok", idea: "x" }] })).rejects.toBeInstanceOf(McpArgumentError);
   });
 });

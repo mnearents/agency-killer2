@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { Db } from "@/db/client";
-import { getAccountDayRows, getReviewPosts, listReviews, type SocialReview } from "@/domain/social/review-queries";
-import { buildBaselines, scorePost, summariseAccountDays, BASELINE_DAYS, type AccountSummary, type Verdict } from "@/domain/social/review";
+import { getAccountDayRows, getReviewPosts, getTargets, listReviews, type SocialReview } from "@/domain/social/review-queries";
+import { buildBaselines, buildScorecard, scorePost, summariseAccountDays, BASELINE_DAYS, type AccountSummary, type ScorecardRow, type Verdict } from "@/domain/social/review";
 import { parseReviewText, type Block, type TextPart } from "@/lib/review-text";
 
 /**
@@ -13,10 +13,12 @@ const shiftDay = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:0
 
 export async function loadReviewPage(db: Db, review: SocialReview, now: Date) {
   const since = new Date(Math.min(Date.parse(`${review.weekStart}T00:00:00Z`), now.getTime()) - BASELINE_DAYS * 86_400_000);
-  const [posts, days, archive] = await Promise.all([
+  const [posts, days, archive, targets, allDays] = await Promise.all([
     getReviewPosts(db, since),
     getAccountDayRows(db, shiftDay(review.weekStart, -7), review.weekEnd),
     listReviews(db),
+    getTargets(db),
+    getAccountDayRows(db, "2000-01-01", review.weekEnd),
   ]);
   // Judged against her usual as it stood at the end of that week, so an old
   // review's posts keep the verdicts they were written about.
@@ -27,6 +29,12 @@ export async function loadReviewPage(db: Db, review: SocialReview, now: Date) {
     .map((p) => ({ post: p, score: scorePost(p, baselines, now) }))
     .sort((a, b) => (b.score.vsUsual[b.score.judgedOn ?? "views"] ?? -1) - (a.score.vsUsual[a.score.judgedOn ?? "views"] ?? -1));
   return {
+    scorecard: buildScorecard({
+      readings: allDays,
+      targets,
+      weekEnd: review.weekEnd,
+      postsInWeek: { all: weekPosts.length, reels: weekPosts.filter((w) => w.post.format === "reel").length },
+    }),
     thisWeek: summariseAccountDays(days, review.weekStart, review.weekEnd),
     lastWeek: summariseAccountDays(days, shiftDay(review.weekStart, -7), shiftDay(review.weekStart, -1)),
     weekPosts,
@@ -141,6 +149,90 @@ function Numbers({ data }: { data: PageData }) {
   );
 }
 
+const MEASURE_LABEL: Record<ScorecardRow["measure"], string> = {
+  followers: "Followers",
+  posts_per_week: "Posts this week",
+  reels_per_week: "Reels this week",
+};
+const STATUS: Record<ScorecardRow["status"], { label: string; color: string; bg: string }> = {
+  ahead: { label: "Ahead", color: C.green, bg: C.greenBg },
+  "on-track": { label: "On track", color: C.green, bg: C.greenBg },
+  behind: { label: "Behind", color: C.amber, bg: C.amberBg },
+  "no-target": { label: "No target set", color: C.faint, bg: "#f3f0ec" },
+  "not-enough-history": { label: "Pace starts next week", color: C.faint, bg: "#f3f0ec" },
+};
+
+function Scorecard({ rows }: { rows: ScorecardRow[] }) {
+  if (rows.every((r) => r.status === "no-target")) return null;
+  return (
+    <section style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, padding: "18px 22px", margin: "8px 0 18px" }}>
+      <div style={{ fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase", color: C.faint, fontWeight: 600, marginBottom: 10 }}>Scorecard</div>
+      <div style={{ display: "grid", gap: 10 }}>
+        {rows.map((r) => {
+          const st = STATUS[r.status];
+          return (
+            <div key={r.measure} style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "6px 14px" }}>
+              <span style={{ minWidth: 130, fontWeight: 600, color: C.ink }}>{MEASURE_LABEL[r.measure]}</span>
+              <span style={{ fontFamily: SERIF, fontSize: 20, color: C.ink }}>
+                {num(r.actual)}{r.target !== null ? <span style={{ color: C.faint, fontSize: 15 }}> of {num(r.target)}{r.measure === "followers" ? " on pace" : ""}</span> : null}
+              </span>
+              <span style={{ background: st.bg, color: st.color, borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{st.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const TRIED: Record<string, { label: string; color: string; bg: string }> = {
+  yes: { label: "Tried", color: C.green, bg: C.greenBg },
+  partly: { label: "Partly", color: C.blue, bg: C.blueBg },
+  no: { label: "Not yet", color: C.amber, bg: C.amberBg },
+  unknown: { label: "Can't tell", color: C.faint, bg: "#f3f0ec" },
+};
+
+function IdeasTried({ rows }: { rows: NonNullable<SocialReview["ideasTried"]> }) {
+  return (
+    <Section title="Last week's ideas" color={C.violet} bg={C.violetBg}>
+      <div style={{ display: "grid", gap: 12 }}>
+        {rows.map((r, i) => {
+          const t = TRIED[r.tried] ?? TRIED.unknown;
+          return (
+            <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <span style={{ flex: "0 0 auto", background: t.bg, color: t.color, borderRadius: 99, padding: "3px 10px", fontSize: 12, fontWeight: 700, marginTop: 2 }}>{t.label}</span>
+              <div style={{ fontSize: 16, lineHeight: 1.55, color: C.ink }}>
+                <strong>{r.idea}</strong>
+                {r.result ? <div style={{ color: C.soft }}>{r.result}</div> : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+const FORMAT_TAG: Record<string, string> = { reel: "Reel", carousel: "Carousel", image: "Photo", story: "Story", video: "Video", live: "Live" };
+
+function Plan({ rows }: { rows: NonNullable<SocialReview["plan"]> }) {
+  return (
+    <section style={{ margin: "28px 0" }}>
+      <h2 style={{ fontFamily: SERIF, fontSize: 24, color: C.ink, margin: "0 0 14px" }}>The week ahead</h2>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, overflow: "hidden" }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", alignItems: "baseline", padding: "14px 18px", borderTop: i === 0 ? "none" : `1px solid ${C.line}` }}>
+            <span style={{ width: 92, fontWeight: 700, color: C.ink }}>{r.day}</span>
+            <span style={{ background: "#f3f0ec", borderRadius: 99, padding: "2px 10px", fontSize: 12, fontWeight: 600, color: C.soft }}>{FORMAT_TAG[r.format] ?? r.format}</span>
+            <span style={{ flex: "1 1 260px", fontSize: 16, lineHeight: 1.5, color: C.ink }}>{r.idea}</span>
+            {r.keyword ? <span style={{ fontSize: 13, color: C.violet, fontWeight: 700 }}>Comment “{r.keyword}”</span> : null}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Section({ title, color, bg, children }: { title: string; color: string; bg: string; children: ReactNode }) {
   return (
     <section style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, padding: "24px 28px", margin: "18px 0" }}>
@@ -192,14 +284,18 @@ function PostCard({ item }: { item: PageData["weekPosts"][number] }) {
   const ratio = raw === null ? null : Math.round(raw * 10) / 10;
   const hook = post.analysis?.hook ?? post.openingWords ?? post.caption?.split("\n")[0] ?? "";
   const day = post.postedAt.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
+  // Our own copy of a reel's frames does not expire; Instagram's cover does.
+  const sheet = post.visual?.hasContactSheet ? `/api/social/sheet/${post.id}` : null;
+  const picture = sheet ?? post.thumbnailUrl;
   return (
     <article style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <div
         style={{
           aspectRatio: "4 / 5",
           backgroundColor: "#efe7dd",
-          backgroundImage: post.thumbnailUrl ? `url("${post.thumbnailUrl}"), linear-gradient(135deg, #f6d9c4, #d9e4f5)` : "linear-gradient(135deg, #f6d9c4, #d9e4f5)",
-          backgroundSize: "cover",
+          backgroundImage: picture ? `url("${picture}"), linear-gradient(135deg, #f6d9c4, #d9e4f5)` : "linear-gradient(135deg, #f6d9c4, #d9e4f5)",
+          backgroundSize: sheet ? "contain" : "cover",
+          backgroundRepeat: "no-repeat",
           backgroundPosition: "center",
           position: "relative",
         }}
@@ -221,6 +317,11 @@ function PostCard({ item }: { item: PageData["weekPosts"][number] }) {
           <span>{num(post.saved)} saves</span>
           {post.follows !== null ? <span>{num(post.follows)} follows</span> : null}
         </div>
+        {post.visual?.visualHook ? (
+          <div style={{ fontSize: 13, color: C.soft }}>
+            <span style={{ fontWeight: 700, color: C.ink }}>On screen: </span>“{post.visual.visualHook}”
+          </div>
+        ) : null}
         {post.permalink ? (
           <a href={post.permalink} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: C.violet, fontWeight: 600, textDecoration: "none" }}>
             Open on Instagram →
@@ -241,10 +342,13 @@ export function ReviewView({ review, data }: { review: SocialReview; data: PageD
         <h1 style={{ fontFamily: SERIF, fontSize: "clamp(30px, 5vw, 44px)", lineHeight: 1.15, margin: "12px 0 18px", color: C.ink }}>{review.headline}</h1>
         <Prose text={review.summary} size={19} />
         <Numbers data={data} />
+        <Scorecard rows={data.scorecard} />
+        {review.ideasTried && review.ideasTried.length > 0 ? <IdeasTried rows={review.ideasTried} /> : null}
         <Section title="What's working" color={C.green} bg={C.greenBg}><Prose text={review.working} /></Section>
         <Section title="What isn't landing yet" color={C.amber} bg={C.amberBg}><Prose text={review.notWorking} /></Section>
         <Section title="Why" color={C.blue} bg={C.blueBg}><Prose text={review.why} /></Section>
         <TryNext text={review.tryNext} />
+        {review.plan && review.plan.length > 0 ? <Plan rows={review.plan} /> : null}
         {review.fromPeers ? (
           <Section title="Ideas from around the niche" color="#c2477a" bg="#fbeaf1"><Prose text={review.fromPeers} /></Section>
         ) : null}

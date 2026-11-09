@@ -28,6 +28,7 @@ import {
   RANGE_SCHEMA,
   type ArgSchema,
   type ParsedArgs,
+  type Row,
 } from "./args";
 
 import { getDataFreshness } from "@/db/freshness";
@@ -58,10 +59,10 @@ import {
 } from "@/domain/attentive/queries";
 import { describeAttentiveCoverage, getAttentiveSyncState, ATTENTIVE_UNAVAILABLE } from "@/domain/attentive/coverage";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
-import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer } from "@/domain/social/review-queries";
+import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget } from "@/domain/social/review-queries";
 import { summarisePeer } from "@/domain/social/peers";
 import { IG_USERNAME } from "@/integrations/instagram-api";
-import { buildBaselines, measuresOf, scorePost, findPatterns, summariseAccountDays, isSettled, BASELINE_DAYS } from "@/domain/social/review";
+import { buildBaselines, measuresOf, scorePost, findPatterns, summariseAccountDays, isSettled, buildScorecard, BASELINE_DAYS, type ReviewPostVisual } from "@/domain/social/review";
 import { getInventoryItems, getPoolVariantRows } from "@/domain/inventory/queries";
 import {
   assessPool,
@@ -1013,6 +1014,7 @@ const describeEntry = (e: CalendarEntryFacts) => ({
   notes: e.notes,
 });
 
+const FIRST_DAY = "2000-01-01";
 const isoDayString = (d: Date) => d.toISOString().slice(0, 10);
 
 /**
@@ -1687,6 +1689,30 @@ const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10
 const PEER_CAVEAT =
   "Instagram shows another account's likes, comments and reel views only — never its reach, saves, shares or watch time, and nothing spoken in its reels — so a peer's post is judged against that account's own usual, and its hooks are read from captions.";
 
+/** What a post shows, for the review: only what was looked at, and how. */
+function describeVisual(postId: string, v: ReviewPostVisual | null | undefined) {
+  if (!v) return null;
+  return {
+    looked: v.basis,
+    type: v.visualType,
+    summary: v.summary ?? null,
+    firstFrame: v.firstFrame ?? null,
+    visualHook: v.visualHook,
+    onScreenText: v.onScreenText ?? [],
+    faceInFirst2s: v.faceInFirst2s,
+    productVisible: v.productVisible,
+    productFirstSeen: v.productFirstSeen ?? null,
+    handDrawn: v.handDrawn,
+    setting: v.setting ?? null,
+    emotion: v.emotion ?? null,
+    branding: v.branding ?? null,
+    audio: v.audio,
+    cuts: v.cuts ?? null,
+    cutsPerMinute: v.cutsPerMinute,
+    contactSheetPath: v.hasContactSheet ? `/api/social/sheet/${postId}` : null,
+  };
+}
+
 const normaliseUsername = (raw: string) => raw.trim().replace(/^@/, "").toLowerCase();
 
 /** Every tracked peer for a week: followers, the week's posts, 30-day standouts. */
@@ -1713,7 +1739,9 @@ const socialReview: McpTool = {
     "`account`: follows, unfollows, net growth, follower count, share of reach that was NEW people (non-followers — what growth is made of), organic views by surface (reels, posts, carousels, stories; ad views kept apart), for this week, the week before, and the four weeks before that. " +
     "`posts`: every post in the week with its numbers, `vsUsual` (each measure as a multiple of HER OWN median for that format over 90 days: 2 = twice her usual), a `verdict` (breakout ≥3x, above ≥1.25x, typical, below ≤0.75x, settling under 48h, not-enough-history, not-measured), and what it was — hook, hook type, approach, audience, topic, the words of its first three seconds, its length. " +
     "`peers`: each tracked account in the niche (see social_peers) — its followers, the week's posts and its standouts of the last 30 days against its OWN usual, with hooks read from captions; ideas, not a scoreboard. " +
-    "`usual`: her medians per format. `patterns`: over 90 days, which hook types, approaches, audiences, topics, formats and reel lengths beat her usual (groups of 3+ posts only). `coverage`: what the numbers lack — read it before concluding anything. `previousReview`: last review's suggestions, to check whether they were tried. " +
+    "Each post also has `visual` — what it SHOWS, read by Claude from the reel's frames (0, 1, 2, 3s, then every 3s), or only its cover when Instagram withholds the video (licensed music), or the image or carousel slides: type, on-screen text and the on-screen hook, face in the first 2 seconds, product visible, hand-drawn (her illustration), setting, emotion, and measured cuts per minute and sound. `looked` says which; a cover says nothing about the opening seconds. " +
+    "`scorecard`: followers against the straight-line pace to the follower target, posts and reels in the week against their weekly targets (set with social_target_set); `no-target` means none is set. " +
+    "`usual`: her medians per format. `patterns`: over 90 days, which hook types, approaches, audiences, topics, formats, reel lengths, visual types, on-screen hooks, a face in the first 2s, product shown, hand-drawn art, sound and edit pace beat her usual (groups of 3+ posts only). `coverage`: what the numbers lack — read it before concluding anything. `previousReview`: last review's suggestions, to check whether they were tried. " +
     "Write the review for Tara, who makes the content and reads it on the dashboard: plain words, no jargon or raw ratios without meaning, lead with what worked and why, be honest about what did not, and end with at most three concrete things to try. " +
     "Compare her only with her own usual — never with other accounts. Viral reach comes from the first seconds holding strangers and from shares, a learnable craft separate from production quality. Save it with social_review_save.",
   readOnly: true,
@@ -1724,11 +1752,14 @@ const socialReview: McpTool = {
     const end = shiftDay(start, 6);
     const since = new Date(Math.min(Date.parse(`${start}T00:00:00Z`), now.getTime() - BASELINE_DAYS * 86_400_000));
 
-    const [posts, days, previous, peers] = await Promise.all([
+    const [posts, days, previous, peers, targets, allDays] = await Promise.all([
       getReviewPosts(ctx.db, since),
       getAccountDayRows(ctx.db, shiftDay(start, -28), end),
       getLatestReview(ctx.db),
       section(() => peerSections(ctx, start, end)),
+      getTargets(ctx.db),
+      // The follower pace runs from the first reading ever taken.
+      getAccountDayRows(ctx.db, FIRST_DAY, end),
     ]);
 
     const baselines = buildBaselines(posts, now);
@@ -1773,6 +1804,7 @@ const socialReview: McpTool = {
         judgedOn: score.judgedOn,
         vsUsual: score.vsUsual,
         ageHours: score.ageHours,
+        visual: describeVisual(p.id, p.visual),
       };
     });
 
@@ -1804,7 +1836,11 @@ const socialReview: McpTool = {
     const reels = described.filter((p) => p.format === "reel");
     const reelsWithLength = reels.filter((p) => p.lengthSeconds !== null).length;
     if (reelsWithLength < reels.length) notes.push(`${reels.length - reelsWithLength} reel(s) have no length (silent, or transcribed before lengths were kept), so no watch-through.`);
-    notes.push("Analysis reads words only (caption and speech): on-screen text, visuals and music are invisible to it.");
+    const lookedAt = described.filter((p) => p.visual !== null);
+    const coverOnly = lookedAt.filter((p) => p.format === "reel" && p.visual!.looked === "cover").length;
+    if (lookedAt.length < described.length) notes.push(`${described.length - lookedAt.length} post(s) not yet looked at for what they show.`);
+    if (coverOnly > 0) notes.push(`${coverOnly} reel(s) seen by their cover only: Instagram withholds the video of reels with licensed music, so their opening seconds, cuts and face-on-screen are unknown.`);
+    notes.push("Hook, topic and approach come from words (caption and speech); `visual` comes from images, which carry no sound beyond what ffmpeg measures.");
 
     return {
       week: { start, end },
@@ -1815,7 +1851,14 @@ const socialReview: McpTool = {
       },
       posts: described,
       usual,
-      patterns: findPatterns(posts, baselines, now).slice(0, 40),
+      patterns: findPatterns(posts, baselines, now).slice(0, 60),
+      scorecard: buildScorecard({
+        readings: allDays,
+        targets,
+        weekEnd: end,
+        postsInWeek: { all: described.length, reels: described.filter((p) => p.format === "reel").length },
+      }),
+      targets,
       peers,
       peerCaveat: PEER_CAVEAT,
       coverage: {
@@ -1824,11 +1867,13 @@ const socialReview: McpTool = {
         postsAnalysed: analysed,
         reelsWithLength,
         accountDaysMeasured: thisWeek.daysMeasured,
+        postsLookedAt: lookedAt.length,
+        reelsSeenByCoverOnly: coverOnly,
         baselinePosts: posts.filter((p) => isSettled(p, now)).length,
         notes,
       },
       previousReview: previous
-        ? { id: previous.id, weekStart: previous.weekStart, weekEnd: previous.weekEnd, headline: previous.headline, tryNext: previous.tryNext }
+        ? { id: previous.id, weekStart: previous.weekStart, weekEnd: previous.weekEnd, headline: previous.headline, tryNext: previous.tryNext, plan: previous.plan }
         : null,
     };
   },
@@ -1875,6 +1920,41 @@ const socialPeerSet: McpTool = {
   },
 };
 
+const TARGET_METRICS = ["followers", "posts_per_week", "reels_per_week"] as const;
+
+const socialTargetSet: McpTool = {
+  name: "social_target_set",
+  title: "Set an organic Instagram target",
+  description:
+    "Record a target the weekly review scores against: `followers` (a count by `targetDate`, paced in a straight line from the first follower reading), `posts_per_week` or `reels_per_week`. `clear: true` removes one. " +
+    "A target is a person's decision: record what they told you. Every change is kept, recorded as written by Claude for the signed-in person.",
+  readOnly: false,
+  schema: {
+    metric: { type: "enum", values: TARGET_METRICS, required: true },
+    value: { type: "integer", min: 1, max: 100_000_000 },
+    targetDate: { type: "date" },
+    notes: { type: "string" },
+    clear: { type: "boolean", default: false },
+  },
+  async run(ctx, args) {
+    const metric = args.metric as (typeof TARGET_METRICS)[number];
+    const clear = args.clear as boolean;
+    if (!clear && args.value === undefined) throw new McpArgumentError("Pass `value`, or `clear: true`");
+    if (!clear && metric === "followers" && !(args.targetDate instanceof Date)) throw new McpArgumentError("A followers target needs `targetDate`");
+    const target = {
+      metric,
+      value: clear ? null : (args.value as number),
+      targetDate: !clear && args.targetDate instanceof Date ? isoDay(args.targetDate) : null,
+      notes: typeof args.notes === "string" && args.notes.trim() !== "" ? args.notes.trim() : null,
+      requestedBy: ctx.actor ?? null,
+    };
+    await recordTarget(ctx.db, target);
+    return { written: true, ...target };
+  },
+};
+
+const PLAN_FORMATS = ["reel", "carousel", "image", "story", "video", "live"] as const;
+
 const REVIEW_SECTIONS = ["summary", "working", "notWorking", "why", "tryNext"] as const;
 
 const socialReviewSave: McpTool = {
@@ -1884,6 +1964,7 @@ const socialReviewSave: McpTool = {
     "Publish the weekly review Tara reads on the dashboard at /social/review. Write it from social_review. " +
     "`headline`: one encouraging, specific line. `summary`: a short paragraph on the week. `working`, `notWorking`, `why`: plain paragraphs or `- ` bullet lists (blank line between paragraphs; **bold** and *italics* allowed). `tryNext`: at most three concrete things to try next week, as `- ` bullets. " +
     "`fromPeers` (optional): ideas from what broke out for the peer accounts — what they did, framed as something to borrow, never as a comparison. " +
+    "`ideasTried` (optional rows: idea, tried = yes | no | partly | unknown, result): last review's suggestions and what happened. `plan` (optional rows: day, format, idea, keyword): the coming week, one row per post; `keyword` is a comment-trigger word if the post uses one. The scorecard is computed from the data, not written. " +
     "Name posts by what they were (\"the planner-flip reel on Tuesday\"), not by ID. Every review is kept; a second review of the same week replaces the first on the page.",
   readOnly: false,
   schema: {
@@ -1896,6 +1977,25 @@ const socialReviewSave: McpTool = {
     why: { type: "string", required: true },
     tryNext: { type: "string", required: true },
     fromPeers: { type: "string" },
+    ideasTried: {
+      type: "rows",
+      maxRows: 6,
+      fields: {
+        idea: { type: "string", required: true, maxLength: 300 },
+        tried: { type: "enum", values: ["yes", "no", "partly", "unknown"], required: true },
+        result: { type: "string", maxLength: 500 },
+      },
+    },
+    plan: {
+      type: "rows",
+      maxRows: 21,
+      fields: {
+        day: { type: "string", required: true, maxLength: 30 },
+        format: { type: "enum", values: PLAN_FORMATS, required: true },
+        idea: { type: "string", required: true, maxLength: 400 },
+        keyword: { type: "string", maxLength: 40 },
+      },
+    },
   },
   async run(ctx, args) {
     const weekStart = isoDay(args.weekStart as Date);
@@ -1911,7 +2011,9 @@ const socialReviewSave: McpTool = {
       sections[key] = v;
     }
     const fromPeers = typeof args.fromPeers === "string" && args.fromPeers.trim() !== "" ? args.fromPeers.trim().slice(0, 8000) : null;
-    const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, fromPeers, author: "claude", requestedBy: ctx.actor ?? null });
+    const ideasTried = (args.ideasTried as Row[] | undefined)?.map((r) => ({ idea: r.idea!, tried: r.tried!, result: r.result })) ?? null;
+    const plan = (args.plan as Row[] | undefined)?.map((r) => ({ day: r.day!, format: r.format!, idea: r.idea!, keyword: r.keyword })) ?? null;
+    const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, fromPeers, ideasTried, plan, author: "claude", requestedBy: ctx.actor ?? null });
     return { written: true, id: saved.id, weekStart, weekEnd, path: `/social/review/${saved.id}` };
   },
 };
@@ -4317,6 +4419,7 @@ export const ALL_TOOLS: McpTool[] = [
   socialReviewSave,
   socialPeersTool,
   socialPeerSet,
+  socialTargetSet,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,
@@ -4368,6 +4471,20 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
         break;
       case "enum":
         properties[key] = { type: "string", enum: [...spec.values] };
+        break;
+      case "rows":
+        properties[key] = {
+          type: "array",
+          maxItems: spec.maxRows,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: Object.fromEntries(
+              Object.entries(spec.fields).map(([f, fs]) => [f, fs.type === "enum" ? { type: "string", enum: [...fs.values] } : { type: "string" }]),
+            ),
+            required: Object.entries(spec.fields).filter(([, fs]) => fs.required).map(([f]) => f),
+          },
+        };
         break;
       case "number":
         properties[key] = {

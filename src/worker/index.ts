@@ -70,6 +70,8 @@ import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
 import { syncSocialPosts, DEFAULT_MEDIA_LIMIT, type SyncSocialResult } from "@/domain/social/sync";
+import { createFfmpegToolkit } from "@/integrations/video-frames";
+import { fetchMedia, writeTemp } from "@/integrations/media-download";
 import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
@@ -437,6 +439,7 @@ async function main() {
           transcriber: assemblyAiClient ?? undefined,
           embeddingClient: embeddingClient ?? undefined,
           anthropic: anthropicClient ?? undefined,
+          visuals: { video: createFfmpegToolkit(), fetchMedia, writeTemp },
         },
         limit,
       );
@@ -446,7 +449,10 @@ async function main() {
           `${result.snapshots} snapshot(s), followers ${result.followersCount ?? "UNREAD"}, ${result.accountDays} account day(s), ` +
           `${result.peers.read} peer(s) read${result.peers.failed > 0 ? ` (${result.peers.failed} FAILED)` : ""}, ` +
           `${result.transcribed} transcribed${result.retried > 0 ? ` (${result.retried} retries of earlier failures)` : ""}, ` +
-          (result.analysisConfigured ? `${result.analysed} analysed, ${result.analysisFailed} analysis failure(s)` : "analysis NOT configured (ANTHROPIC_API_KEY)"),
+          (result.analysisConfigured ? `${result.analysed} analysed, ${result.analysisFailed} analysis failure(s)` : "analysis NOT configured (ANTHROPIC_API_KEY)") + ", " +
+          (result.visuals.configured
+            ? `visuals: ${result.visuals.analysed} looked at, ${result.visuals.failed} failed, ${result.visuals.unavailable} with nothing to see`
+            : "visuals NOT configured"),
       );
       if (!result.analysisConfigured) console.error("[sync:social] ANTHROPIC_API_KEY not set — posts are not analysed, so the weekly review has no hooks or topics");
       if (result.errors.length > 0) console.error("[sync:social] Errors:", result.errors);
@@ -1608,6 +1614,9 @@ async function main() {
         result.analysisConfigured
           ? `• ${result.analysed} posts analysed${result.analysisFailed > 0 ? `, ${result.analysisFailed} could not be` : ""}`
           : "• Posts NOT analysed — ANTHROPIC_API_KEY is not set",
+        result.visuals.configured
+          ? `• ${result.visuals.analysed} posts looked at for what they show${result.visuals.failed > 0 ? `, ${result.visuals.failed} could not be` : ""}`
+          : "• What posts show was NOT looked at",
       ];
       if (result.errors.length > 0) {
         return { text: `*Instagram sync finished with problems*\n${lines.join("\n")}\n\n${result.errors.map((e) => `• ${e}`).join("\n")}`, isError: true };

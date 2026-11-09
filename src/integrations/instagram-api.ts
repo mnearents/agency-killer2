@@ -108,6 +108,39 @@ export interface IgPeerMedia {
   likeCount: number | null;
   commentsCount: number | null;
   viewCount: number | null;
+  /** Its pictures: an image, a carousel's slides, or a reel's cover. */
+  imageUrls: string[];
+}
+
+/**
+ * A post's pictures and video, fetched fresh because Instagram's links
+ * expire. `videoUrl` is null for a reel carrying licensed music — Instagram
+ * withholds the file — and `coverUrl` is then all there is to look at.
+ */
+export interface IgMediaAssets {
+  videoUrl: string | null;
+  coverUrl: string | null;
+  /** An image, or a carousel's slides in order (a video slide by its cover). */
+  imageUrls: string[];
+}
+
+interface IgChild {
+  media_type: string;
+  media_url?: string;
+  thumbnail_url?: string;
+}
+
+/** A child's picture: an image's own, a video's cover. */
+const childPicture = (c: IgChild) => (c.media_type === "VIDEO" ? c.thumbnail_url : c.media_url) ?? null;
+
+/** The pictures of a post as Instagram describes it. */
+export function picturesOf(m: { media_type: string; media_url?: string; thumbnail_url?: string; children?: { data?: IgChild[] } }): IgMediaAssets {
+  if (m.media_type === "VIDEO") return { videoUrl: m.media_url ?? null, coverUrl: m.thumbnail_url ?? null, imageUrls: [] };
+  if (m.media_type === "CAROUSEL_ALBUM") {
+    const slides = (m.children?.data ?? []).map(childPicture).filter((u): u is string => u !== null);
+    return { videoUrl: null, coverUrl: null, imageUrls: slides.length > 0 ? slides : m.media_url ? [m.media_url] : [] };
+  }
+  return { videoUrl: null, coverUrl: null, imageUrls: m.media_url ? [m.media_url] : [] };
 }
 
 export interface InstagramApiClient {
@@ -122,6 +155,8 @@ export interface InstagramApiClient {
    * through our own account (`igUserId`) by Business Discovery.
    */
   getPeerAccount(igUserId: string, username: string, limit: number): Promise<{ profile: IgPeerProfile; media: IgPeerMedia[] }>;
+  /** One of our posts' pictures and video, as of now. */
+  getMediaAssets(mediaId: string): Promise<IgMediaAssets>;
 }
 
 /** Instagram usernames: letters, digits, dots and underscores, up to 30. */
@@ -357,11 +392,11 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
       const name = username.trim().replace(/^@/, "").toLowerCase();
       // It is interpolated into the field expression, so nothing else may pass.
       if (!IG_USERNAME.test(name)) throw new Error(`"${username}" is not an Instagram username`);
-      const media = `media.limit(${Math.min(Math.max(limit, 1), 100)}){id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count,view_count,media_url,thumbnail_url}`;
+      const media = `media.limit(${Math.min(Math.max(limit, 1), 100)}){id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count,view_count,media_url,thumbnail_url,children{media_type,media_url,thumbnail_url}}`;
       const json = await fetchJson<{
         business_discovery?: {
           username: string; name?: string; followers_count: number; media_count: number;
-          media?: { data?: Array<IgMedia & { view_count?: number }> };
+          media?: { data?: Array<IgMedia & { view_count?: number; children?: { data?: IgChild[] } }> };
         };
       }>(buildUrl(igUserId, { fields: `business_discovery.username(${name}){username,name,followers_count,media_count,${media}}` }));
       const bd = json.business_discovery;
@@ -379,8 +414,19 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
           likeCount: m.like_count ?? null,
           commentsCount: m.comments_count ?? null,
           viewCount: m.view_count ?? null,
+          imageUrls: (() => {
+            const p = picturesOf(m);
+            return p.imageUrls.length > 0 ? p.imageUrls : p.coverUrl ? [p.coverUrl] : [];
+          })(),
         })),
       };
+    },
+
+    async getMediaAssets(mediaId) {
+      const json = await fetchJson<{ media_type: string; media_url?: string; thumbnail_url?: string; children?: { data?: IgChild[] } }>(
+        buildUrl(mediaId, { fields: "media_type,media_url,thumbnail_url,children{media_type,media_url,thumbnail_url}" }),
+      );
+      return picturesOf(json);
     },
 
     async getAccountDay(igUserId, day) {

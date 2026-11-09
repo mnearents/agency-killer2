@@ -30,11 +30,23 @@ export type ArgSpec =
   | { type: "number"; required?: boolean; default?: number; min?: number; max?: number }
   | { type: "boolean"; required?: boolean; default?: boolean }
   | { type: "enum"; values: readonly string[]; required?: boolean; default?: string }
-  | { type: "date"; required?: boolean };
+  | { type: "date"; required?: boolean }
+  /**
+   * A short list of flat objects — a week's plan, one row per post. Each row
+   * is held to the same rules as the arguments themselves: an undeclared
+   * field is an error, a required one may not be missing or blank.
+   */
+  | { type: "rows"; fields: Record<string, RowFieldSpec>; maxRows: number; required?: boolean };
+
+export type RowFieldSpec =
+  | { type: "string"; required?: boolean; maxLength?: number }
+  | { type: "enum"; values: readonly string[]; required?: boolean };
+
+export type Row = Record<string, string | null>;
 
 export type ArgSchema = Record<string, ArgSpec>;
 
-export type ParsedArgs = Record<string, string | number | boolean | Date>;
+export type ParsedArgs = Record<string, string | number | boolean | Date | Row[]>;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -87,7 +99,43 @@ function parseInteger(key: string, raw: unknown, spec: { min?: number; max?: num
   return value;
 }
 
-function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date {
+function parseRows(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "rows" }>): Row[] {
+  if (!Array.isArray(raw)) throw new McpArgumentError(`"${key}" must be a list of objects, got: ${JSON.stringify(raw)}`);
+  if (raw.length > spec.maxRows) throw new McpArgumentError(`"${key}" may have at most ${spec.maxRows} rows, got ${raw.length}`);
+  return raw.map((item, i) => {
+    const where = `${key}[${i}]`;
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new McpArgumentError(`${where} must be an object, got: ${JSON.stringify(item)}`);
+    }
+    const obj = item as Record<string, unknown>;
+    for (const field of Object.keys(obj)) {
+      if (!(field in spec.fields)) {
+        throw new McpArgumentError(`${where}: unknown field "${field}". Rows take: ${Object.keys(spec.fields).join(", ")}`);
+      }
+    }
+    const row: Row = {};
+    for (const [field, fs] of Object.entries(spec.fields)) {
+      const value = obj[field];
+      if (value === undefined || value === null) {
+        if (fs.required) throw new McpArgumentError(`${where}: missing "${field}"`);
+        row[field] = null;
+        continue;
+      }
+      if (typeof value !== "string") throw new McpArgumentError(`${where}.${field} must be a string, got: ${JSON.stringify(value)}`);
+      const text = value.trim();
+      if (fs.type === "enum") {
+        if (!fs.values.includes(text)) throw new McpArgumentError(`${where}.${field} must be one of: ${fs.values.join(", ")}. Got: ${JSON.stringify(value)}`);
+      } else {
+        if (text === "" && fs.required) throw new McpArgumentError(`${where}.${field} is blank`);
+        if (fs.maxLength !== undefined && text.length > fs.maxLength) throw new McpArgumentError(`${where}.${field} is over ${fs.maxLength} characters`);
+      }
+      row[field] = text === "" ? null : text;
+    }
+    return row;
+  });
+}
+
+function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date | Row[] {
   switch (spec.type) {
     case "string":
       if (typeof raw !== "string") {
@@ -112,6 +160,8 @@ function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | b
       return raw;
     case "date":
       return parseDate(key, raw);
+    case "rows":
+      return parseRows(key, raw, spec);
   }
 }
 

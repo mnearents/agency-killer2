@@ -33,6 +33,12 @@ describe("sync:social wiring", () => {
     expect(task?.[0]).toMatch(/anthropic: anthropicClient \?\? undefined/);
   });
 
+  // Without them the sync reports visuals unconfigured every day and the
+  // review never learns what a post shows.
+  it("gives the sync ffmpeg and the downloader, so posts are looked at", () => {
+    expect(task?.[0]).toMatch(/visuals: \{ video: createFfmpegToolkit\(\), fetchMedia, writeTemp \}/);
+  });
+
   it("records the run inside the shared task", () => {
     expect(task?.[0]).toMatch(/recorded\("sync:social"/);
   });

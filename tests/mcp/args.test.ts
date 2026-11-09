@@ -252,3 +252,47 @@ describe("number arguments", () => {
     expect(parseArgs({}, spec)).toEqual({});
   });
 });
+
+describe("rows arguments", () => {
+  const schema = {
+    plan: {
+      type: "rows" as const,
+      maxRows: 3,
+      fields: {
+        day: { type: "string" as const, required: true },
+        format: { type: "enum" as const, values: ["reel", "carousel"], required: true },
+        keyword: { type: "string" as const },
+      },
+    },
+  };
+
+  it("reads each row, leaving an optional field it was not given as null", () => {
+    expect(parseArgs({ plan: [{ day: "Mon", format: "reel", keyword: "BOOK" }, { day: "Tue", format: "carousel" }] }, schema)).toEqual({
+      plan: [{ day: "Mon", format: "reel", keyword: "BOOK" }, { day: "Tue", format: "carousel", keyword: null }],
+    });
+  });
+
+  // The same rule as top-level arguments: a field nobody declared is a
+  // mistake to report, not something to drop.
+  it("refuses a field the rows do not have", () => {
+    expect(() => parseArgs({ plan: [{ day: "Mon", format: "reel", mood: "x" }] }, schema)).toThrow(/plan\[0\]: unknown field "mood"/);
+  });
+
+  it("refuses a row missing a required field, naming the row", () => {
+    expect(() => parseArgs({ plan: [{ day: "Mon", format: "reel" }, { format: "reel" }] }, schema)).toThrow(/plan\[1\]: missing "day"/);
+  });
+
+  it("refuses a value outside an enum", () => {
+    expect(() => parseArgs({ plan: [{ day: "Mon", format: "story" }] }, schema)).toThrow(/plan\[0\]\.format/);
+  });
+
+  it("refuses more rows than allowed, and anything that is not a list of objects", () => {
+    expect(() => parseArgs({ plan: Array(4).fill({ day: "Mon", format: "reel" }) }, schema)).toThrow(/at most 3/);
+    expect(() => parseArgs({ plan: "Mon reel" }, schema)).toThrow(/list/);
+    expect(() => parseArgs({ plan: ["Mon"] }, schema)).toThrow(/plan\[0\]/);
+  });
+
+  it("refuses a blank required field", () => {
+    expect(() => parseArgs({ plan: [{ day: "  ", format: "reel" }] }, schema)).toThrow(/plan\[0\]\.day/);
+  });
+});

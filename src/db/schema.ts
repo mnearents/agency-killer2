@@ -20,7 +20,11 @@ import {
   uniqueIndex,
   index,
   vector,
+  customType,
 } from "drizzle-orm/pg-core";
+
+/** Raw bytes — a reel's contact sheet. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 // ─── Meta Ads ──────────────────────────────────────────────────────────
 
@@ -865,6 +869,10 @@ export const socialReviews = pgTable(
     tryNext: text("try_next").notNull(),
     /** Optional: what is working for the peer accounts, as ideas. */
     fromPeers: text("from_peers"),
+    /** Last review's suggestions and whether they were tried. */
+    ideasTried: jsonb("ideas_tried").$type<Array<{ idea: string; tried: string; result: string | null }>>(),
+    /** The coming week, one row per post. */
+    plan: jsonb("plan").$type<Array<{ day: string; format: string; idea: string; keyword: string | null }>>(),
     author: text("author").notNull(),
     requestedBy: text("requested_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -919,11 +927,82 @@ export const socialPeerPosts = pgTable(
     likeCount: integer("like_count"),
     commentsCount: integer("comments_count"),
     viewCount: integer("view_count"),
+    /**
+     * The pictures Business Discovery gave at the last sync — image, slides,
+     * or a reel's cover (never its video). Instagram's links expire, so this
+     * is refreshed each sync and read soon after.
+     */
+    imageUrls: jsonb("image_urls").$type<string[]>(),
     postedAt: timestamp("posted_at", { withTimezone: true }).notNull(),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull(),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
   },
   (table) => [index("social_peer_posts_user_posted_idx").on(table.username, table.postedAt)]
+);
+
+/**
+ * What a post SHOWS — ours or a peer's — read by Claude from what Instagram
+ * gives: frames of a reel's video, its cover when the video is withheld
+ * (licensed music), an image, or a carousel's slides (`basis`). Cuts, length
+ * and loudness are measured by ffmpeg, not judged.
+ *
+ * status: ok | error (retried three times) | unavailable (nothing to look at).
+ */
+export const socialPostVisuals = pgTable("social_post_visuals", {
+  postId: text("post_id").primaryKey(),
+  /** own | peer */
+  account: text("account").notNull(),
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  /** frames | cover | image | slides */
+  basis: text("basis"),
+  frameTimesMs: jsonb("frame_times_ms").$type<number[]>(),
+  imageCount: integer("image_count"),
+  summary: text("summary"),
+  visualType: text("visual_type"),
+  handDrawn: integer("hand_drawn"),
+  onScreenText: jsonb("on_screen_text").$type<Array<{ at: string; text: string }>>(),
+  firstFrame: text("first_frame"),
+  visualHook: text("visual_hook"),
+  faceInFirst2s: integer("face_in_first_2s"),
+  productVisible: integer("product_visible"),
+  productFirstSeen: text("product_first_seen"),
+  setting: text("setting"),
+  emotion: text("emotion"),
+  branding: integer("branding"),
+  /** speech | music-or-sound | silent | licensed-music-likely | sound-unclassified | unknown */
+  audio: text("audio"),
+  durationMs: integer("duration_ms"),
+  cuts: integer("cuts"),
+  cutsPerMinute: real("cuts_per_minute"),
+  meanVolumeDb: real("mean_volume_db"),
+  /** The frames tiled into one JPEG, for the dashboard. Reels with video only. */
+  contactSheet: bytea("contact_sheet"),
+  detail: text("detail"),
+  analysedAt: timestamp("analysed_at", { withTimezone: true }).notNull(),
+});
+
+/**
+ * Organic social targets, set by a person: `followers` (a count by
+ * `targetDate`), `posts_per_week` and `reels_per_week`. Append-only; the
+ * newest per metric is current. No target is "no target", never zero.
+ */
+export const socialTargets = pgTable(
+  "social_targets",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    metric: text("metric").notNull(),
+    /** Null clears the target. */
+    value: integer("value"),
+    targetDate: date("target_date", { mode: "string" }),
+    notes: text("notes"),
+    author: text("author").notNull(),
+    requestedBy: text("requested_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("social_targets_metric_created_idx").on(table.metric, table.createdAt)]
 );
 
 export type SocialPost = typeof socialPosts.$inferSelect;

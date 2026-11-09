@@ -5,8 +5,8 @@
 
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { socialAccountDays, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialReviews } from "@/db/schema";
-import { formatGroup, type AccountDayRow, type ReviewPost } from "./review";
+import { socialAccountDays, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets } from "@/db/schema";
+import { formatGroup, type AccountDayRow, type ReviewPost, type ReviewPostVisual, type TargetMetric } from "./review";
 import type { PeerDay, PeerPost } from "./peers";
 
 /**
@@ -48,9 +48,28 @@ export async function getReviewPosts(db: Db, since: Date): Promise<ReviewPost[]>
       product: socialPostAnalyses.product,
       callToAction: socialPostAnalyses.callToAction,
       basis: socialPostAnalyses.basis,
+      visualStatus: socialPostVisuals.status,
+      vBasis: socialPostVisuals.basis,
+      vType: socialPostVisuals.visualType,
+      vHook: socialPostVisuals.visualHook,
+      vFace: socialPostVisuals.faceInFirst2s,
+      vProduct: socialPostVisuals.productVisible,
+      vProductFirst: socialPostVisuals.productFirstSeen,
+      vHandDrawn: socialPostVisuals.handDrawn,
+      vAudio: socialPostVisuals.audio,
+      vCuts: socialPostVisuals.cuts,
+      vCutsPerMinute: socialPostVisuals.cutsPerMinute,
+      vSummary: socialPostVisuals.summary,
+      vText: socialPostVisuals.onScreenText,
+      vFirstFrame: socialPostVisuals.firstFrame,
+      vSetting: socialPostVisuals.setting,
+      vEmotion: socialPostVisuals.emotion,
+      vBranding: socialPostVisuals.branding,
+      vHasSheet: sql<boolean>`${socialPostVisuals.contactSheet} IS NOT NULL`,
     })
     .from(socialPosts)
     .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPosts.id))
+    .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
     .where(and(gte(socialPosts.postedAt, since), sql`${socialPosts.mediaProductType} IS DISTINCT FROM 'STORY'`))
     .orderBy(desc(socialPosts.postedAt));
 
@@ -80,7 +99,28 @@ export async function getReviewPosts(db: Db, since: Date): Promise<ReviewPost[]>
           topic: r.topic, summary: r.summary, product: r.product, callToAction: r.callToAction, basis: r.basis,
         }
       : null,
+    visual: toVisual(r),
   }));
+}
+
+type VisualColumns = {
+  visualStatus: string | null; vBasis: string | null; vType: string | null; vHook: string | null; vFace: number | null;
+  vProduct: number | null; vProductFirst: string | null; vHandDrawn: number | null; vAudio: string | null; vCuts: number | null;
+  vCutsPerMinute: number | null; vSummary: string | null; vText: Array<{ at: string; text: string }> | null; vFirstFrame: string | null;
+  vSetting: string | null; vEmotion: string | null; vBranding: number | null; vHasSheet: boolean | null;
+};
+
+const asBool = (v: number | null) => (v === null ? null : v === 1);
+
+/** A finished visual analysis, or null — an error or "nothing to see" is not one. */
+function toVisual(r: VisualColumns): ReviewPostVisual | null {
+  if (r.visualStatus !== "ok") return null;
+  return {
+    basis: r.vBasis, visualType: r.vType, visualHook: r.vHook, faceInFirst2s: asBool(r.vFace), productVisible: asBool(r.vProduct),
+    productFirstSeen: r.vProductFirst, handDrawn: asBool(r.vHandDrawn), audio: r.vAudio, cuts: r.vCuts, cutsPerMinute: r.vCutsPerMinute,
+    summary: r.vSummary, onScreenText: r.vText, firstFrame: r.vFirstFrame, setting: r.vSetting, emotion: r.vEmotion,
+    branding: asBool(r.vBranding), hasContactSheet: r.vHasSheet === true,
+  };
 }
 
 /** Account days between two dates inclusive, oldest first. */
@@ -194,9 +234,28 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       approach: socialPostAnalyses.approach,
       audience: socialPostAnalyses.audience,
       topic: socialPostAnalyses.topic,
+      visualStatus: socialPostVisuals.status,
+      vBasis: socialPostVisuals.basis,
+      vType: socialPostVisuals.visualType,
+      vHook: socialPostVisuals.visualHook,
+      vFace: socialPostVisuals.faceInFirst2s,
+      vProduct: socialPostVisuals.productVisible,
+      vProductFirst: socialPostVisuals.productFirstSeen,
+      vHandDrawn: socialPostVisuals.handDrawn,
+      vAudio: socialPostVisuals.audio,
+      vCuts: socialPostVisuals.cuts,
+      vCutsPerMinute: socialPostVisuals.cutsPerMinute,
+      vSummary: socialPostVisuals.summary,
+      vText: socialPostVisuals.onScreenText,
+      vFirstFrame: socialPostVisuals.firstFrame,
+      vSetting: socialPostVisuals.setting,
+      vEmotion: socialPostVisuals.emotion,
+      vBranding: socialPostVisuals.branding,
+      vHasSheet: sql<boolean>`${socialPostVisuals.contactSheet} IS NOT NULL`,
     })
     .from(socialPeerPosts)
     .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPeerPosts.id))
+    .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
     .where(gte(socialPeerPosts.postedAt, since))
     .orderBy(desc(socialPeerPosts.postedAt));
   return rows.map((r) => ({
@@ -213,6 +272,7 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
     analysis: r.analysisStatus === "ok"
       ? { hook: r.hook, hookType: r.hookType, approach: r.approach, audience: r.audience, topic: r.topic }
       : null,
+    visual: toVisual(r),
   }));
 }
 
@@ -229,4 +289,35 @@ export async function getPeerDays(db: Db, from: string, to: string): Promise<Arr
     .from(socialPeerDays)
     .where(and(gte(socialPeerDays.day, from), lte(socialPeerDays.day, to)))
     .orderBy(socialPeerDays.day);
+}
+
+export interface SocialTarget {
+  metric: TargetMetric;
+  value: number | null;
+  targetDate: string | null;
+  notes: string | null;
+  setAt: Date;
+  requestedBy: string | null;
+}
+
+/** The current target per metric — the newest row; a null value is a cleared one. */
+export async function getTargets(db: Db): Promise<SocialTarget[]> {
+  const rows = await db
+    .selectDistinctOn([socialTargets.metric], {
+      metric: socialTargets.metric, value: socialTargets.value, targetDate: socialTargets.targetDate,
+      notes: socialTargets.notes, setAt: socialTargets.createdAt, requestedBy: socialTargets.requestedBy,
+    })
+    .from(socialTargets)
+    .orderBy(socialTargets.metric, desc(socialTargets.createdAt));
+  return rows.map((r) => ({ ...r, metric: r.metric as TargetMetric }));
+}
+
+export async function recordTarget(db: Db, t: { metric: TargetMetric; value: number | null; targetDate: string | null; notes: string | null; requestedBy: string | null }): Promise<void> {
+  await db.insert(socialTargets).values({ ...t, author: "claude" });
+}
+
+/** A reel's contact sheet, for the dashboard. */
+export async function getContactSheet(db: Db, postId: string): Promise<Buffer | null> {
+  const [row] = await db.select({ sheet: socialPostVisuals.contactSheet }).from(socialPostVisuals).where(eq(socialPostVisuals.postId, postId)).limit(1);
+  return row?.sheet ?? null;
 }

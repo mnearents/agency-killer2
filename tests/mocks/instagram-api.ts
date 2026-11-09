@@ -27,6 +27,7 @@ export function createMockInstagramApiClient(
       views: null, viewsReel: null, viewsPost: null, viewsCarousel: null, viewsStory: null, viewsAd: null,
       profileViews: null, accountsEngaged: null,
     }),
+    getMediaAssets: vi.fn().mockResolvedValue({ videoUrl: null, coverUrl: null, imageUrls: [] }),
     getPeerAccount: vi.fn().mockRejectedValue(new Error("no peer configured in this mock")),
     ...overrides,
   };
