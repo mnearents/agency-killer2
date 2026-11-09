@@ -60,7 +60,8 @@ export function transformMediaToPost(input: TransformInput): NewSocialPost {
     mediaType: media.media_type,
     mediaProductType: media.media_product_type ?? null,
     permalink: media.permalink ?? null,
-    thumbnailUrl: media.thumbnail_url ?? null,
+    // A video's media_url is the video file; an image's is its picture.
+    thumbnailUrl: media.thumbnail_url ?? (media.media_type === "VIDEO" ? null : media.media_url ?? null),
     likeCount: media.like_count ?? 0,
     commentsCount: media.comments_count ?? 0,
     impressions: insights?.impressions ?? 0,
@@ -91,6 +92,8 @@ export function postUpsertSet(insightsOk: boolean): Record<string, ReturnType<ty
     caption: sql`EXCLUDED.caption`,
     likeCount: sql`EXCLUDED.like_count`,
     commentsCount: sql`EXCLUDED.comments_count`,
+    // Instagram's links expire; the newest is the one that loads.
+    thumbnailUrl: sql`EXCLUDED.thumbnail_url`,
     syncedAt: sql`EXCLUDED.synced_at`,
     updatedAt: sql`NOW()`,
   };

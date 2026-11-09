@@ -7,6 +7,7 @@ import {
   transformMediaToPost,
   syncSocialPosts,
   DEFAULT_MEDIA_LIMIT,
+  postUpsertSet,
   type TransformInput,
 } from "@/domain/social/sync";
 import type { IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
@@ -419,5 +420,25 @@ describe("syncSocialPosts — what each post was", () => {
   it("says analysis is not configured without an Anthropic client, rather than reporting none to do", async () => {
     const r = await syncSocialPosts({ client: client(), db: fakeDb({ social_posts: [candidate] }).db, igUserId: "ig1", now: () => NOW, sleep: noSleep });
     expect(r.analysisConfigured).toBe(false);
+  });
+});
+
+describe("thumbnails", () => {
+  // The review page shows each post. Images and carousels have no
+  // thumbnail_url — their picture is media_url — and Instagram's links
+  // expire, so each sync refreshes the one held.
+  it("uses an image's own picture as its thumbnail", () => {
+    const r = transformMediaToPost({ media: makeMedia({ thumbnail_url: undefined, media_url: "https://cdn/img.jpg" }), insights: null, igUserId: "ig", syncedAt: NOW });
+    expect(r.thumbnailUrl).toBe("https://cdn/img.jpg");
+  });
+
+  it("never uses a video file as a thumbnail", () => {
+    const r = transformMediaToPost({ media: makeMedia({ media_type: "VIDEO", thumbnail_url: undefined, media_url: "https://cdn/v.mp4" }), insights: null, igUserId: "ig", syncedAt: NOW });
+    expect(r.thumbnailUrl).toBeNull();
+  });
+
+  it("refreshes the thumbnail on every sync, measured or not", () => {
+    expect(Object.keys(postUpsertSet(false))).toContain("thumbnailUrl");
+    expect(Object.keys(postUpsertSet(true))).toContain("thumbnailUrl");
   });
 });

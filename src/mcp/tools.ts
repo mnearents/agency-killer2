@@ -58,6 +58,8 @@ import {
 } from "@/domain/attentive/queries";
 import { describeAttentiveCoverage, getAttentiveSyncState, ATTENTIVE_UNAVAILABLE } from "@/domain/attentive/coverage";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
+import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview } from "@/domain/social/review-queries";
+import { buildBaselines, measuresOf, scorePost, findPatterns, summariseAccountDays, isSettled, BASELINE_DAYS } from "@/domain/social/review";
 import { getInventoryItems, getPoolVariantRows } from "@/domain/inventory/queries";
 import {
   assessPool,
@@ -1676,6 +1678,172 @@ async function section<T>(build: () => Promise<T>): Promise<T | { error: string 
 }
 
 type Json = Record<string, any>;
+
+const shiftDay = (day: string, n: number) => isoDay(new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000));
+const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10);
+
+const socialReview: McpTool = {
+  name: "social_review",
+  title: "Weekly organic Instagram review — the data",
+  description:
+    "Everything the weekly organic Instagram review is written from, for one week (default: the 7 complete days ending yesterday; or pass `weekStart`). " +
+    "`account`: follows, unfollows, net growth, follower count, share of reach that was NEW people (non-followers — what growth is made of), organic views by surface (reels, posts, carousels, stories; ad views kept apart), for this week, the week before, and the four weeks before that. " +
+    "`posts`: every post in the week with its numbers, `vsUsual` (each measure as a multiple of HER OWN median for that format over 90 days: 2 = twice her usual), a `verdict` (breakout ≥3x, above ≥1.25x, typical, below ≤0.75x, settling under 48h, not-enough-history, not-measured), and what it was — hook, hook type, approach, audience, topic, the words of its first three seconds, its length. " +
+    "`usual`: her medians per format. `patterns`: over 90 days, which hook types, approaches, audiences, topics, formats and reel lengths beat her usual (groups of 3+ posts only). `coverage`: what the numbers lack — read it before concluding anything. `previousReview`: last review's suggestions, to check whether they were tried. " +
+    "Write the review for Tara, who makes the content and reads it on the dashboard: plain words, no jargon or raw ratios without meaning, lead with what worked and why, be honest about what did not, and end with at most three concrete things to try. " +
+    "Compare her only with her own usual — never with other accounts. Viral reach comes from the first seconds holding strangers and from shares, a learnable craft separate from production quality. Save it with social_review_save.",
+  readOnly: true,
+  schema: { weekStart: { type: "date" } },
+  async run(ctx, args) {
+    const now = ctx.now();
+    const start = args.weekStart instanceof Date ? isoDay(args.weekStart) : shiftDay(isoDay(now), -7);
+    const end = shiftDay(start, 6);
+    const since = new Date(Math.min(Date.parse(`${start}T00:00:00Z`), now.getTime() - BASELINE_DAYS * 86_400_000));
+
+    const [posts, days, previous] = await Promise.all([
+      getReviewPosts(ctx.db, since),
+      getAccountDayRows(ctx.db, shiftDay(start, -28), end),
+      getLatestReview(ctx.db),
+    ]);
+
+    const baselines = buildBaselines(posts, now);
+    const inWeek = posts
+      .filter((p) => { const d = isoDay(p.postedAt); return d >= start && d <= end; })
+      .sort((a, b) => a.postedAt.getTime() - b.postedAt.getTime());
+
+    const described = inWeek.map((p) => {
+      const m = measuresOf(p);
+      const score = scorePost(p, baselines, now);
+      return {
+        id: p.id,
+        postedAt: p.postedAt.toISOString(),
+        format: p.format,
+        permalink: p.permalink,
+        caption: p.caption ? p.caption.slice(0, 400) : null,
+        hook: p.analysis?.hook ?? null,
+        hookSource: p.analysis?.hookSource ?? null,
+        hookType: p.analysis?.hookType ?? null,
+        approach: p.analysis?.approach ?? null,
+        audience: p.analysis?.audience ?? null,
+        topic: p.analysis?.topic ?? null,
+        summary: p.analysis?.summary ?? null,
+        analysedFrom: p.analysis?.basis ?? null,
+        openingWords: p.openingWords,
+        lengthSeconds: p.durationMs !== null ? Math.round(p.durationMs / 1000) : null,
+        views: m.views,
+        reach: m.reach,
+        likes: p.likes,
+        comments: p.comments,
+        saves: p.saved,
+        shares: m.shareRate !== null ? p.shares : null,
+        reposts: p.reposts,
+        follows: p.follows,
+        profileVisits: p.profileVisits,
+        avgWatchSeconds: m.avgWatchSeconds !== null ? Math.round(m.avgWatchSeconds * 10) / 10 : null,
+        watchThroughPct: pct(m.watchThrough),
+        engagementRatePct: pct(m.engagementRate),
+        shareRatePct: m.shareRate !== null ? Math.round(m.shareRate * 10_000) / 100 : null,
+        saveRatePct: m.saveRate !== null ? Math.round(m.saveRate * 10_000) / 100 : null,
+        verdict: score.verdict,
+        judgedOn: score.judgedOn,
+        vsUsual: score.vsUsual,
+        ageHours: score.ageHours,
+      };
+    });
+
+    const usual = [...baselines.entries()].map(([format, b]) => ({
+      format,
+      views: b.views,
+      reach: b.reach,
+      engagementRatePct: { median: pct(b.engagementRate.median), n: b.engagementRate.n },
+      shareRatePct: { median: b.shareRate.median !== null ? Math.round(b.shareRate.median * 10_000) / 100 : null, n: b.shareRate.n },
+      saveRatePct: { median: b.saveRate.median !== null ? Math.round(b.saveRate.median * 10_000) / 100 : null, n: b.saveRate.n },
+      avgWatchSeconds: b.avgWatchSeconds,
+      watchThroughPct: { median: pct(b.watchThrough.median), n: b.watchThrough.n },
+    }));
+
+    const thisWeek = summariseAccountDays(days, start, end);
+    const notes: string[] = [];
+    if (thisWeek.daysMeasured < thisWeek.daysInRange) {
+      notes.push(`Account insight held for ${thisWeek.daysMeasured} of ${thisWeek.daysInRange} days: follows, reach and views are partial.`);
+    }
+    if (thisWeek.followers === null || thisWeek.followers.firstOn === thisWeek.followers.lastOn) {
+      notes.push("Follower count is read once a day from 2026-11-09; until two readings exist in a week, growth is follows minus unfollows.");
+    }
+    const withViews = described.filter((p) => p.views !== null).length;
+    if (withViews < described.length) {
+      notes.push(`${described.length - withViews} post(s) have no views or shares measured: synced before 2026-11-09, when reels were not asked for them, or their insights failed.`);
+    }
+    const analysed = described.filter((p) => p.hookType !== null).length;
+    if (analysed < described.length) notes.push(`${described.length - analysed} post(s) not yet analysed for hook and topic — a reel waits for its transcript.`);
+    const reels = described.filter((p) => p.format === "reel");
+    const reelsWithLength = reels.filter((p) => p.lengthSeconds !== null).length;
+    if (reelsWithLength < reels.length) notes.push(`${reels.length - reelsWithLength} reel(s) have no length (silent, or transcribed before lengths were kept), so no watch-through.`);
+    notes.push("Analysis reads words only (caption and speech): on-screen text, visuals and music are invisible to it.");
+
+    return {
+      week: { start, end },
+      account: {
+        thisWeek,
+        previousWeek: summariseAccountDays(days, shiftDay(start, -7), shiftDay(start, -1)),
+        fourWeeksBefore: summariseAccountDays(days, shiftDay(start, -28), shiftDay(start, -1)),
+      },
+      posts: described,
+      usual,
+      patterns: findPatterns(posts, baselines, now).slice(0, 40),
+      coverage: {
+        postsInWeek: described.length,
+        postsWithViews: withViews,
+        postsAnalysed: analysed,
+        reelsWithLength,
+        accountDaysMeasured: thisWeek.daysMeasured,
+        baselinePosts: posts.filter((p) => isSettled(p, now)).length,
+        notes,
+      },
+      previousReview: previous
+        ? { id: previous.id, weekStart: previous.weekStart, weekEnd: previous.weekEnd, headline: previous.headline, tryNext: previous.tryNext }
+        : null,
+    };
+  },
+};
+
+const REVIEW_SECTIONS = ["summary", "working", "notWorking", "why", "tryNext"] as const;
+
+const socialReviewSave: McpTool = {
+  name: "social_review_save",
+  title: "Save the weekly organic Instagram review",
+  description:
+    "Publish the weekly review Tara reads on the dashboard at /social/review. Write it from social_review. " +
+    "`headline`: one encouraging, specific line. `summary`: a short paragraph on the week. `working`, `notWorking`, `why`: plain paragraphs or `- ` bullet lists (blank line between paragraphs; **bold** allowed). `tryNext`: at most three concrete things to try next week, as `- ` bullets. " +
+    "Name posts by what they were (\"the planner-flip reel on Tuesday\"), not by ID. Every review is kept; a second review of the same week replaces the first on the page.",
+  readOnly: false,
+  schema: {
+    weekStart: { type: "date", required: true },
+    weekEnd: { type: "date", required: true },
+    headline: { type: "string", required: true },
+    summary: { type: "string", required: true },
+    working: { type: "string", required: true },
+    notWorking: { type: "string", required: true },
+    why: { type: "string", required: true },
+    tryNext: { type: "string", required: true },
+  },
+  async run(ctx, args) {
+    const weekStart = isoDay(args.weekStart as Date);
+    const weekEnd = isoDay(args.weekEnd as Date);
+    if (weekEnd < weekStart) throw new McpArgumentError(`weekEnd ${weekEnd} is before weekStart ${weekStart}`);
+    const headline = (args.headline as string).trim();
+    if (headline === "" || headline.length > 160) throw new McpArgumentError("headline must be 1-160 characters");
+    const sections = {} as Record<(typeof REVIEW_SECTIONS)[number], string>;
+    for (const key of REVIEW_SECTIONS) {
+      const v = (args[key] as string).trim();
+      if (v === "") throw new McpArgumentError(`${key} is empty`);
+      if (v.length > 8000) throw new McpArgumentError(`${key} is over 8000 characters`);
+      sections[key] = v;
+    }
+    const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, author: "claude", requestedBy: ctx.actor ?? null });
+    return { written: true, id: saved.id, weekStart, weekEnd, path: `/social/review/${saved.id}` };
+  },
+};
 
 const marketingContext: McpTool = {
   name: "marketing_context",
@@ -4074,6 +4242,8 @@ export const ALL_TOOLS: McpTool[] = [
   adAssetsTool,
   adAssetSet,
   marketingContext,
+  socialReview,
+  socialReviewSave,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

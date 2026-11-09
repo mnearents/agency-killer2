@@ -47,6 +47,9 @@ export default function RootLayout({
           <a href="/social" style={{ color: "#666", textDecoration: "none" }}>
             Social
           </a>
+          <a href="/social/review" style={{ color: "#666", textDecoration: "none" }}>
+            Weekly Review
+          </a>
           <a href="/calendar" style={{ color: "#666", textDecoration: "none" }}>
             Calendar
           </a>

@@ -348,6 +348,48 @@ The same sync now marks an order recurring when it contains a Subscription
 product, not only when it carries a subscription tag (5b): pre-Seal renewals
 had the plan but no tag. Migration 0052 applied the rule to stored orders.
 
+### Organic Instagram — growth, judged against her own usual
+
+The goal is engagement and follower growth on Tara's account (128k
+followers, ~2 posts a day). `sync:social` (13:30 UTC, `!sync social [posts]`
+up to 100 to reach back) collects; Claude interprets, weekly.
+
+- **Until 2026-11-09 no reel had views, shares or watch time.** The client
+  chose metrics by `media_product_type` but was handed `media_type` (VIDEO
+  for reels and feed videos alike), so reels got the feed set. Each type now
+  asks for exactly what it supports — **one refused metric fails the whole
+  call** — probed live: reels give views, reach, saves, shares, reposts and
+  average/total watch time but refuse follows and profile visits; feed posts
+  give follows and profile visits but no watch time. There is no duration
+  field: a reel's length comes from its AssemblyAI transcript, so a silent
+  reel has none and no watch-through.
+- **Null is unmeasured.** New measures are nullable; a failed insights fetch
+  no longer upserts zeros over held numbers, and a post never measured says
+  `insights_status = 'failed'`. Shares were never requested before either,
+  so share and engagement rates exist only for posts with `views`.
+- **Per day:** `social_post_snapshots` (each measured post's numbers that
+  day — how a post's life went) and `social_account_days` (follows,
+  unfollows, reach split follower/non-follower, views by surface with ads
+  apart, profile visits; follower count from each sync). Instagram serves
+  about a month of account days; older ones come back empty, read as null.
+  `follows_and_unfollows` by `follow_type`: FOLLOWER = followed,
+  NON_FOLLOWER = unfollowed.
+- **What each post was** (`social_post_analyses`): Claude reads caption and
+  transcript for hook, hook type, topic, approach, audience, product, call
+  to action — fixed vocabularies so patterns count, words only (on-screen
+  text and visuals are invisible). A reel waits for its transcript;
+  unreadable answers are errors, retried three times.
+- **`social_review`** (MCP) assembles a week: account vs the week before and
+  the four before; each post's `vsUsual` against HER median for that format
+  over 90 days (settled 48h+, five posts minimum) and a verdict; 90-day
+  patterns (groups of 3+); coverage notes; last review's suggestions.
+  **Never compare her with other accounts** — viral reach is the first
+  seconds holding strangers plus shares, a craft separate from production.
+- **`social_review_save`** publishes the written review to
+  `/social/review` on the dashboard (archive at `/social/review/<id>`),
+  where Tara reads it with the week's numbers and posts beside it. Written
+  weekly by a scheduled Claude task Matt runs over the hosted MCP.
+
 ### Goals and pace
 
 `goals` holds revenue targets by period (YYYY or YYYY-MM) and line (total,
@@ -389,11 +431,11 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; twelve are not.** The writers are
+- **Most tools are read-only; thirteen are not.** The writers are
   `ad_asset_set`, `calendar_add`, `calendar_update`, `calendar_remove`,
   `draft_save`, `draft_record_decision`, `experiment_start`,
   `experiment_record_result`, `goals_set`, `pilot_notes_add`,
-  `product_strategy_set` and `segment_push`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+  `product_strategy_set`, `segment_push` and `social_review_save`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and

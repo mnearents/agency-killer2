@@ -13,6 +13,7 @@ import {
   shopifyOrders,
   shopifyInventory,
   socialPosts,
+  socialAccountDays,
   attentiveCampaigns,
   sealSubscriptions,
   syncRuns,
@@ -170,7 +171,11 @@ export const FRESHNESS_SOURCES = [
     { source: "Shopify orders", table: shopifyOrders, name: "shopify_orders", column: shopifyOrders.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Shopify inventory", table: shopifyInventory, name: "shopify_inventory", column: shopifyInventory.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
     { source: "Subscriptions (Seal)", table: sealSubscriptions, name: "seal_subscriptions", column: sealSubscriptions.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
-    { source: "Instagram/Facebook posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS },
+    { source: "Instagram posts", table: socialPosts, name: "social_posts", column: socialPosts.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:social" },
+    // Follows, unfollows and reach to non-followers: what the weekly review
+    // measures growth by. Read by the same sync, but a failed account read
+    // leaves the posts fresh, so it is watched on its own.
+    { source: "Instagram account days", table: socialAccountDays, name: "social_account_days", column: socialAccountDays.insightsFetchedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:social" },
     // The task makes a failed scrape (an unanswered 2FA code) stale at once,
     // rather than only after a fortnight of missing days.
     { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS, task: ATTENTIVE_SYNC_TASK },
