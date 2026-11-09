@@ -444,6 +444,7 @@ async function main() {
       console.log(
         `[sync:social] Done: ${result.posts} posts (${result.insightsFetched} insights fetched, ${result.insightsFailed} failed), ` +
           `${result.snapshots} snapshot(s), followers ${result.followersCount ?? "UNREAD"}, ${result.accountDays} account day(s), ` +
+          `${result.peers.read} peer(s) read${result.peers.failed > 0 ? ` (${result.peers.failed} FAILED)` : ""}, ` +
           `${result.transcribed} transcribed${result.retried > 0 ? ` (${result.retried} retries of earlier failures)` : ""}, ` +
           (result.analysisConfigured ? `${result.analysed} analysed, ${result.analysisFailed} analysis failure(s)` : "analysis NOT configured (ANTHROPIC_API_KEY)"),
       );
@@ -1602,6 +1603,7 @@ async function main() {
         `• ${result.posts} posts synced (${result.insightsFetched} measured, ${result.insightsFailed} unavailable)`,
         `• Followers: ${result.followersCount?.toLocaleString("en-US") ?? "could not be read"}`,
         `• ${result.accountDays} day(s) of account insight read`,
+        `• ${result.peers.read} peer account(s) read${result.peers.failed > 0 ? `, ${result.peers.failed} could not be` : ""} (${result.peers.posts} posts)`,
         ...(result.transcribed > 0 ? [`• ${result.transcribed} videos transcribed`] : []),
         result.analysisConfigured
           ? `• ${result.analysed} posts analysed${result.analysisFailed > 0 ? `, ${result.analysisFailed} could not be` : ""}`

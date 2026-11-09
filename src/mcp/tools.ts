@@ -58,7 +58,9 @@ import {
 } from "@/domain/attentive/queries";
 import { describeAttentiveCoverage, getAttentiveSyncState, ATTENTIVE_UNAVAILABLE } from "@/domain/attentive/coverage";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
-import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview } from "@/domain/social/review-queries";
+import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer } from "@/domain/social/review-queries";
+import { summarisePeer } from "@/domain/social/peers";
+import { IG_USERNAME } from "@/integrations/instagram-api";
 import { buildBaselines, measuresOf, scorePost, findPatterns, summariseAccountDays, isSettled, BASELINE_DAYS } from "@/domain/social/review";
 import { getInventoryItems, getPoolVariantRows } from "@/domain/inventory/queries";
 import {
@@ -1682,6 +1684,27 @@ type Json = Record<string, any>;
 const shiftDay = (day: string, n: number) => isoDay(new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000));
 const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10);
 
+const PEER_CAVEAT =
+  "Instagram shows another account's likes, comments and reel views only — never its reach, saves, shares or watch time, and nothing spoken in its reels — so a peer's post is judged against that account's own usual, and its hooks are read from captions.";
+
+const normaliseUsername = (raw: string) => raw.trim().replace(/^@/, "").toLowerCase();
+
+/** Every tracked peer for a week: followers, the week's posts, 30-day standouts. */
+async function peerSections(ctx: McpToolContext, start: string, end: string, only?: string) {
+  const now = ctx.now();
+  const [peers, posts, days] = await Promise.all([
+    getPeers(ctx.db),
+    getPeerPosts(ctx.db, new Date(Math.min(Date.parse(`${start}T00:00:00Z`), now.getTime()) - BASELINE_DAYS * 86_400_000)),
+    getPeerDays(ctx.db, shiftDay(start, -7), end),
+  ]);
+  return peers
+    .filter((p) => only === undefined || p.username === only)
+    .map((p) => ({
+      notes: p.notes,
+      ...summarisePeer(p.username, posts, days.filter((d) => d.username === p.username), start, end, now),
+    }));
+}
+
 const socialReview: McpTool = {
   name: "social_review",
   title: "Weekly organic Instagram review — the data",
@@ -1689,6 +1712,7 @@ const socialReview: McpTool = {
     "Everything the weekly organic Instagram review is written from, for one week (default: the 7 complete days ending yesterday; or pass `weekStart`). " +
     "`account`: follows, unfollows, net growth, follower count, share of reach that was NEW people (non-followers — what growth is made of), organic views by surface (reels, posts, carousels, stories; ad views kept apart), for this week, the week before, and the four weeks before that. " +
     "`posts`: every post in the week with its numbers, `vsUsual` (each measure as a multiple of HER OWN median for that format over 90 days: 2 = twice her usual), a `verdict` (breakout ≥3x, above ≥1.25x, typical, below ≤0.75x, settling under 48h, not-enough-history, not-measured), and what it was — hook, hook type, approach, audience, topic, the words of its first three seconds, its length. " +
+    "`peers`: each tracked account in the niche (see social_peers) — its followers, the week's posts and its standouts of the last 30 days against its OWN usual, with hooks read from captions; ideas, not a scoreboard. " +
     "`usual`: her medians per format. `patterns`: over 90 days, which hook types, approaches, audiences, topics, formats and reel lengths beat her usual (groups of 3+ posts only). `coverage`: what the numbers lack — read it before concluding anything. `previousReview`: last review's suggestions, to check whether they were tried. " +
     "Write the review for Tara, who makes the content and reads it on the dashboard: plain words, no jargon or raw ratios without meaning, lead with what worked and why, be honest about what did not, and end with at most three concrete things to try. " +
     "Compare her only with her own usual — never with other accounts. Viral reach comes from the first seconds holding strangers and from shares, a learnable craft separate from production quality. Save it with social_review_save.",
@@ -1700,10 +1724,11 @@ const socialReview: McpTool = {
     const end = shiftDay(start, 6);
     const since = new Date(Math.min(Date.parse(`${start}T00:00:00Z`), now.getTime() - BASELINE_DAYS * 86_400_000));
 
-    const [posts, days, previous] = await Promise.all([
+    const [posts, days, previous, peers] = await Promise.all([
       getReviewPosts(ctx.db, since),
       getAccountDayRows(ctx.db, shiftDay(start, -28), end),
       getLatestReview(ctx.db),
+      section(() => peerSections(ctx, start, end)),
     ]);
 
     const baselines = buildBaselines(posts, now);
@@ -1791,6 +1816,8 @@ const socialReview: McpTool = {
       posts: described,
       usual,
       patterns: findPatterns(posts, baselines, now).slice(0, 40),
+      peers,
+      peerCaveat: PEER_CAVEAT,
       coverage: {
         postsInWeek: described.length,
         postsWithViews: withViews,
@@ -1807,6 +1834,47 @@ const socialReview: McpTool = {
   },
 };
 
+const socialPeersTool: McpTool = {
+  name: "social_peers",
+  title: "Peer Instagram accounts",
+  description:
+    "What other accounts in the niche are posting and what is breaking out for them: for each tracked account (or `username`), its followers, its posts between `weekStart` and the 6 days after (default the last 7 complete days), and its standouts of the last 30 days — each post against that account's OWN usual, with its hook, hook type, approach and topic read from the caption, and giveaways named. " +
+    "Use it for ideas; never to rank Tara against a bigger account. Add or stop an account with social_peer_set.",
+  readOnly: true,
+  schema: { username: { type: "string" }, weekStart: { type: "date" } },
+  async run(ctx, args) {
+    const start = args.weekStart instanceof Date ? isoDay(args.weekStart) : shiftDay(isoDay(ctx.now()), -7);
+    const end = shiftDay(start, 6);
+    const only = typeof args.username === "string" ? normaliseUsername(args.username) : undefined;
+    const peers = await peerSections(ctx, start, end, only);
+    if (only !== undefined && peers.length === 0) {
+      return { error: `@${only} is not tracked. Start with social_peer_set.` };
+    }
+    return { week: { start, end }, peers, caveat: PEER_CAVEAT };
+  },
+};
+
+const socialPeerSet: McpTool = {
+  name: "social_peer_set",
+  title: "Track a peer Instagram account",
+  description:
+    "Start watching another Instagram account for what works in the niche (`username`, with or without @), add `notes` on why, or stop with `active: false` — its history is kept. " +
+    "Only business and creator accounts can be read; the next daily sync says if Instagram will not describe it.",
+  readOnly: false,
+  schema: { username: { type: "string", required: true }, active: { type: "boolean", default: true }, notes: { type: "string" } },
+  async run(ctx, args) {
+    const username = normaliseUsername(args.username as string);
+    if (!IG_USERNAME.test(username)) throw new McpArgumentError(`"${args.username}" is not an Instagram username`);
+    const notes = typeof args.notes === "string" ? args.notes.trim() : undefined;
+    const peer = await setPeer(ctx.db, { username, active: args.active as boolean, notes, addedBy: ctx.actor ?? null });
+    return {
+      written: true,
+      ...peer,
+      note: peer.active ? "Read from the next daily Instagram sync (13:30 UTC), or now with `!sync social` in Slack." : "No longer read; what was collected is kept.",
+    };
+  },
+};
+
 const REVIEW_SECTIONS = ["summary", "working", "notWorking", "why", "tryNext"] as const;
 
 const socialReviewSave: McpTool = {
@@ -1814,7 +1882,8 @@ const socialReviewSave: McpTool = {
   title: "Save the weekly organic Instagram review",
   description:
     "Publish the weekly review Tara reads on the dashboard at /social/review. Write it from social_review. " +
-    "`headline`: one encouraging, specific line. `summary`: a short paragraph on the week. `working`, `notWorking`, `why`: plain paragraphs or `- ` bullet lists (blank line between paragraphs; **bold** allowed). `tryNext`: at most three concrete things to try next week, as `- ` bullets. " +
+    "`headline`: one encouraging, specific line. `summary`: a short paragraph on the week. `working`, `notWorking`, `why`: plain paragraphs or `- ` bullet lists (blank line between paragraphs; **bold** and *italics* allowed). `tryNext`: at most three concrete things to try next week, as `- ` bullets. " +
+    "`fromPeers` (optional): ideas from what broke out for the peer accounts — what they did, framed as something to borrow, never as a comparison. " +
     "Name posts by what they were (\"the planner-flip reel on Tuesday\"), not by ID. Every review is kept; a second review of the same week replaces the first on the page.",
   readOnly: false,
   schema: {
@@ -1826,6 +1895,7 @@ const socialReviewSave: McpTool = {
     notWorking: { type: "string", required: true },
     why: { type: "string", required: true },
     tryNext: { type: "string", required: true },
+    fromPeers: { type: "string" },
   },
   async run(ctx, args) {
     const weekStart = isoDay(args.weekStart as Date);
@@ -1840,7 +1910,8 @@ const socialReviewSave: McpTool = {
       if (v.length > 8000) throw new McpArgumentError(`${key} is over 8000 characters`);
       sections[key] = v;
     }
-    const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, author: "claude", requestedBy: ctx.actor ?? null });
+    const fromPeers = typeof args.fromPeers === "string" && args.fromPeers.trim() !== "" ? args.fromPeers.trim().slice(0, 8000) : null;
+    const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, fromPeers, author: "claude", requestedBy: ctx.actor ?? null });
     return { written: true, id: saved.id, weekStart, weekEnd, path: `/social/review/${saved.id}` };
   },
 };
@@ -4244,6 +4315,8 @@ export const ALL_TOOLS: McpTool[] = [
   marketingContext,
   socialReview,
   socialReviewSave,
+  socialPeersTool,
+  socialPeerSet,
   kbSearch,
   kbDocumentsTool,
   searchPerformance,

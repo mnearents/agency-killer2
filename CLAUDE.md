@@ -385,6 +385,15 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   patterns (groups of 3+); coverage notes; last review's suggestions.
   **Never compare her with other accounts** — viral reach is the first
   seconds holding strangers plus shares, a craft separate from production.
+- **Peer accounts** (`social_peers`, seeded with @pippipost.shop): each
+  sync reads a tracked business/creator account through Business Discovery
+  — followers, and its newest 50 posts' likes, comments and reel views.
+  Nothing else is shared (no reach, saves, shares, or reel audio), so hooks
+  come from captions and each post is judged against THAT account's own
+  usual (reels on views, the rest on likes + comments). Giveaways ("comment
+  to win") are named and kept out of the usual. `social_peers` answers ad
+  hoc; `social_review` carries a `peers` section; `social_peer_set` adds or
+  stops one. Ideas to borrow, never a scoreboard against a bigger account.
 - **`social_review_save`** publishes the written review to
   `/social/review` on the dashboard (archive at `/social/review/<id>`),
   where Tara reads it with the week's numbers and posts beside it. Written
@@ -431,11 +440,12 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; thirteen are not.** The writers are
+- **Most tools are read-only; fourteen are not.** The writers are
   `ad_asset_set`, `calendar_add`, `calendar_update`, `calendar_remove`,
   `draft_save`, `draft_record_decision`, `experiment_start`,
   `experiment_record_result`, `goals_set`, `pilot_notes_add`,
-  `product_strategy_set`, `segment_push` and `social_review_save`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
+  `product_strategy_set`, `segment_push`, `social_peer_set` and
+  `social_review_save`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
 - **A write tool records that Claude was the author.** Calendar entries set
   `aiSuggested` and the caller cannot override it: Tara reads the calendar, and

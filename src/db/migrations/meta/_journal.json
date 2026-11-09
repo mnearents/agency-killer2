@@ -393,6 +393,13 @@
       "when": 1794259624619,
       "tag": "0055_glamorous_betty_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794262535001,
+      "tag": "0056_perpetual_sunspot",
+      "breakpoints": true
     }
   ]
 }

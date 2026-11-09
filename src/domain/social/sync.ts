@@ -17,8 +17,11 @@
  * 4. reads the account — today's follower count, and the follows, unfollows,
  *    reach to non-followers and views of every complete day it lacks;
  * 5. transcribes videos (keeping length and the first three seconds' words);
- * 6. asks Claude what each post was — hook, hook type, topic, approach,
- *    audience — once its transcript, if it will have one, is in.
+ * 6. reads each tracked peer account (`social_peers`): followers and its
+ *    newest posts' likes, comments and reel views;
+ * 7. asks Claude what each post was — hook, hook type, topic, approach,
+ *    audience — once its transcript, if it will have one, is in; a peer's
+ *    post from its caption alone.
  */
 
 import type { InstagramApiClient, IgMedia, IgMediaInsights } from "@/integrations/instagram-api";
@@ -27,7 +30,7 @@ import type { AnthropicClient } from "@/integrations/anthropic";
 import type { EmbeddingClient } from "@/integrations/openai";
 import type { NewSocialPost } from "@/db/schema";
 import type { Db } from "@/db/client";
-import { socialPosts, kbDocuments, socialPostSnapshots, socialAccountDays, socialPostAnalyses } from "@/db/schema";
+import { socialPosts, kbDocuments, socialPostSnapshots, socialAccountDays, socialPostAnalyses, socialPeers, socialPeerDays, socialPeerPosts } from "@/db/schema";
 import { sql, eq, and, gte, desc, ne } from "drizzle-orm";
 import {
   shouldAttemptTranscription,
@@ -122,6 +125,9 @@ export const ACCOUNT_WINDOW_DAYS = 28;
 /** Posts analysed per run — enough to clear a backfill within days. */
 export const ANALYSE_PER_RUN = 30;
 
+/** A peer's newest posts read each day: about seven weeks of Pippi Post. */
+export const PEER_MEDIA_LIMIT = 50;
+
 export interface SyncSocialDeps {
   client: InstagramApiClient;
   db: Db;
@@ -147,6 +153,8 @@ export interface SyncSocialResult {
   followersCount: number | null;
   /** Complete account days read this run. */
   accountDays: number;
+  /** Peer accounts read and failed, and their posts stored. */
+  peers: { read: number; failed: number; posts: number };
   /** False when no Anthropic client was given — distinct from nothing to analyse. */
   analysisConfigured: boolean;
   analysed: number;
@@ -388,10 +396,16 @@ export async function syncSocialPosts(
     }
   }
 
-  // Step 6: what each post was.
-  const analysis = deps.anthropic
-    ? await analysePosts(db, deps.anthropic, syncedAt, errors)
-    : { analysed: 0, analysisFailed: 0 };
+  // Step 6: the peer accounts.
+  const peers = await syncPeers(deps, syncedAt, sleep, errors);
+
+  // Step 7: what each post was — ours, then the peers'.
+  let analysis = { analysed: 0, analysisFailed: 0 };
+  if (deps.anthropic) {
+    const own = await analysePosts(db, deps.anthropic, syncedAt, errors);
+    const theirs = await analysePeerPosts(db, deps.anthropic, syncedAt, errors);
+    analysis = { analysed: own.analysed + theirs.analysed, analysisFailed: own.analysisFailed + theirs.analysisFailed };
+  }
 
   return {
     posts: rows.length,
@@ -402,6 +416,7 @@ export async function syncSocialPosts(
     snapshots,
     followersCount: account.followersCount,
     accountDays: account.days,
+    peers,
     analysisConfigured: deps.anthropic !== undefined,
     ...analysis,
     errors,
@@ -461,6 +476,83 @@ async function syncAccount(
 }
 
 /**
+ * Each active peer: today's follower count and its newest posts. One call per
+ * account; one that fails is named and the rest carry on.
+ */
+async function syncPeers(
+  deps: SyncSocialDeps,
+  now: Date,
+  sleep: (ms: number) => Promise<void>,
+  errors: string[],
+): Promise<{ read: number; failed: number; posts: number }> {
+  const { client, db, igUserId } = deps;
+  const peers = await db.select({ username: socialPeers.username }).from(socialPeers).where(eq(socialPeers.active, 1));
+  const out = { read: 0, failed: 0, posts: 0 };
+  for (const { username } of peers) {
+    try {
+      const { profile, media } = await client.getPeerAccount(igUserId, username, PEER_MEDIA_LIMIT);
+      const day = { name: profile.name, followersCount: profile.followersCount, mediaCount: profile.mediaCount, capturedAt: now };
+      await db
+        .insert(socialPeerDays)
+        .values({ username, day: now.toISOString().slice(0, 10), ...day })
+        .onConflictDoUpdate({ target: [socialPeerDays.username, socialPeerDays.day], set: day });
+      for (const m of media) {
+        const latest = {
+          caption: m.caption,
+          permalink: m.permalink,
+          thumbnailUrl: m.thumbnailUrl,
+          likeCount: m.likeCount,
+          commentsCount: m.commentsCount,
+          viewCount: m.viewCount,
+          syncedAt: now,
+        };
+        await db
+          .insert(socialPeerPosts)
+          .values({ id: m.id, username, mediaType: m.mediaType, mediaProductType: m.mediaProductType, postedAt: new Date(m.timestamp), firstSeenAt: now, ...latest })
+          .onConflictDoUpdate({ target: socialPeerPosts.id, set: latest });
+        out.posts++;
+      }
+      out.read++;
+    } catch (err) {
+      out.failed++;
+      errors.push(`Peer account @${username} unavailable: ${errorText(err)}`);
+    }
+    await sleep(500);
+  }
+  return out;
+}
+
+/** Peer posts analysed per run, from their captions. */
+const PEER_ANALYSE_PER_RUN = 20;
+
+/**
+ * What each peer post was, read from its caption — Instagram does not give
+ * another account's video, so there is no transcript to wait for.
+ */
+async function analysePeerPosts(
+  db: Db,
+  anthropic: AnthropicClient,
+  now: Date,
+  errors: string[],
+): Promise<{ analysed: number; analysisFailed: number }> {
+  const candidates = await db
+    .select({
+      id: socialPeerPosts.id,
+      caption: socialPeerPosts.caption,
+      mediaType: socialPeerPosts.mediaType,
+      mediaProductType: socialPeerPosts.mediaProductType,
+      analysisStatus: socialPostAnalyses.status,
+      analysisAttempts: socialPostAnalyses.attempts,
+    })
+    .from(socialPeerPosts)
+    .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPeerPosts.id))
+    .where(sql`${socialPostAnalyses.status} IS DISTINCT FROM 'ok'`)
+    .orderBy(desc(socialPeerPosts.postedAt))
+    .limit(PEER_ANALYSE_PER_RUN * 3);
+  return analyseCandidates(db, anthropic, now, errors, candidates.map((c) => ({ ...c, transcript: null })), PEER_ANALYSE_PER_RUN);
+}
+
+/**
  * Asks Claude what each post was, newest first, ANALYSE_PER_RUN at a time.
  * A reel waits for its transcript; an unreadable answer is recorded as an
  * error and retried, never stored as an empty analysis.
@@ -488,15 +580,11 @@ async function analysePosts(
     .orderBy(desc(socialPosts.postedAt))
     .limit(ANALYSE_PER_RUN * 3);
 
-  let analysed = 0;
-  let analysisFailed = 0;
-  let tried = 0;
+  const ready: AnalysisCandidate[] = [];
   for (const post of candidates) {
-    if (tried >= ANALYSE_PER_RUN) break;
-    const prior = post.analysisStatus === null ? null : { status: post.analysisStatus, attempts: post.analysisAttempts ?? 0 };
-    if (!shouldAnalysePost(prior)) continue;
+    if (ready.length >= ANALYSE_PER_RUN) break;
+    if (!shouldAnalysePost(post.analysisStatus === null ? null : { status: post.analysisStatus, attempts: post.analysisAttempts ?? 0 })) continue;
     if (!readyForAnalysis({ ...post, transcriptionAttempts: post.transcriptionAttempts ?? 0 }, MAX_TRANSCRIPTION_ATTEMPTS)) continue;
-
     let transcript: string | null = null;
     if (post.transcriptionStatus === "ok") {
       const [doc] = await db
@@ -506,11 +594,41 @@ async function analysePosts(
         .limit(1);
       transcript = doc?.content?.split("\nTranscript:\n")[1] ?? null;
     }
+    ready.push({ ...post, transcript });
+  }
+  return analyseCandidates(db, anthropic, now, errors, ready, ANALYSE_PER_RUN);
+}
+
+interface AnalysisCandidate {
+  id: string;
+  caption: string | null;
+  mediaType: string;
+  mediaProductType: string | null;
+  transcript: string | null;
+  analysisStatus: string | null;
+  analysisAttempts: number | null;
+}
+
+async function analyseCandidates(
+  db: Db,
+  anthropic: AnthropicClient,
+  now: Date,
+  errors: string[],
+  candidates: AnalysisCandidate[],
+  limit: number,
+): Promise<{ analysed: number; analysisFailed: number }> {
+  let analysed = 0;
+  let analysisFailed = 0;
+  let tried = 0;
+  for (const post of candidates) {
+    if (tried >= limit) break;
+    const prior = post.analysisStatus === null ? null : { status: post.analysisStatus, attempts: post.analysisAttempts ?? 0 };
+    if (!shouldAnalysePost(prior)) continue;
+
     const format = post.mediaProductType === "REELS" ? "Reel" : post.mediaType === "CAROUSEL_ALBUM" ? "Carousel" : post.mediaType === "VIDEO" ? "Video" : "Image";
-    const built = buildPostAnalysisPrompt({ format, caption: post.caption, transcript });
+    const built = buildPostAnalysisPrompt({ format, caption: post.caption, transcript: post.transcript });
     if (built === null) continue;
     tried++;
-
     const attempts = (prior?.attempts ?? 0) + 1;
     let parsed = null;
     let detail: string | null = null;

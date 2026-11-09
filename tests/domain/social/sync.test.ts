@@ -442,3 +442,47 @@ describe("thumbnails", () => {
     expect(Object.keys(postUpsertSet(true))).toContain("thumbnailUrl");
   });
 });
+
+describe("syncSocialPosts — peer accounts", () => {
+  const peerMedia = (id: string, o: Record<string, unknown> = {}) => ({
+    id, caption: "Which book ruined you?", mediaType: "VIDEO", mediaProductType: "REELS", permalink: null, thumbnailUrl: null,
+    timestamp: "2026-11-05T18:14:42+0000", likeCount: 205, commentsCount: 256, viewCount: 40_015, ...o,
+  });
+
+  it("reads each tracked account and keeps its follower count and posts", async () => {
+    const c = client({
+      getPeerAccount: vi.fn().mockResolvedValue({ profile: { username: "pippipost.shop", name: "Pippi Post", followersCount: 250_599, mediaCount: 2544 }, media: [peerMedia("m1")] }),
+    });
+    const { db, inserts } = fakeDb({ social_peers: [{ username: "pippipost.shop" }] });
+    const r = await syncSocialPosts({ client: c, db, igUserId: "ig1", now: () => NOW, sleep: noSleep });
+    expect(c.getPeerAccount).toHaveBeenCalledWith("ig1", "pippipost.shop", 50);
+    expect(inserts.find((w) => w.table === "social_peer_days")!.values).toMatchObject({ username: "pippipost.shop", day: "2026-11-09", followersCount: 250_599 });
+    const post = inserts.find((w) => w.table === "social_peer_posts")!;
+    expect(post.values).toMatchObject({ id: "m1", username: "pippipost.shop", viewCount: 40_015, mediaProductType: "REELS" });
+    // When it was first seen is kept; the numbers move.
+    expect(Object.keys(post.set!)).not.toContain("firstSeenAt");
+    expect(Object.keys(post.set!)).toContain("viewCount");
+    expect(r.peers).toEqual({ read: 1, failed: 0, posts: 1 });
+  });
+
+  it("reports an account it cannot read and carries on with the rest", async () => {
+    const c = client({
+      getPeerAccount: vi.fn().mockImplementation(async (_ig: string, u: string) => {
+        if (u === "gone.shop") throw new Error("Instagram API error (400): no such user");
+        return { profile: { username: u, name: null, followersCount: 10, mediaCount: 1 }, media: [] };
+      }),
+    });
+    const { db } = fakeDb({ social_peers: [{ username: "gone.shop" }, { username: "pippipost.shop" }] });
+    const r = await syncSocialPosts({ client: c, db, igUserId: "ig1", now: () => NOW, sleep: noSleep });
+    expect(r.peers).toEqual({ read: 1, failed: 1, posts: 0 });
+    expect(r.errors.join(" ")).toMatch(/@gone\.shop.*no such user/);
+  });
+
+  it("analyses a peer's posts from the caption", async () => {
+    const anthropic = createMockAnthropicClient({ generate: vi.fn().mockResolvedValue({ text: JSON.stringify({ summary: "A question to readers.", hook: "Which book ruined you?", hookType: "question", approach: "community", topic: "reading", audience: "book lovers" }) }) });
+    const { db, inserts } = fakeDb({ social_peer_posts: [{ id: "m1", caption: "Which book ruined you?", mediaType: "VIDEO", mediaProductType: "REELS", analysisStatus: null, analysisAttempts: null }] });
+    const r = await syncSocialPosts({ client: client(), db, igUserId: "ig1", anthropic, now: () => NOW, sleep: noSleep });
+    expect(inserts.find((w) => w.table === "social_post_analyses")!.values).toMatchObject({ postId: "m1", basis: "caption", hookType: "question" });
+    expect(r.analysed).toBe(1);
+  });
+});

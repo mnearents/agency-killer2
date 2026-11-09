@@ -84,6 +84,32 @@ export interface IgAccountInfo {
   media_count: number;
 }
 
+/** Another account, as Business Discovery shows it. */
+export interface IgPeerProfile {
+  username: string;
+  name: string | null;
+  followersCount: number;
+  mediaCount: number;
+}
+
+/**
+ * Another account's post. Instagram shares likes, comments and — for reels —
+ * views; never reach, saves, shares or watch time. `viewCount` is null for
+ * anything that is not a reel.
+ */
+export interface IgPeerMedia {
+  id: string;
+  caption: string | null;
+  mediaType: string;
+  mediaProductType: string | null;
+  permalink: string | null;
+  thumbnailUrl: string | null;
+  timestamp: string;
+  likeCount: number | null;
+  commentsCount: number | null;
+  viewCount: number | null;
+}
+
 export interface InstagramApiClient {
   getAccountInfo(igUserId: string): Promise<IgAccountInfo>;
   getRecentMedia(igUserId: string, limit?: number): Promise<IgMedia[]>;
@@ -91,7 +117,15 @@ export interface InstagramApiClient {
   getMediaInsights(mediaId: string, mediaType: string, mediaProductType?: string): Promise<IgMediaInsights>;
   /** Account insight for one day, `YYYY-MM-DD`, requested as that UTC day. */
   getAccountDay(igUserId: string, day: string): Promise<IgAccountDay>;
+  /**
+   * Another business or creator account's profile and newest posts, read
+   * through our own account (`igUserId`) by Business Discovery.
+   */
+  getPeerAccount(igUserId: string, username: string, limit: number): Promise<{ profile: IgPeerProfile; media: IgPeerMedia[] }>;
 }
+
+/** Instagram usernames: letters, digits, dots and underscores, up to 30. */
+export const IG_USERNAME = /^[a-z0-9._]{1,30}$/;
 
 const MEDIA_FIELDS = [
   "id",
@@ -317,6 +351,36 @@ export function createInstagramApiClient(accessToken: string): InstagramApiClien
 
       const json = await fetchJson<{ data?: IgMediaInsight[] }>(url);
       return parseInsightsResponse(mediaId, json.data ?? []);
+    },
+
+    async getPeerAccount(igUserId, username, limit) {
+      const name = username.trim().replace(/^@/, "").toLowerCase();
+      // It is interpolated into the field expression, so nothing else may pass.
+      if (!IG_USERNAME.test(name)) throw new Error(`"${username}" is not an Instagram username`);
+      const media = `media.limit(${Math.min(Math.max(limit, 1), 100)}){id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count,view_count,media_url,thumbnail_url}`;
+      const json = await fetchJson<{
+        business_discovery?: {
+          username: string; name?: string; followers_count: number; media_count: number;
+          media?: { data?: Array<IgMedia & { view_count?: number }> };
+        };
+      }>(buildUrl(igUserId, { fields: `business_discovery.username(${name}){username,name,followers_count,media_count,${media}}` }));
+      const bd = json.business_discovery;
+      if (!bd) throw new Error(`Instagram returned no account for @${name}`);
+      return {
+        profile: { username: bd.username, name: bd.name ?? null, followersCount: bd.followers_count, mediaCount: bd.media_count },
+        media: (bd.media?.data ?? []).map((m) => ({
+          id: m.id,
+          caption: m.caption ?? null,
+          mediaType: m.media_type,
+          mediaProductType: m.media_product_type ?? null,
+          permalink: m.permalink ?? null,
+          thumbnailUrl: m.thumbnail_url ?? (m.media_type === "VIDEO" ? null : m.media_url ?? null),
+          timestamp: m.timestamp,
+          likeCount: m.like_count ?? null,
+          commentsCount: m.comments_count ?? null,
+          viewCount: m.view_count ?? null,
+        })),
+      };
     },
 
     async getAccountDay(igUserId, day) {

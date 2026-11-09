@@ -10,6 +10,10 @@ vi.mock("@/domain/social/review-queries", async (importOriginal) => ({
   getAccountDayRows: vi.fn(),
   getLatestReview: vi.fn(),
   saveReview: vi.fn(),
+  getPeers: vi.fn(),
+  getPeerPosts: vi.fn(),
+  getPeerDays: vi.fn(),
+  setPeer: vi.fn(),
 }));
 
 const NOW = new Date("2026-11-09T12:00:00Z");
@@ -39,6 +43,12 @@ beforeEach(() => {
     Array.from({ length: 35 }, (_, i) => accountDay(new Date(Date.parse("2026-10-05T00:00:00Z") + i * 86_400_000).toISOString().slice(0, 10))),
   );
   vi.mocked(reviewQueries.getLatestReview).mockResolvedValue(null);
+  vi.mocked(reviewQueries.getPeers).mockResolvedValue([{ username: "pippipost.shop", notes: "bookish merch", active: true }]);
+  vi.mocked(reviewQueries.getPeerPosts).mockResolvedValue([
+    ...Array.from({ length: 6 }, (_, i) => ({ id: `u${i}`, username: "pippipost.shop", caption: "c", format: "reel" as const, permalink: null, thumbnailUrl: null, postedAt: daysAgo(15 + i), likeCount: 100, commentsCount: 10, viewCount: 10_000, analysis: null })),
+    { id: "pp-hit", username: "pippipost.shop", caption: "Which book ruined you?", format: "reel" as const, permalink: "https://instagram.com/reel/pp", thumbnailUrl: null, postedAt: daysAgo(4), likeCount: 205, commentsCount: 256, viewCount: 40_015, analysis: { hookType: "question", approach: "community", audience: "book lovers", topic: "reading", hook: "Which book ruined you?" } },
+  ]);
+  vi.mocked(reviewQueries.getPeerDays).mockResolvedValue([{ username: "pippipost.shop", day: "2026-11-08", name: "Pippi Post", followersCount: 250_599, mediaCount: 2544 }]);
 });
 
 describe("social_review", () => {
@@ -86,7 +96,7 @@ describe("social_review", () => {
   it("returns the last review's suggestions", async () => {
     vi.mocked(reviewQueries.getLatestReview).mockResolvedValue({
       id: "rv1", weekStart: "2026-10-26", weekEnd: "2026-11-01", headline: "Questions win", summary: "s", working: "w", notWorking: "n", why: "y",
-      tryNext: "- Open with a question", author: "claude", requestedBy: "Matt", createdAt: NOW,
+      tryNext: "- Open with a question", fromPeers: null, author: "claude", requestedBy: "Matt", createdAt: NOW,
     });
     const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
     expect(r.previousReview).toMatchObject({ weekStart: "2026-10-26", headline: "Questions win", tryNext: "- Open with a question" });
@@ -100,7 +110,7 @@ describe("social_review_save", () => {
   };
 
   it("saves the review as Claude's, for the signed-in person, and says where to read it", async () => {
-    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv2", createdAt: NOW, requestedBy: r.requestedBy ?? null }));
+    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv2", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null }));
     const r = (await dispatchTool(ctx, "social_review_save", review)) as Record<string, any>;
     expect(vi.mocked(reviewQueries.saveReview).mock.calls[0][1]).toMatchObject({ weekStart: "2026-11-02", author: "claude", requestedBy: "Matt" });
     expect(r).toMatchObject({ written: true, id: "rv2", path: "/social/review/rv2" });
@@ -113,5 +123,53 @@ describe("social_review_save", () => {
 
   it("refuses a week that ends before it starts", async () => {
     await expect(dispatchTool(ctx, "social_review_save", { ...review, weekEnd: "2026-11-01" })).rejects.toThrow(/weekEnd/);
+  });
+});
+
+describe("peer accounts", () => {
+  it("puts each tracked account's week and standouts in the review data", async () => {
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.peers[0]).toMatchObject({ username: "pippipost.shop", notes: "bookish merch", followers: { latest: 250_599 } });
+    expect(r.peers[0].standouts[0]).toMatchObject({ id: "pp-hit", verdict: "breakout", hookType: "question" });
+  });
+
+  // One bad peer read must not cost the review its own account's numbers.
+  it("names a peer section that failed and still returns the rest", async () => {
+    vi.mocked(reviewQueries.getPeerPosts).mockRejectedValue(new Error("db down"));
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.peers).toEqual({ error: "db down" });
+    expect(r.account.thisWeek.net).toBe(21);
+  });
+
+  it("answers what a peer is doing over a chosen span", async () => {
+    const r = (await dispatchTool(ctx, "social_peers", { username: "@PippiPost.shop" })) as Record<string, any>;
+    expect(r.peers).toHaveLength(1);
+    expect(r.peers[0].username).toBe("pippipost.shop");
+    expect(r.caveat).toMatch(/likes, comments and reel views/);
+  });
+
+  it("says when the account asked about is not tracked", async () => {
+    const r = (await dispatchTool(ctx, "social_peers", { username: "someone.else" })) as Record<string, any>;
+    expect(r.error).toMatch(/not tracked.*social_peer_set/);
+  });
+
+  it("starts tracking an account for the signed-in person", async () => {
+    vi.mocked(reviewQueries.setPeer).mockResolvedValue({ username: "bookish.co", active: true, notes: "n" });
+    const r = (await dispatchTool(ctx, "social_peer_set", { username: "@Bookish.co", notes: "n" })) as Record<string, any>;
+    expect(vi.mocked(reviewQueries.setPeer).mock.calls[0][1]).toEqual({ username: "bookish.co", active: true, notes: "n", addedBy: "Matt" });
+    expect(r).toMatchObject({ written: true, username: "bookish.co", active: true });
+  });
+
+  it("refuses something that is not an Instagram username", async () => {
+    await expect(dispatchTool(ctx, "social_peer_set", { username: "bad name)" })).rejects.toBeInstanceOf(McpArgumentError);
+  });
+
+  it("saves the optional ideas from peers with the review", async () => {
+    vi.mocked(reviewQueries.saveReview).mockImplementation(async (_db, r) => ({ ...r, id: "rv3", createdAt: NOW, requestedBy: r.requestedBy ?? null, fromPeers: r.fromPeers ?? null }));
+    await dispatchTool(ctx, "social_review_save", {
+      weekStart: "2026-11-02", weekEnd: "2026-11-08", headline: "h", summary: "s", working: "w", notWorking: "n", why: "y", tryNext: "- t",
+      fromPeers: "Pippi Post's question reel broke out.",
+    });
+    expect(vi.mocked(reviewQueries.saveReview).mock.calls[0][1]).toMatchObject({ fromPeers: "Pippi Post's question reel broke out." });
   });
 });

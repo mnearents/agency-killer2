@@ -217,3 +217,36 @@ describe("parseAccountDay", () => {
     expect(r.views).toBeNull();
   });
 });
+
+describe("getPeerAccount", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Shape from @pippipost.shop, 2026-11-09. Instagram shares another
+  // account's likes, comments and reel views — never its reach or saves.
+  it("reads the profile and recent posts through business discovery", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => {
+      urls.push(String(u));
+      return new Response(JSON.stringify({
+        business_discovery: {
+          username: "pippipost.shop", name: "Pippi Post", followers_count: 250_599, media_count: 2544, id: "178",
+          media: { data: [
+            { id: "m1", caption: "Comment BOOK to win!", media_type: "VIDEO", media_product_type: "REELS", timestamp: "2026-11-05T18:14:42+0000", permalink: "https://instagram.com/reel/m1", like_count: 205, comments_count: 256, view_count: 40_015, thumbnail_url: "https://cdn/t.jpg" },
+            { id: "m2", caption: "New totes", media_type: "IMAGE", media_product_type: "FEED", timestamp: "2026-11-05T23:05:59+0000", like_count: 2262, comments_count: 4, media_url: "https://cdn/i.jpg" },
+          ] },
+        },
+      }), { status: 200 });
+    }));
+    const r = await createInstagramApiClient("t").getPeerAccount("ig1", "pippipost.shop", 50);
+    expect(new URL(urls[0]).searchParams.get("fields")).toContain("business_discovery.username(pippipost.shop)");
+    expect(r.profile).toEqual({ username: "pippipost.shop", name: "Pippi Post", followersCount: 250_599, mediaCount: 2544 });
+    expect(r.media[0]).toMatchObject({ id: "m1", viewCount: 40_015, likeCount: 205, commentsCount: 256, thumbnailUrl: "https://cdn/t.jpg" });
+    // An image has no views — unmeasured, not zero.
+    expect(r.media[1]).toMatchObject({ viewCount: null, thumbnailUrl: "https://cdn/i.jpg" });
+  });
+
+  // Business discovery only sees business and creator accounts.
+  it("refuses a username that is not one Instagram will describe", async () => {
+    await expect(createInstagramApiClient("t").getPeerAccount("ig1", "bad name)", 50)).rejects.toThrow(/not an Instagram username/);
+  });
+});

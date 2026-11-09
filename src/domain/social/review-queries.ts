@@ -5,8 +5,9 @@
 
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { socialAccountDays, socialPostAnalyses, socialPosts, socialReviews } from "@/db/schema";
+import { socialAccountDays, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialReviews } from "@/db/schema";
 import { formatGroup, type AccountDayRow, type ReviewPost } from "./review";
+import type { PeerDay, PeerPost } from "./peers";
 
 /**
  * Posts since a date, newest first, each with its analysis. Stories are left
@@ -143,4 +144,89 @@ export async function listReviews(db: Db, limit = 52): Promise<Array<Pick<Social
     .orderBy(desc(socialReviews.weekStart), desc(socialReviews.createdAt))
     .limit(limit);
   return rows;
+}
+
+export interface Peer {
+  username: string;
+  notes: string | null;
+  active: boolean;
+}
+
+/** Peer accounts — active only unless asked. */
+export async function getPeers(db: Db, includeInactive = false): Promise<Peer[]> {
+  const rows = await db
+    .select({ username: socialPeers.username, notes: socialPeers.notes, active: socialPeers.active })
+    .from(socialPeers)
+    .where(includeInactive ? undefined : eq(socialPeers.active, 1))
+    .orderBy(socialPeers.username);
+  return rows.map((r) => ({ ...r, active: r.active === 1 }));
+}
+
+/** Start or stop watching an account. Stopping keeps its history. */
+export async function setPeer(db: Db, peer: { username: string; active: boolean; notes?: string; addedBy: string | null }): Promise<Peer> {
+  const values = { active: peer.active ? 1 : 0, updatedAt: new Date(), ...(peer.notes !== undefined ? { notes: peer.notes } : {}) };
+  const [row] = await db
+    .insert(socialPeers)
+    .values({ username: peer.username, addedBy: peer.addedBy, ...values })
+    .onConflictDoUpdate({ target: socialPeers.username, set: values })
+    .returning({ username: socialPeers.username, notes: socialPeers.notes, active: socialPeers.active });
+  return { ...row, active: row.active === 1 };
+}
+
+/** Peer posts since a date, newest first, each with what it was. */
+export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
+  const rows = await db
+    .select({
+      id: socialPeerPosts.id,
+      username: socialPeerPosts.username,
+      caption: socialPeerPosts.caption,
+      mediaType: socialPeerPosts.mediaType,
+      mediaProductType: socialPeerPosts.mediaProductType,
+      permalink: socialPeerPosts.permalink,
+      thumbnailUrl: socialPeerPosts.thumbnailUrl,
+      postedAt: socialPeerPosts.postedAt,
+      likeCount: socialPeerPosts.likeCount,
+      commentsCount: socialPeerPosts.commentsCount,
+      viewCount: socialPeerPosts.viewCount,
+      analysisStatus: socialPostAnalyses.status,
+      hook: socialPostAnalyses.hook,
+      hookType: socialPostAnalyses.hookType,
+      approach: socialPostAnalyses.approach,
+      audience: socialPostAnalyses.audience,
+      topic: socialPostAnalyses.topic,
+    })
+    .from(socialPeerPosts)
+    .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPeerPosts.id))
+    .where(gte(socialPeerPosts.postedAt, since))
+    .orderBy(desc(socialPeerPosts.postedAt));
+  return rows.map((r) => ({
+    id: r.id,
+    username: r.username,
+    caption: r.caption,
+    format: formatGroup(r.mediaType, r.mediaProductType),
+    permalink: r.permalink,
+    thumbnailUrl: r.thumbnailUrl,
+    postedAt: r.postedAt,
+    likeCount: r.likeCount,
+    commentsCount: r.commentsCount,
+    viewCount: r.viewCount,
+    analysis: r.analysisStatus === "ok"
+      ? { hook: r.hook, hookType: r.hookType, approach: r.approach, audience: r.audience, topic: r.topic }
+      : null,
+  }));
+}
+
+/** Peer follower readings between two dates inclusive. */
+export async function getPeerDays(db: Db, from: string, to: string): Promise<Array<PeerDay & { username: string }>> {
+  return db
+    .select({
+      username: socialPeerDays.username,
+      day: socialPeerDays.day,
+      name: socialPeerDays.name,
+      followersCount: socialPeerDays.followersCount,
+      mediaCount: socialPeerDays.mediaCount,
+    })
+    .from(socialPeerDays)
+    .where(and(gte(socialPeerDays.day, from), lte(socialPeerDays.day, to)))
+    .orderBy(socialPeerDays.day);
 }

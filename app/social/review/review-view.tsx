@@ -245,6 +245,9 @@ export function ReviewView({ review, data }: { review: SocialReview; data: PageD
         <Section title="What isn't landing yet" color={C.amber} bg={C.amberBg}><Prose text={review.notWorking} /></Section>
         <Section title="Why" color={C.blue} bg={C.blueBg}><Prose text={review.why} /></Section>
         <TryNext text={review.tryNext} />
+        {review.fromPeers ? (
+          <Section title="Ideas from around the niche" color="#c2477a" bg="#fbeaf1"><Prose text={review.fromPeers} /></Section>
+        ) : null}
       </div>
 
       {data.weekPosts.length > 0 ? (

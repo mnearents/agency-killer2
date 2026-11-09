@@ -14,6 +14,7 @@ import {
   shopifyInventory,
   socialPosts,
   socialAccountDays,
+  socialPeerDays,
   attentiveCampaigns,
   sealSubscriptions,
   syncRuns,
@@ -175,6 +176,7 @@ export const FRESHNESS_SOURCES = [
     // Follows, unfollows and reach to non-followers: what the weekly review
     // measures growth by. Read by the same sync, but a failed account read
     // leaves the posts fresh, so it is watched on its own.
+    { source: "Instagram peer accounts", table: socialPeerDays, name: "social_peer_days", column: socialPeerDays.capturedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:social" },
     { source: "Instagram account days", table: socialAccountDays, name: "social_account_days", column: socialAccountDays.insightsFetchedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:social" },
     // The task makes a failed scrape (an unanswered 2FA code) stale at once,
     // rather than only after a fortnight of missing days.

@@ -863,11 +863,67 @@ export const socialReviews = pgTable(
     notWorking: text("not_working").notNull(),
     why: text("why").notNull(),
     tryNext: text("try_next").notNull(),
+    /** Optional: what is working for the peer accounts, as ideas. */
+    fromPeers: text("from_peers"),
     author: text("author").notNull(),
     requestedBy: text("requested_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("social_reviews_week_created_idx").on(table.weekStart, table.createdAt)]
+);
+
+/**
+ * Other Instagram accounts watched for what works in the niche. Business
+ * Discovery shows a business or creator account's followers and its posts'
+ * likes, comments and reel views — never reach, saves or shares — so a peer
+ * is read against ITS OWN usual, the same way Tara's posts are against hers.
+ */
+export const socialPeers = pgTable("social_peers", {
+  username: text("username").primaryKey(),
+  active: integer("active").notNull().default(1),
+  notes: text("notes"),
+  addedBy: text("added_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A peer's follower count as read by each day's sync. */
+export const socialPeerDays = pgTable(
+  "social_peer_days",
+  {
+    username: text("username").notNull(),
+    day: date("day", { mode: "string" }).notNull(),
+    name: text("name"),
+    followersCount: integer("followers_count").notNull(),
+    mediaCount: integer("media_count").notNull(),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [uniqueIndex("social_peer_days_user_day_idx").on(table.username, table.day)]
+);
+
+/**
+ * A peer's post, at its latest numbers. `viewCount` exists for reels only.
+ * What each was (hook, topic, approach) is in `social_post_analyses` under
+ * the same media ID, read from the caption alone.
+ */
+export const socialPeerPosts = pgTable(
+  "social_peer_posts",
+  {
+    id: text("id").primaryKey(),
+    username: text("username").notNull(),
+    caption: text("caption"),
+    mediaType: text("media_type").notNull(),
+    mediaProductType: text("media_product_type"),
+    permalink: text("permalink"),
+    thumbnailUrl: text("thumbnail_url"),
+    likeCount: integer("like_count"),
+    commentsCount: integer("comments_count"),
+    viewCount: integer("view_count"),
+    postedAt: timestamp("posted_at", { withTimezone: true }).notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull(),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("social_peer_posts_user_posted_idx").on(table.username, table.postedAt)]
 );
 
 export type SocialPost = typeof socialPosts.$inferSelect;

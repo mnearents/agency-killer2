@@ -189,6 +189,7 @@ describe("the tool catalogue", () => {
         "pilot_notes_add",
         "product_strategy_set",
         "segment_push",
+        "social_peer_set",
         "social_review_save",
       ].sort()
     );
