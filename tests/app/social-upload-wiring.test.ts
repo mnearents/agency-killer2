@@ -1,0 +1,35 @@
+/**
+ * The upload routes' call sites. A route that answered without the shared
+ * handler would skip its password and size checks; one built without a
+ * transcriber would analyse every upload's frames and silently drop its words.
+ */
+
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const read = (p: string) => readFileSync(join(process.cwd(), p), "utf-8");
+
+describe("upload routes", () => {
+  it("checks credentials through the shared handler", () => {
+    expect(read("app/api/social/upload/route.ts")).toMatch(/handleUploadCheck\(request, uploadAuth\(\)\)/);
+  });
+
+  it("handles the upload through the shared handler with the real analysis", () => {
+    const route = read("app/api/social/upload/[id]/route.ts");
+    expect(route).toMatch(/handleReelUpload\(request, id, uploadDeps\(\)\)/);
+    expect(route).toMatch(/export const runtime = "nodejs"/);
+  });
+
+  it("builds the analysis with ffmpeg, Anthropic and the transcriber", () => {
+    const wiring = read("src/domain/social/upload-wiring.ts");
+    expect(wiring).toMatch(/analyseUploadedReel\(/);
+    expect(wiring).toMatch(/video: createFfmpegToolkit\(\)/);
+    expect(wiring).toMatch(/transcriber: .*createAssemblyAiClient/);
+    expect(wiring).toMatch(/saveBody: \(body, max\) => saveStreamToTemp\(/);
+  });
+
+  it("uses the cost form's credentials", () => {
+    expect(read("src/domain/social/upload-wiring.ts")).toMatch(/user: process\.env\.COST_FORM_USER, password: process\.env\.COST_FORM_PASSWORD/);
+  });
+});

@@ -83,6 +83,8 @@ export function transformMediaToPost(input: TransformInput): NewSocialPost {
     follows: insights?.follows ?? null,
     profileVisits: insights?.profileVisits ?? null,
     insightsStatus: insights ? "ok" : "failed",
+    // Instagram leaves media_url off reels carrying licensed music.
+    visualStatus: media.media_product_type === "REELS" && !media.media_url ? "cover_only" : null,
     postedAt: new Date(media.timestamp),
     syncedAt,
   };
@@ -100,6 +102,9 @@ export function postUpsertSet(insightsOk: boolean): Record<string, ReturnType<ty
     commentsCount: sql`EXCLUDED.comments_count`,
     // Instagram's links expire; the newest is the one that loads.
     thumbnailUrl: sql`EXCLUDED.thumbnail_url`,
+    // `analyzed` is never undone: an uploaded reel still arrives without its
+    // video on every later sync.
+    visualStatus: sql`CASE WHEN "social_posts"."visual_status" = 'analyzed' THEN 'analyzed' ELSE COALESCE(EXCLUDED.visual_status, "social_posts"."visual_status") END`,
     syncedAt: sql`EXCLUDED.synced_at`,
     updatedAt: sql`NOW()`,
   };

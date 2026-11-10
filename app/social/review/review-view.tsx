@@ -28,7 +28,9 @@ export async function loadReviewPage(db: Db, review: SocialReview, now: Date) {
     .filter((p) => { const d = p.postedAt.toISOString().slice(0, 10); return d >= review.weekStart && d <= review.weekEnd; })
     .map((p) => ({ post: p, score: scorePost(p, baselines, now) }))
     .sort((a, b) => (b.score.vsUsual[b.score.judgedOn ?? "views"] ?? -1) - (a.score.vsUsual[a.score.judgedOn ?? "views"] ?? -1));
+  const missingFrom = now.getTime() - BASELINE_DAYS * 86_400_000;
   return {
+    reelsMissingVideo: posts.filter((p) => p.format === "reel" && p.visualStatus === "cover_only" && p.postedAt.getTime() >= missingFrom).length,
     scorecard: buildScorecard({
       readings: allDays,
       targets,
@@ -322,6 +324,11 @@ function PostCard({ item }: { item: PageData["weekPosts"][number] }) {
             <span style={{ fontWeight: 700, color: C.ink }}>On screen: </span>“{post.visual.visualHook}”
           </div>
         ) : null}
+        {post.visualStatus === "cover_only" ? (
+          <a href="/social/uploads" style={{ fontSize: 12, color: C.amber, fontWeight: 700, textDecoration: "none" }}>
+            Only the cover seen — upload the video →
+          </a>
+        ) : null}
         {post.permalink ? (
           <a href={post.permalink} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: C.violet, fontWeight: 600, textDecoration: "none" }}>
             Open on Instagram →
@@ -353,6 +360,13 @@ export function ReviewView({ review, data }: { review: SocialReview; data: PageD
           <Section title="Ideas from around the niche" color="#c2477a" bg="#fbeaf1"><Prose text={review.fromPeers} /></Section>
         ) : null}
       </div>
+
+      {data.reelsMissingVideo > 0 ? (
+        <a href="/social/uploads" style={{ display: "block", maxWidth: 760, margin: "32px auto 0", background: C.amberBg, color: C.ink, borderRadius: 14, padding: "14px 18px", textDecoration: "none", fontSize: 15, lineHeight: 1.5 }}>
+          <strong>{data.reelsMissingVideo} reel{data.reelsMissingVideo === 1 ? "" : "s"}</strong> from the last 90 days {data.reelsMissingVideo === 1 ? "has" : "have"} only {data.reelsMissingVideo === 1 ? "its" : "their"} cover analysed — Instagram withholds videos with licensed music.{" "}
+          <span style={{ color: C.violet, fontWeight: 700 }}>Upload them →</span>
+        </a>
+      ) : null}
 
       {data.weekPosts.length > 0 ? (
         <section style={{ margin: "40px 0 24px" }}>

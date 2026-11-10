@@ -241,3 +241,29 @@ describe("plan and ideas tried", () => {
     await expect(dispatchTool(ctx, "social_review_save", { ...review, plan: [{ day: "Mon", format: "tiktok", idea: "x" }] })).rejects.toBeInstanceOf(McpArgumentError);
   });
 });
+
+describe("reels Instagram withholds the video of", () => {
+  const coverOnly = (id: string, days: number, views: number) => reel({
+    id, postedAt: daysAgo(days), views, visualStatus: "cover_only", permalink: `https://www.instagram.com/reel/${id}/`, caption: "Don't recommend hand painting a sign in a rush 😂 an antipodean tradition",
+    visual: { basis: "cover", visualType: "photo", visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: "licensed-music-likely", cutsPerMinute: null },
+  });
+
+  it("lists cover-only reels from the last 90 days, newest first, with links, so the review can ask for them by name", async () => {
+    vi.mocked(reviewQueries.getReviewPosts).mockResolvedValue([coverOnly("A1", 14, 17_918), coverOnly("B2", 64, 15_625), coverOnly("old", 120, 9_000), reel({ postedAt: daysAgo(3), visualStatus: "analyzed" })]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.reelsMissingVisuals).toEqual([
+      { id: "A1", postedAt: daysAgo(14).toISOString(), permalink: "https://www.instagram.com/reel/A1/", caption: "Don't recommend hand painting a sign in a rush 😂 an antipodean tradition", views: 17_918 },
+      { id: "B2", postedAt: daysAgo(64).toISOString(), permalink: "https://www.instagram.com/reel/B2/", caption: expect.any(String), views: 15_625 },
+    ]);
+    expect(r.uploadPage).toBe("/social/uploads");
+    expect(r.coverage.coverOnlyReelsExcluded).toBe(2);
+  });
+
+  it("gives each post its visual status, and an upload's source", async () => {
+    vi.mocked(reviewQueries.getReviewPosts).mockResolvedValue([
+      reel({ id: "u1", postedAt: daysAgo(4), visualStatus: "analyzed", visual: { basis: "frames", visualType: "person", visualHook: "Don't do this", faceInFirst2s: true, productVisible: false, handDrawn: true, audio: "licensed-music-likely", cutsPerMinute: 30, source: "manual_upload", songUsed: "Espresso", audioNote: "Sound measured from the uploaded file" } }),
+    ]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.posts[0]).toMatchObject({ visualStatus: "analyzed", visual: { source: "manual_upload", songUsed: "Espresso", audioNote: expect.stringMatching(/uploaded file/) } });
+  });
+});

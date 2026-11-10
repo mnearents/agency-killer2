@@ -469,7 +469,7 @@ describe("syncSocialPosts — visuals", () => {
     const { db } = fakeDb({ social_posts: [{ id: "img-1", caption: "c", mediaType: "IMAGE", mediaProductType: "FEED", transcriptionStatus: null, transcriptionAttempts: 0, analysisStatus: null, analysisAttempts: null, visualStatus: null, visualAttempts: null, durationMs: null }] });
     const r = await syncSocialPosts({
       client: c, db, igUserId: "ig1", anthropic, now: () => NOW, sleep: noSleep,
-      visuals: { video: { inspect: vi.fn(), frames: vi.fn(), contactSheet: vi.fn() }, fetchMedia: vi.fn(), writeTemp: vi.fn() },
+      visuals: { video: { inspect: vi.fn(), frames: vi.fn(), contactSheet: vi.fn(), extractAudio: vi.fn() }, fetchMedia: vi.fn(), writeTemp: vi.fn() },
     });
     expect(c.getMediaAssets).toHaveBeenCalledWith("img-1");
     expect(r.visuals).toMatchObject({ configured: true, unavailable: 1 });
@@ -478,5 +478,28 @@ describe("syncSocialPosts — visuals", () => {
   it("says visuals are not configured without the video tools, rather than reporting none to do", async () => {
     const r = await syncSocialPosts({ client: client(), db: fakeDb().db, igUserId: "ig1", anthropic: createMockAnthropicClient(), now: () => NOW, sleep: noSleep });
     expect(r.visuals).toEqual({ configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] });
+  });
+});
+
+describe("cover-only reels", () => {
+  const at = { igUserId: "ig", syncedAt: NOW, insights: null };
+
+  // Instagram omits media_url on reels carrying licensed music.
+  it("flags a reel Instagram gives no video for as cover only", () => {
+    const r = transformMediaToPost({ ...at, media: makeMedia({ media_type: "VIDEO", media_product_type: "REELS", media_url: undefined, thumbnail_url: "https://cdn/c.jpg" }) });
+    expect(r.visualStatus).toBe("cover_only");
+  });
+
+  it("leaves a reel with its video, and anything that is not a reel, unflagged", () => {
+    expect(transformMediaToPost({ ...at, media: makeMedia({ media_type: "VIDEO", media_product_type: "REELS", media_url: "https://cdn/v.mp4" }) }).visualStatus).toBeNull();
+    expect(transformMediaToPost({ ...at, media: makeMedia({ media_url: undefined }) }).visualStatus).toBeNull();
+  });
+
+  // An uploaded reel was analysed from its frames; the next sync, which still
+  // gets no video, must not undo that.
+  it("never sets an analysed reel back to cover only", () => {
+    const set = postUpsertSet(true) as Record<string, { queryChunks?: unknown[] }>;
+    expect(JSON.stringify(set.visualStatus)).toMatch(/analyzed/);
+    expect(Object.keys(postUpsertSet(false))).toContain("visualStatus");
   });
 });

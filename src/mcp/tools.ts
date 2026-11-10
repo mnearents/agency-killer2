@@ -1710,8 +1710,14 @@ function describeVisual(postId: string, v: ReviewPostVisual | null | undefined) 
     cuts: v.cuts ?? null,
     cutsPerMinute: v.cutsPerMinute,
     contactSheetPath: v.hasContactSheet ? `/api/social/sheet/${postId}` : null,
+    /** api, or manual_upload for a reel Instagram withheld and Matt uploaded. */
+    source: v.source ?? null,
+    songUsed: v.songUsed ?? null,
+    audioNote: v.audioNote ?? null,
   };
 }
+
+const UPLOAD_PAGE = "/social/uploads";
 
 const normaliseUsername = (raw: string) => raw.trim().replace(/^@/, "").toLowerCase();
 
@@ -1740,6 +1746,7 @@ const socialReview: McpTool = {
     "`posts`: every post in the week with its numbers, `vsUsual` (each measure as a multiple of HER OWN median for that format over 90 days: 2 = twice her usual), a `verdict` (breakout ≥3x, above ≥1.25x, typical, below ≤0.75x, settling under 48h, not-enough-history, not-measured), and what it was — hook, hook type, approach, audience, topic, the words of its first three seconds, its length. " +
     "`peers`: each tracked account in the niche (see social_peers) — its followers, the week's posts and its standouts of the last 30 days against its OWN usual, with hooks read from captions; ideas, not a scoreboard. " +
     "Each post also has `visual` — what it SHOWS, read by Claude from the reel's frames (0, 1, 2, 3s, then every 3s), or only its cover when Instagram withholds the video (licensed music), or the image or carousel slides: type, on-screen text and the on-screen hook, face in the first 2 seconds, product visible, hand-drawn (her illustration), setting, emotion, and measured cuts per minute and sound. `looked` says which; a cover says nothing about the opening seconds. " +
+    "`visualStatus` per reel: `cover_only` when Instagram withheld its video (licensed music) and nobody has uploaded it, `analyzed` when its frames were seen — from Instagram or a manual upload (`visual.source = manual_upload`, whose `audioNote` says the sound is the uploaded file's). `reelsMissingVisuals` lists the cover-only reels of the last 90 days with links; ask for them by name with their permalinks and point to the dashboard's upload page (`uploadPage`). " +
     "`scorecard`: followers against the straight-line pace to the follower target, posts and reels in the week against their weekly targets (set with social_target_set); `no-target` means none is set. " +
     "`usual`: her medians per format. `patterns`: over 90 days, which hook types, approaches, audiences, topics, formats, reel lengths, visual types, on-screen hooks, a face in the first 2s, product shown, hand-drawn art, sound and edit pace beat her usual (groups of 3+ posts only). `coverage`: what the numbers lack — read it before concluding anything. `previousReview`: last review's suggestions, to check whether they were tried. " +
     "Write the review for Tara, who makes the content and reads it on the dashboard: plain words, no jargon or raw ratios without meaning, lead with what worked and why, be honest about what did not, and end with at most three concrete things to try. " +
@@ -1804,9 +1811,24 @@ const socialReview: McpTool = {
         judgedOn: score.judgedOn,
         vsUsual: score.vsUsual,
         ageHours: score.ageHours,
+        visualStatus: p.visualStatus ?? null,
         visual: describeVisual(p.id, p.visual),
       };
     });
+
+    // Reels Instagram withheld the video of and nobody has uploaded yet: the
+    // review can ask for them by name, with links.
+    const missingFrom = now.getTime() - BASELINE_DAYS * 86_400_000;
+    const reelsMissingVisuals = posts
+      .filter((p) => p.format === "reel" && p.visualStatus === "cover_only" && p.postedAt.getTime() >= missingFrom)
+      .sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime())
+      .map((p) => ({
+        id: p.id,
+        postedAt: p.postedAt.toISOString(),
+        permalink: p.permalink,
+        caption: p.caption ? p.caption.replace(/\s+/g, " ").slice(0, 120) : null,
+        views: p.views,
+      }));
 
     const usual = [...baselines.entries()].map(([format, b]) => ({
       format,
@@ -1839,6 +1861,9 @@ const socialReview: McpTool = {
     const lookedAt = described.filter((p) => p.visual !== null);
     const coverOnly = lookedAt.filter((p) => p.format === "reel" && p.visual!.looked === "cover").length;
     if (lookedAt.length < described.length) notes.push(`${described.length - lookedAt.length} post(s) not yet looked at for what they show.`);
+    if (reelsMissingVisuals.length > 0) {
+      notes.push(`${reelsMissingVisuals.length} reel(s) from the last 90 days have only their cover analysed and are left out of every opening-seconds pattern until their video is uploaded at ${UPLOAD_PAGE} (listed in reelsMissingVisuals).`);
+    }
     if (coverOnly > 0) notes.push(`${coverOnly} reel(s) seen by their cover only: Instagram withholds the video of reels with licensed music, so their opening seconds, cuts and face-on-screen are unknown.`);
     notes.push("Hook, topic and approach come from words (caption and speech); `visual` comes from images, which carry no sound beyond what ffmpeg measures.");
 
@@ -1852,6 +1877,8 @@ const socialReview: McpTool = {
       posts: described,
       usual,
       patterns: findPatterns(posts, baselines, now).slice(0, 60),
+      reelsMissingVisuals,
+      uploadPage: UPLOAD_PAGE,
       scorecard: buildScorecard({
         readings: allDays,
         targets,
@@ -1869,6 +1896,7 @@ const socialReview: McpTool = {
         accountDaysMeasured: thisWeek.daysMeasured,
         postsLookedAt: lookedAt.length,
         reelsSeenByCoverOnly: coverOnly,
+        coverOnlyReelsExcluded: reelsMissingVisuals.length,
         baselinePosts: posts.filter((p) => isSettled(p, now)).length,
         notes,
       },

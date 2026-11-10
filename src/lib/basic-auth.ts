@@ -1,8 +1,7 @@
 /**
- * HTTP Basic auth for the cost-entry form (#34).
- *
- * The dashboard is otherwise read-only. This is the one surface that writes,
- * which is why it is the one surface with a credential.
+ * HTTP Basic auth for the dashboard's write surfaces: the cost-entry form
+ * (#34) and reel uploads (/social/uploads). Everything else is read-only,
+ * which is why these are the surfaces with a credential.
  *
  * **It fails closed on absent configuration.** A missing password denies every
  * request rather than allowing them: an auth check that switches itself off

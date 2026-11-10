@@ -722,6 +722,14 @@ export const socialPosts = pgTable(
     durationMs: integer("duration_ms"),
     /** What is said in the first three seconds — the hook, when it is spoken. */
     openingWords: text("opening_words"),
+    /**
+     * Reels only. `cover_only`: Instagram withholds the video (it does so for
+     * reels carrying licensed music), so only the cover has been seen and the
+     * reel waits for a manual upload at /social/uploads. `analyzed`: frames
+     * were analysed, from Instagram's video or an upload. Null: not looked at
+     * yet, or not a reel. Once `analyzed`, a later sync never sets it back.
+     */
+    visualStatus: text("visual_status"),
 
     /**
      * Why this post does or does not have a transcript.
@@ -978,6 +986,12 @@ export const socialPostVisuals = pgTable("social_post_visuals", {
   meanVolumeDb: real("mean_volume_db"),
   /** The frames tiled into one JPEG, for the dashboard. Reels with video only. */
   contactSheet: bytea("contact_sheet"),
+  /** api | manual_upload — where the video came from. */
+  source: text("source"),
+  /** Uploads only: the track the reel was posted with, as typed in. Instagram's API does not give it. */
+  songUsed: text("song_used"),
+  /** Uploads only: why the measured sound may not be the posted sound. */
+  audioNote: text("audio_note"),
   detail: text("detail"),
   analysedAt: timestamp("analysed_at", { withTimezone: true }).notNull(),
 });

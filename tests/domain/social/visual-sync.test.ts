@@ -20,6 +20,7 @@ function video(): VideoToolkit {
     inspect: vi.fn().mockResolvedValue({ durationMs: 10_000, hasAudio: true, meanVolumeDb: -20, cuts: 4 }),
     frames: vi.fn().mockImplementation(async (_f: string, times: number[]) => times.map(() => Buffer.from("jpg"))),
     contactSheet: vi.fn().mockResolvedValue(Buffer.from("sheet")),
+    extractAudio: vi.fn().mockResolvedValue(Buffer.from("aac")),
   };
 }
 
@@ -118,5 +119,27 @@ describe("syncVisuals — peers", () => {
     await syncVisuals(d, []);
     expect(vi.mocked(anthropic.generate).mock.calls[0][1]!.images!.map((i) => i.label)).toEqual(["Cover image"]);
     expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ postId: "p1", account: "peer", basis: "cover", audio: null });
+  });
+});
+
+describe("syncVisuals — the post's visual status", () => {
+  it("marks a reel analysed from its frames", async () => {
+    const { deps: d, updates } = deps({ social_posts: [ownReel] });
+    await syncVisuals(d, []);
+    expect(updates.filter((u) => u.table === "social_posts").map((u) => u.values.visualStatus)).toContain("analyzed");
+  });
+
+  it("marks a reel seen only by its cover as cover only", async () => {
+    const { deps: d, updates } = deps({ social_posts: [ownReel] }, {
+      client: createMockInstagramApiClient({ getMediaAssets: vi.fn().mockResolvedValue({ videoUrl: null, coverUrl: "https://cdn/c.jpg", imageUrls: [] }) }),
+    });
+    await syncVisuals(d, []);
+    expect(updates.filter((u) => u.table === "social_posts").map((u) => u.values.visualStatus)).toContain("cover_only");
+  });
+
+  it("records where the frames came from", async () => {
+    const { deps: d, inserts } = deps({ social_posts: [ownReel] });
+    await syncVisuals(d, []);
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values.source).toBe("api");
   });
 });

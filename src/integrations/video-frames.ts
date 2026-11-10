@@ -29,6 +29,8 @@ export interface VideoToolkit {
   frames(file: string, timesMs: number[]): Promise<Buffer[]>;
   /** The frames tiled into one JPEG, left to right, top to bottom. */
   contactSheet(frames: Buffer[]): Promise<Buffer>;
+  /** The sound alone, mono AAC — small enough to hand a transcriber. */
+  extractAudio(file: string): Promise<Buffer>;
 }
 
 /** Quieter than this on average is silence, not a quiet track. */
@@ -90,6 +92,17 @@ export function createFfmpegToolkit(binaries = { ffmpeg: "ffmpeg", ffprobe: "ffp
           out.push(await readFile(path));
         }
         return out;
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+
+    async extractAudio(file) {
+      const dir = await mkdtemp(join(tmpdir(), "audio-"));
+      try {
+        const path = join(dir, "audio.m4a");
+        await run(binaries.ffmpeg, ["-hide_banner", "-loglevel", "error", "-i", file, "-vn", "-ac", "1", "-c:a", "aac", "-b:a", "64k", "-y", path], big);
+        return await readFile(path);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

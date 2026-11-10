@@ -61,6 +61,10 @@ export interface ReviewPostVisual {
   productFirstSeen?: string | null;
   cuts?: number | null;
   hasContactSheet?: boolean;
+  /** api | manual_upload */
+  source?: string | null;
+  songUsed?: string | null;
+  audioNote?: string | null;
 }
 
 export interface ReviewPost {
@@ -85,6 +89,8 @@ export interface ReviewPost {
   openingWords: string | null;
   analysis: ReviewPostAnalysis | null;
   visual?: ReviewPostVisual | null;
+  /** Reels: cover_only (video withheld, not uploaded) | analyzed | null. */
+  visualStatus?: string | null;
 }
 
 export function formatGroup(mediaType: string, mediaProductType: string | null): FormatGroup {

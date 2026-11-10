@@ -41,6 +41,11 @@ export interface AssemblyAiClient {
   listCompletedTranscriptIds(): Promise<string[]>;
   /** A transcript already made, with its words. Throws if it cannot be read. */
   getTranscript(id: string): Promise<TranscriptResult>;
+  /**
+   * Hands AssemblyAI a file that has no public URL — an uploaded reel — and
+   * returns the private link `transcribe` accepts.
+   */
+  uploadFile(data: Buffer): Promise<string>;
 }
 
 interface SubmitResponse {
@@ -81,6 +86,18 @@ export function createAssemblyAiClient(apiKey: string): AssemblyAiClient {
   };
 
   return {
+    async uploadFile(data) {
+      const response = await fetch(`${ASSEMBLYAI_BASE}/upload`, {
+        method: "POST",
+        headers: { authorization: apiKey, "content-type": "application/octet-stream" },
+        body: new Uint8Array(data),
+      });
+      if (!response.ok) {
+        throw new Error(`AssemblyAI upload error (${response.status}): ${(await response.text()).slice(0, 200)}`);
+      }
+      return ((await response.json()) as { upload_url: string }).upload_url;
+    },
+
     async transcribe(mediaUrl) {
       // Step 1: Submit transcription request
       console.log(`[assemblyai] Submitting transcription for: ${mediaUrl.slice(0, 80)}...`);

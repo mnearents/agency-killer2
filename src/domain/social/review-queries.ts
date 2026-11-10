@@ -37,6 +37,7 @@ export async function getReviewPosts(db: Db, since: Date): Promise<ReviewPost[]>
       durationMs: socialPosts.durationMs,
       insightsStatus: socialPosts.insightsStatus,
       openingWords: socialPosts.openingWords,
+      postVisualStatus: socialPosts.visualStatus,
       analysisStatus: socialPostAnalyses.status,
       hook: socialPostAnalyses.hook,
       hookSource: socialPostAnalyses.hookSource,
@@ -66,6 +67,9 @@ export async function getReviewPosts(db: Db, since: Date): Promise<ReviewPost[]>
       vEmotion: socialPostVisuals.emotion,
       vBranding: socialPostVisuals.branding,
       vHasSheet: sql<boolean>`${socialPostVisuals.contactSheet} IS NOT NULL`,
+      vSource: socialPostVisuals.source,
+      vSong: socialPostVisuals.songUsed,
+      vAudioNote: socialPostVisuals.audioNote,
     })
     .from(socialPosts)
     .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPosts.id))
@@ -100,6 +104,7 @@ export async function getReviewPosts(db: Db, since: Date): Promise<ReviewPost[]>
         }
       : null,
     visual: toVisual(r),
+    visualStatus: r.postVisualStatus,
   }));
 }
 
@@ -108,6 +113,7 @@ type VisualColumns = {
   vProduct: number | null; vProductFirst: string | null; vHandDrawn: number | null; vAudio: string | null; vCuts: number | null;
   vCutsPerMinute: number | null; vSummary: string | null; vText: Array<{ at: string; text: string }> | null; vFirstFrame: string | null;
   vSetting: string | null; vEmotion: string | null; vBranding: number | null; vHasSheet: boolean | null;
+  vSource: string | null; vSong: string | null; vAudioNote: string | null;
 };
 
 const asBool = (v: number | null) => (v === null ? null : v === 1);
@@ -120,6 +126,7 @@ function toVisual(r: VisualColumns): ReviewPostVisual | null {
     productFirstSeen: r.vProductFirst, handDrawn: asBool(r.vHandDrawn), audio: r.vAudio, cuts: r.vCuts, cutsPerMinute: r.vCutsPerMinute,
     summary: r.vSummary, onScreenText: r.vText, firstFrame: r.vFirstFrame, setting: r.vSetting, emotion: r.vEmotion,
     branding: asBool(r.vBranding), hasContactSheet: r.vHasSheet === true,
+    source: r.vSource, songUsed: r.vSong, audioNote: r.vAudioNote,
   };
 }
 
@@ -252,6 +259,9 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       vEmotion: socialPostVisuals.emotion,
       vBranding: socialPostVisuals.branding,
       vHasSheet: sql<boolean>`${socialPostVisuals.contactSheet} IS NOT NULL`,
+      vSource: socialPostVisuals.source,
+      vSong: socialPostVisuals.songUsed,
+      vAudioNote: socialPostVisuals.audioNote,
     })
     .from(socialPeerPosts)
     .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPeerPosts.id))
@@ -320,4 +330,58 @@ export async function recordTarget(db: Db, t: { metric: TargetMetric; value: num
 export async function getContactSheet(db: Db, postId: string): Promise<Buffer | null> {
   const [row] = await db.select({ sheet: socialPostVisuals.contactSheet }).from(socialPostVisuals).where(eq(socialPostVisuals.postId, postId)).limit(1);
   return row?.sheet ?? null;
+}
+
+export interface UploadableReel {
+  id: string;
+  postedAt: Date;
+  caption: string | null;
+  permalink: string | null;
+  thumbnailUrl: string | null;
+  views: number | null;
+  visualStatus: string | null;
+  /** Set once uploaded and analysed. */
+  upload: { analysedAt: Date; songUsed: string | null; visualHook: string | null; summary: string | null } | null;
+}
+
+/**
+ * Reels for the upload page: those Instagram withheld the video of, waiting,
+ * and those already uploaded, newest first, since a date.
+ */
+export async function getUploadableReels(db: Db, since: Date): Promise<UploadableReel[]> {
+  const rows = await db
+    .select({
+      id: socialPosts.id,
+      postedAt: socialPosts.postedAt,
+      caption: socialPosts.caption,
+      permalink: socialPosts.permalink,
+      thumbnailUrl: socialPosts.thumbnailUrl,
+      views: socialPosts.views,
+      visualStatus: socialPosts.visualStatus,
+      source: socialPostVisuals.source,
+      visualOk: socialPostVisuals.status,
+      analysedAt: socialPostVisuals.analysedAt,
+      songUsed: socialPostVisuals.songUsed,
+      visualHook: socialPostVisuals.visualHook,
+      summary: socialPostVisuals.summary,
+    })
+    .from(socialPosts)
+    .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
+    .where(and(
+      gte(socialPosts.postedAt, since),
+      sql`(${socialPosts.visualStatus} = 'cover_only' OR ${socialPostVisuals.source} = 'manual_upload')`,
+    ))
+    .orderBy(desc(socialPosts.postedAt));
+  return rows.map((r) => ({
+    id: r.id,
+    postedAt: r.postedAt,
+    caption: r.caption,
+    permalink: r.permalink,
+    thumbnailUrl: r.thumbnailUrl,
+    views: r.views,
+    visualStatus: r.visualStatus,
+    upload: r.source === "manual_upload" && r.visualOk === "ok" && r.analysedAt
+      ? { analysedAt: r.analysedAt, songUsed: r.songUsed, visualHook: r.visualHook, summary: r.summary }
+      : null,
+  }));
 }

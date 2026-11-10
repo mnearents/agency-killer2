@@ -70,13 +70,33 @@ async function picture(deps: VisualSyncDeps, url: string, label: string): Promis
   return { label, mediaType: contentType as ImageType, data };
 }
 
-interface Looked {
+export interface Looked {
   kind: VisualKind;
   images: PromptImage[];
   frameTimesMs: number[] | null;
   facts: VideoFacts | null;
   sheet: Buffer | null;
   audio: AudioKind | null;
+}
+
+/** A reel's video file on disk: measured, framed and tiled by ffmpeg. */
+export async function lookAtVideoFile(
+  deps: Pick<VisualSyncDeps, "video">,
+  path: string,
+  transcriptionStatus: string | null,
+): Promise<Looked> {
+  const facts = await deps.video.inspect(path);
+  const times = frameTimes(facts.durationMs);
+  const frames = await deps.video.frames(path, times);
+  const labels = buildVisualPrompt({ kind: "frames", account: "own", caption: null, frameTimesMs: times }).labels;
+  return {
+    kind: "frames",
+    images: frames.map((data, i) => ({ label: labels[i], mediaType: "image/jpeg" as const, data })),
+    frameTimesMs: times,
+    facts,
+    sheet: await deps.video.contactSheet(frames),
+    audio: classifyAudio({ videoAvailable: true, facts, transcriptionStatus }),
+  };
 }
 
 /** What there is to look at for one of Tara's posts. Null: nothing. */
@@ -89,18 +109,7 @@ async function lookAtOwn(
   if (isVideo && assets.videoUrl) {
     const file = await deps.writeTemp((await deps.fetchMedia(assets.videoUrl)).data, "mp4");
     try {
-      const facts = await deps.video.inspect(file.path);
-      const times = frameTimes(facts.durationMs);
-      const frames = await deps.video.frames(file.path, times);
-      const labels = buildVisualPrompt({ kind: "frames", account: "own", caption: null, frameTimesMs: times }).labels;
-      return {
-        kind: "frames",
-        images: frames.map((data, i) => ({ label: labels[i], mediaType: "image/jpeg" as const, data })),
-        frameTimesMs: times,
-        facts,
-        sheet: await deps.video.contactSheet(frames),
-        audio: classifyAudio({ videoAvailable: true, facts, transcriptionStatus: post.transcriptionStatus }),
-      };
+      return await lookAtVideoFile(deps, file.path, post.transcriptionStatus);
     } finally {
       await file.remove();
     }
@@ -130,7 +139,7 @@ async function lookAtPeer(deps: VisualSyncDeps, post: { mediaType: string; media
   return lookAtImages(deps, urls);
 }
 
-async function record(deps: VisualSyncDeps, row: typeof socialPostVisuals.$inferInsert): Promise<void> {
+async function record(deps: Pick<VisualSyncDeps, "db">, row: typeof socialPostVisuals.$inferInsert): Promise<void> {
   const { postId: _postId, ...set } = row;
   await deps.db.insert(socialPostVisuals).values(row).onConflictDoUpdate({ target: socialPostVisuals.postId, set });
 }
@@ -141,14 +150,22 @@ const EMPTY = {
   emotion: null, branding: null, audio: null, durationMs: null, cuts: null, cutsPerMinute: null, meanVolumeDb: null, contactSheet: null,
 };
 
-/** Looks, asks, records. Returns what happened, for the counts. */
-async function analyseOne(
-  deps: VisualSyncDeps,
+/** Fields an upload sets on top of what was measured. */
+export type VisualOverrides = Partial<Pick<typeof socialPostVisuals.$inferInsert, "source" | "songUsed" | "audioNote" | "audio">>;
+
+/**
+ * Looks, asks, records. Returns what happened, for the counts. `overrides`
+ * are written over the measured fields — an upload says where its frames
+ * came from and what its sound does and does not show.
+ */
+export async function analyseOne(
+  deps: Pick<VisualSyncDeps, "db" | "anthropic" | "now">,
   account: "own" | "peer",
   post: { id: string; caption: string | null; openingWords?: string | null; visualAttempts: number | null },
   look: () => Promise<Looked | null>,
   errors: string[],
-): Promise<{ outcome: "ok" | "error" | "unavailable"; detail?: string }> {
+  overrides: VisualOverrides = {},
+): Promise<{ outcome: "ok" | "error" | "unavailable"; detail?: string; summary?: string; visualHook?: string | null }> {
   const attempts = (post.visualAttempts ?? 0) + 1;
   const now = deps.now();
   let looked: Looked | null;
@@ -175,6 +192,8 @@ async function analyseOne(
     cutsPerMinute: facts?.durationMs ? Math.round((facts.cuts / (facts.durationMs / 60_000)) * 10) / 10 : null,
     meanVolumeDb: facts?.meanVolumeDb !== undefined && facts?.meanVolumeDb !== null && Number.isFinite(facts.meanVolumeDb) ? facts.meanVolumeDb : null,
     contactSheet: looked.sheet,
+    source: "api",
+    ...overrides,
   };
 
   const { prompt } = buildVisualPrompt({
@@ -203,7 +222,7 @@ async function analyseOne(
     productVisible: flag(parsed.productVisible), productFirstSeen: parsed.productFirstSeen, setting: parsed.setting,
     emotion: parsed.emotion, branding: flag(parsed.branding), detail: null, analysedAt: now,
   });
-  return { outcome: "ok" };
+  return { outcome: "ok", summary: parsed.summary, visualHook: parsed.visualHook };
 }
 
 export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promise<VisualSyncResult> {
@@ -226,6 +245,7 @@ export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promi
       transcriptionStatus: socialPosts.transcriptionStatus,
       openingWords: socialPosts.openingWords,
       durationMs: socialPosts.durationMs,
+      postVisualStatus: socialPosts.visualStatus,
       visualStatus: socialPostVisuals.status,
       visualAttempts: socialPostVisuals.attempts,
     })
@@ -242,15 +262,24 @@ export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promi
   for (const post of own) {
     if (!shouldAnalyseVisual(post.visualStatus === null ? null : { status: post.visualStatus, attempts: post.visualAttempts ?? 0 })) continue;
     let measuredLength: number | null = null;
+    let lookedKind: VisualKind | null = null;
     const result = await analyseOne(deps, "own", post, async () => {
       const looked = await lookAtOwn(deps, post);
       measuredLength = looked?.facts?.durationMs ?? null;
+      lookedKind = looked?.kind ?? null;
       return looked;
     }, errors);
-    // A reel never transcribed, or transcribed before lengths were kept,
-    // gets its length from the video itself.
-    if (post.durationMs === null && measuredLength !== null) {
-      await deps.db.update(socialPosts).set({ durationMs: measuredLength, updatedAt: now }).where(eq(socialPosts.id, post.id));
+    // What the post record says: frames seen, or only the cover until
+    // someone uploads the video. An upload's `analyzed` is never undone.
+    const status = lookedKind === "frames" && result.outcome === "ok" ? "analyzed" : lookedKind === "cover" ? "cover_only" : null;
+    const change = {
+      ...(status !== null && post.postVisualStatus !== "analyzed" && post.postVisualStatus !== status ? { visualStatus: status } : {}),
+      // A reel never transcribed, or transcribed before lengths were kept,
+      // gets its length from the video itself.
+      ...(post.durationMs === null && measuredLength !== null ? { durationMs: measuredLength } : {}),
+    };
+    if (Object.keys(change).length > 0) {
+      await deps.db.update(socialPosts).set({ ...change, updatedAt: now }).where(eq(socialPosts.id, post.id));
     }
     count(post.id, result);
   }

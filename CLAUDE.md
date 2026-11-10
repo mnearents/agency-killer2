@@ -32,9 +32,11 @@ Slack + dashboard — she needs layman-friendly language, never terminal output.
 
 Two Railway services from one repo, different start commands:
 
-- **Web** (`next start`): Dashboard pages. Read-only except `/costs`, which
-  records recurring overhead behind Basic auth (#34) — the one write surface,
-  and the one place a credential exists. No heavy processing.
+- **Web** (`next start`): Dashboard pages. Read-only except two write
+  surfaces behind the same Basic auth (`COST_FORM_USER` /
+  `COST_FORM_PASSWORD`): `/costs`, which records recurring overhead (#34),
+  and `/social/uploads`, where withheld reels are uploaded and analysed with
+  ffmpeg and Claude in the request — the web service's one heavy job.
 - **Worker** (`tsx src/worker/index.ts`): Long-running process. Runs scheduled
   tasks via node-cron AND the Slack bot via Bolt socket mode. All "agency" logic
   executes here.
@@ -398,6 +400,19 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   written by the model; no target reads "no target", never a lead over 0.
   The review saves `plan` (a row per post) and `ideasTried` as rows — the
   MCP `rows` argument type, whose fields are as strict as arguments.
+- **Reels Instagram withholds can be uploaded.** A reel without
+  `media_url` is `social_posts.visual_status = 'cover_only'`, set by the
+  sync and the visual step; `/social/uploads` lists the last 90 days' with
+  links, and Matt uploads Instagram's own download (PUT
+  `/api/social/upload/<media id>`, streamed to disk, ≤500MB, never through
+  MCP). `upload.ts` runs it through the same `lookAtVideoFile` and
+  `analyseOne`, transcribes any speech (AssemblyAI file upload) and marks
+  the post's text analysis `stale` so its hook is re-read; the row says
+  `source = 'manual_upload'` and why its sound may not be the posted
+  track's, and the post becomes `analyzed`, which no sync undoes. The API
+  exposes no track name (no music field exists; `boost_eligibility_info`
+  only says "Remove or choose different audio."), so the song is typed in.
+  `social_review` lists `reelsMissingVisuals` with permalinks.
 - **ManyChat has no reporting API** (its API lists flows, sends, and manages
   subscribers), so keyword, DM and email counts are not in the review.
 - **`social_review`** (MCP) assembles a week: account vs the week before and

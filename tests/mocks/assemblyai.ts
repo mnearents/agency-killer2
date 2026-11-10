@@ -14,6 +14,7 @@ export function createMockAssemblyAiClient(
     }),
     listCompletedTranscriptIds: vi.fn().mockResolvedValue([]),
     getTranscript: vi.fn().mockRejectedValue(new Error("no transcript")),
+    uploadFile: vi.fn().mockResolvedValue("https://cdn.assemblyai.com/upload/mock"),
     ...overrides,
   };
 }
