@@ -31,5 +31,7 @@ async function freshCovers(ids: string[]): Promise<Map<string, string>> {
 
 export default async function ReelUploadsPage() {
   const reels = await getUploadableReels(db(), new Date(Date.now() - DAYS * 86_400_000));
-  return <UploadsView reels={reels} covers={await freshCovers(reels.map((r) => r.id))} days={DAYS} />;
+  // Only reels still waiting show a cover.
+  const covers = await freshCovers(reels.filter((r) => !r.upload).map((r) => r.id));
+  return <UploadsView reels={reels} covers={covers} days={DAYS} />;
 }
