@@ -2,10 +2,9 @@
  * Every file CLAUDE.md's project tree names has to exist.
  *
  * CLAUDE.md listed `src/integrations/attentive.ts # Email/SMS events` for the
- * life of the project. There is no such file — Attentive reporting is scraped
- * by `attentive-agent.ts` and the API client is `attentive-write.ts`. Anyone
- * reading the map went looking for a file that was never written, and the two
- * that exist behave nothing like the one described.
+ * life of the project. There was no such file — Attentive reporting was
+ * scraped by a separate agent, and the API client is `attentive-write.ts`.
+ * Anyone reading the map went looking for a file that was never written.
  *
  * CLAUDE.md, "A claim in a comment or docstring is a claim about code that
  * must exist." The project map is the largest such claim in the repo and was

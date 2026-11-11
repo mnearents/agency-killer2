@@ -40,8 +40,6 @@ const ACK_MESSAGES: Record<string, string> = {
   "sync:social": "Syncing Instagram data...",
   "report:weekly": "Generating weekly report...",
   "social:backfill": "Backfilling Instagram insights (this may take a few minutes)...",
-  "sync:attentive": "Syncing Attentive email/SMS data (logging in and exporting reports)...",
-  "import:attentive": "Importing Attentive data...",
 };
 
 export function createSlackApp(deps: SlackAppDeps) {
@@ -173,8 +171,6 @@ When the user asks a question:
               "• `!calendar` — View upcoming week's calendar",
               "• `!calendar add <date> <channel> <title>` — Add entry",
               "• `!sync social` — Pull Instagram posts and insights",
-              "• `!sync attentive` — Auto-sync Attentive email/SMS data",
-              "• `!import attentive` — Import Attentive CSV (attach file)",
               "• `!inventory` — What's in stock, what's running out",
               "• `!inventory alerts` — Only the stock problems worth acting on",
               "• `!sync inventory` — Pull the latest stock levels from Shopify",

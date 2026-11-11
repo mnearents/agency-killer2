@@ -15,7 +15,6 @@ import {
   socialPosts,
   socialAccountDays,
   socialPeerDays,
-  attentiveCampaigns,
   sealSubscriptions,
   syncRuns,
   pilotNotes,
@@ -27,7 +26,6 @@ import {
   webSessions,
   fulfilmentInvoices,
 } from "./schema";
-import { ATTENTIVE_SYNC_TASK } from "@/domain/attentive/coverage";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
 
@@ -135,8 +133,6 @@ export function classifyFreshness(rows: RawFreshness[], now: Date): SourceFreshn
 
 // Everything below syncs daily, so a day and a half without one is a problem.
 const DAILY_SYNC_STALE_HOURS = 36;
-// Attentive has no API — Matt imports it by hand, so two weeks is normal.
-const MANUAL_IMPORT_STALE_HOURS = 336;
 
 /** The most recent recorded run for a task, or null if it has never run. */
 async function lastRunFor(db: Db, task: string): Promise<LastRun | null> {
@@ -180,7 +176,6 @@ export const FRESHNESS_SOURCES = [
     { source: "Instagram account days", table: socialAccountDays, name: "social_account_days", column: socialAccountDays.insightsFetchedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:social" },
     // The task makes a failed scrape (an unanswered 2FA code) stale at once,
     // rather than only after a fortnight of missing days.
-    { source: "Email/SMS (Attentive)", table: attentiveCampaigns, name: "attentive_campaigns", column: attentiveCampaigns.date, basis: "latest-data" as const, staleAfterHours: MANUAL_IMPORT_STALE_HOURS, task: ATTENTIVE_SYNC_TASK },
     // Imported by hand from PDFs. Bills are fortnightly and arrive a few days
     // after the period closes, so three weeks past the last covered day means
     // one was missed — and the margin tools are running on old averages.

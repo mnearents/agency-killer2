@@ -4,7 +4,9 @@
 
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm install --frozen-lockfile && pnpm exec playwright install --with-deps chromium"
+# No browser install: the Attentive scraper was the worker's only Playwright
+# user, and Attentive reporting now comes from Attentive's own connector.
+buildCommand = "pnpm install --frozen-lockfile"
 
 [deploy]
 startCommand = "pnpm start:worker"

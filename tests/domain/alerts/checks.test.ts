@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  checkNoEmailSends,
   checkReelOutperforming,
   checkRoasDropped,
   checkRevenueAnomaly,
@@ -25,29 +24,6 @@ describe("buildCheckFailureAlert", () => {
   it("warns that a clean report may be incomplete rather than implying all-clear", () => {
     const alert = buildCheckFailureAlert(["inventory"]);
     expect(alert!.message.toLowerCase()).toContain("incomplete");
-  });
-});
-
-describe("checkNoEmailSends", () => {
-  it("fires when no sends and nothing on calendar", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 0, hasUpcomingCalendarEntry: false });
-    expect(alert).not.toBeNull();
-    expect(alert!.type).toBe("no-sends");
-  });
-
-  it("does not fire when emails were sent", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 5000, smsDelivered: 0, hasUpcomingCalendarEntry: false });
-    expect(alert).toBeNull();
-  });
-
-  it("does not fire when SMS was sent", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 1000, hasUpcomingCalendarEntry: false });
-    expect(alert).toBeNull();
-  });
-
-  it("does not fire when something is on the calendar", () => {
-    const alert = checkNoEmailSends({ emailDelivered: 0, smsDelivered: 0, hasUpcomingCalendarEntry: true });
-    expect(alert).toBeNull();
   });
 });
 

@@ -54,6 +54,15 @@ describe("marketing_context", () => {
     expect(r.goalsPace).not.toHaveProperty("error");
   });
 
+  // Attentive's connector holds email and SMS now; the brief is told where.
+  it("points email and SMS at the Attentive connector", async () => {
+    const r = (await dispatchTool(ctx, "marketing_context", {})) as Record<string, any>;
+    expect(r.emailSms).toEqual({
+      source: "attentive-connector",
+      note: "Email and SMS results are not collected here. Read them from the Attentive connector.",
+    });
+  });
+
   it("gives the top and bottom products with their roles", async () => {
     const r = (await dispatchTool(ctx, "marketing_context", {})) as Record<string, any>;
     expect(r.products.top[0]).toMatchObject({ title: "Wall Calendar", roleDecided: false });

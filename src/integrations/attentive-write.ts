@@ -7,9 +7,9 @@
  * fails to send ones we believe went out. The extra strictness below is for
  * that reason, not for symmetry with the other clients.
  *
- * Deliberately separate from `attentive-agent.ts`, which is a Playwright UI
- * scraper that exports a bare function. This follows the interface + factory
- * pattern so a test can swap it at the boundary.
+ * It follows the interface + factory pattern so a test can swap it at the
+ * boundary. Attentive's reporting is not read here: the API has none, and
+ * reports come from Attentive's own connector in Claude.
  *
  * ## What the API actually guarantees, and what it does not
  *

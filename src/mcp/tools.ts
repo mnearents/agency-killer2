@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Db } from "@/db/client";
-import { queryLog, attentiveCampaigns, attentiveCampaignMessages, attentiveJourneyMessages } from "@/db/schema";
+import { queryLog } from "@/db/schema";
 import type { AnalyticsDb } from "./analytics-db";
 import { runQuery, describeViews, ROW_CAP, type QueryDeps } from "./query";
 import {
@@ -50,14 +50,6 @@ import {
   type Granularity,
 } from "@/domain/subscriptions/analytics";
 import { summarisePricing } from "@/domain/subscriptions/pricing";
-import {
-  getAttentiveWeekSummary,
-  getCampaignMessagePerformance,
-  getCampaignSegmentPerformance,
-  getJourneyMessagePerformance,
-  getMessageCostTotals,
-} from "@/domain/attentive/queries";
-import { describeAttentiveCoverage, getAttentiveSyncState, ATTENTIVE_UNAVAILABLE } from "@/domain/attentive/coverage";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
 import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget } from "@/domain/social/review-queries";
 import { summarisePeer } from "@/domain/social/peers";
@@ -313,7 +305,7 @@ const dataFreshness: McpTool = {
   name: "data_freshness",
   title: "Data freshness",
   description:
-    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. Attentive (email/SMS) is imported by hand, so its timestamp is the newest data point rather than a sync time. `quality` is a separate axis: rows that arrived through a healthy sync but cannot answer the question being asked of them. A check with status `unknown` inspected nothing and is not a pass.",
+    "How recently each data source was synced, and whether any is stale. Call this before drawing conclusions — a stale source looks identical to a quiet one. Where a source records its runs, `lastRun.outcome` says why it looks the way it does: ok, no-data (ran, found nothing), auth-failed, rate-limited, api-error, or not-configured (never ran). Zero rows with outcome no-data is a real answer; zero rows with any other outcome is a fault. `quality` is a separate axis: rows that arrived through a healthy sync but cannot answer the question being asked of them. A check with status `unknown` inspected nothing and is not a pass.",
   readOnly: true,
   schema: {},
   async run(ctx) {
@@ -637,46 +629,6 @@ const subscriptionChanges: McpTool = {
       netChange: r.netChange,
       tierTransitions: r.tierTransitions,
       series: r.series,
-    };
-  },
-};
-
-const emailSmsPerformance: McpTool = {
-  name: "email_sms_performance",
-  title: "Email and SMS performance",
-  description:
-    "Attentive email and SMS delivery, clicks, conversions, revenue and unsubscribes for a date range. Scraped daily from the Attentive UI, which needs an SMS code to log in, so it stops when nobody answers that code. `coverage` says how far the data reaches and why the sync last failed: when `coverage.current` is false, the missing days are missing, NOT quiet. `unavailable` names what Attentive cannot provide at all (scheduled sends, subscriber counts) — do not report those as zero.",
-  readOnly: true,
-  schema: { ...RANGE_SCHEMA },
-  async run(ctx, args) {
-    const range = resolveRange(args, ctx.now(), 30);
-    const [s, state] = await Promise.all([
-      getAttentiveWeekSummary(ctx.db, range.startDate, range.endDate),
-      getAttentiveSyncState(ctx.db, attentiveCampaigns, attentiveCampaigns.date),
-    ]);
-
-    return {
-      range: describeRange(range),
-      coverage: describeAttentiveCoverage(state, range.endDate),
-      unavailable: ATTENTIVE_UNAVAILABLE,
-      email: {
-        delivered: s.emailDelivered,
-        clicks: s.emailClicks,
-        conversions: s.emailConversions,
-        revenueDollars: dollars(s.emailRevenueCents),
-        unsubscribes: s.emailUnsubscribes,
-      },
-      sms: {
-        delivered: s.smsDelivered,
-        clicks: s.smsClicks,
-        conversions: s.smsConversions,
-        revenueDollars: dollars(s.smsRevenueCents),
-        unsubscribes: s.smsUnsubscribes,
-      },
-      attributed: {
-        conversions: s.totalAttributedConversions,
-        revenueDollars: dollars(s.totalAttributedRevenueCents),
-      },
     };
   },
 };
@@ -2050,20 +2002,19 @@ const marketingContext: McpTool = {
   name: "marketing_context",
   title: "Everything the weekly brief starts from",
   description:
-    "START HERE for any weekly plan or brief. One call returns: `goalsPace` (revenue against plan by line); `products` (top and bottom 10 by revenue over 30 days, each with its strategy role); `metaCampaigns` (live campaigns with 7- and 14-day results); `emailSms` (the last 14 days of sends, with how current the Attentive data is); `calendar` (the next 12 weeks); `strategyNotes` (open pilot notes in the strategy category); `rejectedDrafts` (recent rejections and why); `freshness` (stale sources and data-quality issues). " +
+    "START HERE for any weekly plan or brief. One call returns: `goalsPace` (revenue against plan by line); `products` (top and bottom 10 by revenue over 30 days, each with its strategy role); `metaCampaigns` (live campaigns with 7- and 14-day results); `emailSms` (where to find email and SMS results: the Attentive connector, not this server); `calendar` (the next 12 weeks); `strategyNotes` (open pilot notes in the strategy category); `rejectedDrafts` (recent rejections and why); `freshness` (stale sources and data-quality issues). " +
     "Each section is the same answer its own tool gives, trimmed; a section that failed carries `{ error }` and the others still answer. Read `freshness` and each section's caveats before drawing a conclusion — a quiet section may be a stale feed.",
   readOnly: true,
   schema: {},
   async run(ctx) {
     const call = (name: string, args: Record<string, unknown> = {}) => dispatchTool(ctx, name, args) as Promise<Json>;
-    const [goalsPace, top, bottom, ads7, ads14, watch, email, calendar, notes, rejected, freshness] = await Promise.all([
+    const [goalsPace, top, bottom, ads7, ads14, watch, calendar, notes, rejected, freshness] = await Promise.all([
       section(() => call("goals_pace")),
       section(() => call("store_top_products", { days: 30, limit: 10 })),
       section(() => call("store_top_products", { days: 30, limit: 10, order: "bottom" })),
       section(() => call("ads_performance", { days: 7 })),
       section(() => call("ads_performance", { days: 14 })),
       section(() => getWatchDashboard(ctx.db)),
-      section(() => call("email_campaign_detail", { days: 14 })),
       section(() => call("calendar_entries", { days: 84 })),
       section(() => call("pilot_notes_get", { status: "open", category: "strategy" })),
       section(() => call("drafts_list", { status: "rejected", limit: 10 })),
@@ -2099,12 +2050,9 @@ const marketingContext: McpTool = {
         bottom: "error" in bottom ? bottom : (bottom as Json).products,
       },
       metaCampaigns,
-      emailSms: "error" in email ? email : {
-        coverage: (email as Json).coverage,
-        campaigns: ((email as Json).campaigns as Json[]).slice(0, 20),
-        campaignsMatched: ((email as Json).campaigns as Json[]).length,
-        messagingCost: (email as Json).messagingCost,
-        scheduledSends: (email as Json).scheduledSends,
+      emailSms: {
+        source: "attentive-connector",
+        note: "Email and SMS results are not collected here. Read them from the Attentive connector.",
       },
       calendar,
       strategyNotes: notes,
@@ -3835,140 +3783,6 @@ const amerTool: McpTool = {
 };
 
 /**
- * ─── Campaign and journey detail (#23) ────────────────────────────────
- *
- * `email_sms_performance` answers "did email do anything this month". These
- * answer "which send worked" and "which step of which flow drops people",
- * which is what anyone can act on.
- */
-const emailCampaignDetail: McpTool = {
-  name: "email_campaign_detail",
-  title: "Per-campaign email and SMS performance",
-  description:
-    "Every campaign send in a window, named, with delivered, opens, clicks, conversions, revenue AND unsubscribes — ordered by revenue. " +
-    "Read unsubscribes beside revenue on every row: a campaign with strong revenue and a spike in unsubscribes borrowed from future sends rather than earning anything, and on revenue alone it looks like a win worth repeating. " +
-    "`bySegment` breaks the same sends out by the audience they went to; its revenue is the SAME money as `campaigns`, counted a second way, so never add the two together. " +
-    "`messagingCost` is the SMS carrier cost over the window, which is a daily figure and cannot be attributed to a particular campaign. " +
-    "Scraped from the Attentive UI, not an API. `coverage` says how far the data reaches: when `coverage.current` is false, the missing days are missing, NOT quiet. Only sent campaigns appear — scheduled ones cannot be read (see `scheduledSends`).",
-  readOnly: true,
-  schema: { ...RANGE_SCHEMA },
-  async run(ctx, args) {
-    const range = resolveRange(args, ctx.now(), 30);
-    const [campaigns, bySegment, cost, state] = await Promise.all([
-      getCampaignMessagePerformance(ctx.db, range.startDate, range.endDate),
-      getCampaignSegmentPerformance(ctx.db, range.startDate, range.endDate),
-      getMessageCostTotals(ctx.db, range.startDate, range.endDate),
-      getAttentiveSyncState(ctx.db, attentiveCampaignMessages, attentiveCampaignMessages.date),
-    ]);
-
-    return {
-      range: describeRange(range),
-      coverage: describeAttentiveCoverage(state, range.endDate),
-      scheduledSends: ATTENTIVE_UNAVAILABLE.scheduledSends,
-      campaigns: campaigns.map((c) => ({
-        date: c.date,
-        campaign: c.campaign,
-        message: c.message,
-        channel: c.channel,
-        delivered: c.delivered,
-        emailUniqueOpens: c.emailUniqueOpens,
-        clicks: c.totalClicks,
-        conversions: c.conversions,
-        revenue: dollarsFrom(c.revenueCents),
-        unsubscribes: c.unsubscribes,
-        // Per thousand delivered, so a small send and a large one compare.
-        unsubscribesPerThousandDelivered:
-          c.delivered === 0 ? null : Number(((1000 * c.unsubscribes) / c.delivered).toFixed(2)),
-      })),
-      bySegment: bySegment.map((s) => ({
-        date: s.date,
-        message: s.message,
-        segment: s.segment,
-        channel: s.channel,
-        delivered: s.delivered,
-        clicks: s.totalClicks,
-        conversions: s.conversions,
-        revenue: dollarsFrom(s.revenueCents),
-        unsubscribes: s.unsubscribes,
-      })),
-      messagingCost: {
-        total: dollarsFrom(cost.totalCents),
-        campaign: dollarsFrom(cost.campaignCostCents),
-        automatedSend: dollarsFrom(cost.automatedSendCostCents),
-        received: dollarsFrom(cost.receivedCostCents),
-        carrierFees: dollarsFrom(cost.carrierFeesCents),
-        daysWithData: cost.days,
-        // Zero days is a gap. Zero dollars over thirty days is a free month.
-        ...(cost.days === 0
-          ? { note: "No message-cost rows in this window, so the cost is unknown rather than zero." }
-          : {}),
-      },
-      ...(campaigns.length === 0
-        ? {
-            note:
-              "No campaign-level rows in this window. The detail reports began syncing on 2026-09-18, " +
-              "so an earlier window is empty because nothing was collected, not because nothing was sent.",
-          }
-        : {}),
-    };
-  },
-};
-
-const emailJourneyDetail: McpTool = {
-  name: "email_journey_detail",
-  title: "Per-message journey performance",
-  description:
-    "Every message inside every journey, rolled up over the window and ordered by revenue. " +
-    "This is where silent ongoing loss lives: a journey runs unattended for months, and nobody re-reads a flow that was set up and left running, so a step that stopped converting keeps sending. " +
-    "`sendDays` is how many days that step actually sent — a step that ran twice must not be read as one that ran all month. " +
-    "Unsubscribes are per step, which is what makes 'this message is where people leave' answerable. " +
-    "Scraped from the Attentive UI, not an API. `coverage` says how far the data reaches: when `coverage.current` is false, the missing days are missing, NOT quiet.",
-  readOnly: true,
-  schema: { ...RANGE_SCHEMA },
-  async run(ctx, args) {
-    const range = resolveRange(args, ctx.now(), 30);
-    const [rows, state] = await Promise.all([
-      getJourneyMessagePerformance(ctx.db, range.startDate, range.endDate),
-      getAttentiveSyncState(ctx.db, attentiveJourneyMessages, attentiveJourneyMessages.date),
-    ]);
-
-    return {
-      range: describeRange(range),
-      coverage: describeAttentiveCoverage(state, range.endDate),
-      messages: rows.map((r) => ({
-        journey: r.journeyName,
-        trigger: r.triggerName,
-        message: r.message,
-        channel: r.channel,
-        sendDays: Number(r.sendDays),
-        delivered: Number(r.delivered),
-        clicks: Number(r.totalClicks),
-        conversions: Number(r.conversions),
-        revenue: dollarsFrom(Number(r.revenueCents)),
-        unsubscribes: Number(r.unsubscribes),
-        // Null rather than 0 when nothing was delivered: a rate over no sends
-        // is undefined, and 0% reads as "nobody clicked".
-        clickRatePct:
-          Number(r.delivered) === 0
-            ? null
-            : Number(((100 * Number(r.totalClicks)) / Number(r.delivered)).toFixed(2)),
-        unsubscribesPerThousandDelivered:
-          Number(r.delivered) === 0
-            ? null
-            : Number(((1000 * Number(r.unsubscribes)) / Number(r.delivered)).toFixed(2)),
-      })),
-      ...(rows.length === 0
-        ? {
-            note:
-              "No journey rows in this window. The journey report began syncing on 2026-09-18, " +
-              "so an earlier window is empty because nothing was collected, not because no journey ran.",
-          }
-        : {}),
-    };
-  },
-};
-
-/**
  * ─── Shared inventory pools (#9) ──────────────────────────────────────
  */
 const inventoryPools: McpTool = {
@@ -4421,9 +4235,6 @@ export const ALL_TOOLS: McpTool[] = [
   subscriptionLtv,
   subscriptionChanges,
   subscriptionPricingAudit,
-  emailSmsPerformance,
-  emailCampaignDetail,
-  emailJourneyDetail,
   socialPerformance,
   inventoryStatus,
   inventoryPools,

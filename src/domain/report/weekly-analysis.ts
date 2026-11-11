@@ -37,7 +37,6 @@ STRUCTURE YOUR REPORT AS:
 
 5. **This week's playbook** — 2-4 specific, actionable suggestions for the coming week. These must be grounded in the data — don't suggest things just to fill space. Every suggestion should trace back to something in the numbers. If a marketing calendar is provided, reference what's already planned and suggest additions or changes. For each suggestion, include the channel (Email, SMS, Ad, Reel, Post, Story, Blog) and a specific date if possible. Examples:
    - "That behind-the-scenes reel hit 12% engagement — shoot another one showing the new doodle process (Reel, Wednesday)"
-   - "SMS drove 2x the revenue of email last week — shift this week's promo to text-first (SMS, Thursday)"
    - "The planner refill pack was your #1 product — feature it in Thursday's email (Email, Thursday)"
    - "Nothing scheduled for this week — at minimum, send a behind-the-scenes email Tuesday and a product reel Friday"
 

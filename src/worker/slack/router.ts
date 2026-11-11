@@ -136,10 +136,6 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     list: "voice:list",
     "": "voice:list",
   },
-  import: {
-    attentive: "import:attentive",
-    "": "import:attentive",
-  },
   sync: {
     meta: "sync:meta",
     shopify: "sync:shopify",
@@ -147,7 +143,6 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     subscriptions: "sync:seal",
     social: "sync:social",
     inventory: "sync:inventory",
-    attentive: "sync:attentive",
     kb: "sync:knowledge-base",
     footage: "sync:footage",
     invoices: "sync:invoices",

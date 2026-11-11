@@ -12,7 +12,6 @@ import type { Db } from "@/db/client";
 import { getAdsStatus, formatAdsStatus } from "@/domain/meta/status";
 import { getOrderSummary, getTopProducts } from "@/domain/shopify/queries";
 import { getPostSummary } from "@/domain/social/queries";
-import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
 
 export type Topic = "ads" | "shopify" | "social" | "email";
 
@@ -145,29 +144,8 @@ export async function buildLiveContext(
         }
 
         case "email": {
-          const now = new Date();
-          const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          try {
-            const att = await getAttentiveWeekSummary(db, weekAgo, now);
-            if (att.emailDelivered > 0 || att.smsDelivered > 0) {
-              const lines = ["## Live Email/SMS Data (last 7 days)"];
-              if (att.emailDelivered > 0) {
-                lines.push(
-                  `Email: ${fmtNum(att.emailDelivered)} delivered, ${fmtNum(att.emailClicks)} clicks, ${att.emailConversions} conversions, ${fmtDollars(att.emailRevenueCents)} revenue`
-                );
-              }
-              if (att.smsDelivered > 0) {
-                lines.push(
-                  `SMS: ${fmtNum(att.smsDelivered)} delivered, ${fmtNum(att.smsClicks)} clicks, ${att.smsConversions} conversions, ${fmtDollars(att.smsRevenueCents)} revenue`
-                );
-              }
-              sections.push(lines.join("\n"));
-            } else {
-              sections.push("## Email/SMS\nNo sends in the last 7 days.");
-            }
-          } catch {
-            sections.push("## Email/SMS\nNo Attentive data imported yet.");
-          }
+          // Read from Attentive's own connector now; said, so no figure is invented.
+          sections.push("## Email/SMS\nNot collected by this system — email and SMS results are in Attentive.");
           break;
         }
       }

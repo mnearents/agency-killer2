@@ -171,4 +171,20 @@ describe("formatWeeklyDataBlock", () => {
     expect(block).toContain("## Shopify");
     expect(block).toContain("## Organic Social");
   });
+
+  // Email and SMS come from Attentive's connector now. The section says so,
+  // so the model writing the report states the gap instead of inventing it.
+  it("says email and SMS are not collected here", () => {
+    const block = formatWeeklyDataBlock({
+      weekRange: { start: "2025-07-28", end: "2025-08-03", label: "Jul 28 – Aug 3" },
+      ads: {
+        totalSpendDollars: 0, totalRevenueDollars: 0, roas: null,
+        totalImpressions: 0, totalClicks: 0, ctr: 0,
+        totalPurchases: 0, costPerPurchaseDollars: null, topCreatives: [],
+      },
+      shopify: { totalOrders: 0, totalRevenueDollars: 0, subscriptionOrders: 0, subscriptionRevenueDollars: 0, avgOrderValueDollars: 0, topProducts: [] },
+      social: { postsPublished: 0, totalReach: 0, avgEngagementRate: null, totalSaves: 0, totalShares: 0, topPost: null, reelPlays: 0 },
+    });
+    expect(block).toMatch(/## Email & SMS\nNot collected by this system .* Do not state any email or SMS figure\./);
+  });
 });

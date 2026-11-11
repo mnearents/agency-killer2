@@ -8,11 +8,9 @@ import { gte, and, eq, sql } from "drizzle-orm";
 import { metaInsights, shopifyOrders, socialPosts } from "@/db/schema";
 import { aggregateAndCompute } from "@/domain/meta/metrics";
 import { getPostSummary } from "@/domain/social/queries";
-import { getUpcomingEntries } from "@/domain/calendar/queries";
 import { getInventoryItems } from "@/domain/inventory/queries";
 import { runInventoryChecks } from "@/domain/inventory/checks";
 import {
-  checkNoEmailSends,
   checkReelOutperforming,
   checkRoasDropped,
   checkRevenueAnomaly,
@@ -36,36 +34,6 @@ export async function runAlertChecks(db: Db): Promise<Alert[]> {
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-
-  // ─── Email/SMS check ──────────────────────────────────────────────
-  try {
-    const { attentiveCampaigns } = await import("@/db/schema");
-    const [emailAgg] = await db
-      .select({
-        emailDelivered: sql<number>`COALESCE(SUM(CASE WHEN ${attentiveCampaigns.messageVariant} = 'Email' THEN ${attentiveCampaigns.delivered} ELSE 0 END), 0)`,
-        smsDelivered: sql<number>`COALESCE(SUM(CASE WHEN ${attentiveCampaigns.messageVariant} = 'SMS' THEN ${attentiveCampaigns.delivered} ELSE 0 END), 0)`,
-      })
-      .from(attentiveCampaigns)
-      .where(gte(attentiveCampaigns.date, sevenDaysAgo));
-
-    // Check if there's an upcoming Email or SMS on the calendar
-    let hasUpcoming = false;
-    try {
-      const upcoming = await getUpcomingEntries(db, 7);
-      hasUpcoming = upcoming.some((e) => e.channel === "Email" || e.channel === "SMS");
-    } catch {
-      // Calendar table may not exist yet
-    }
-
-    const emailAlert = checkNoEmailSends({
-      emailDelivered: Number(emailAgg.emailDelivered),
-      smsDelivered: Number(emailAgg.smsDelivered),
-      hasUpcomingCalendarEntry: hasUpcoming,
-    });
-    if (emailAlert) alerts.push(emailAlert);
-  } catch (err) {
-    recordFailure("email/SMS sends", err);
-  }
 
   // ─── Reel outperforming ───────────────────────────────────────────
   try {

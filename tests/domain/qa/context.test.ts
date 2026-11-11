@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectTopics, type Topic } from "@/domain/qa/context";
+import { detectTopics, buildLiveContext, type Topic } from "@/domain/qa/context";
 
 describe("detectTopics", () => {
   it("detects ads-related questions", () => {
@@ -46,5 +46,14 @@ describe("detectTopics", () => {
   it("returns at least one topic for any question", () => {
     const topics = detectTopics("what should we do next");
     expect(topics.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// Email and SMS results are no longer stored here; the bot is told so rather
+// than handed nothing, which it could fill with a guess.
+describe("buildLiveContext email", () => {
+  it("says email and SMS are not collected here, without reading the database", async () => {
+    const context = await buildLiveContext({} as never, ["email"]);
+    expect(context).toContain("## Email/SMS\nNot collected by this system — email and SMS results are in Attentive.");
   });
 });

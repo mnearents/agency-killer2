@@ -221,11 +221,3 @@ describe("fulfilment invoice freshness", () => {
   });
 });
 
-// The scrape recorded api-error every day, and data_freshness did not show
-// the outcome because the source had no task to read it from.
-describe("Attentive freshness", () => {
-  it("reads the sync's last outcome, so a failed login shows as stale", () => {
-    const source = FRESHNESS_SOURCES.find((s) => s.name === "attentive_campaigns");
-    expect(source && "task" in source ? source.task : null).toBe("sync:attentive");
-  });
-});

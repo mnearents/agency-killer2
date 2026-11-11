@@ -102,16 +102,6 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
-      id: "attentive-sync",
-      name: "Attentive Email/SMS Sync",
-      // 17:00 UTC — 10am Pacific in summer, 9am once DST ends. Schedules are
-      // fixed UTC, so the local time moves twice a year; stated here because
-      // the previous comment claimed "8:00 AM PT" for a slot that was 7am for
-      // half the year. Sunday is skipped.
-      schedule: { type: "daily", hour: 17, minute: 0, skipDays: [0] },
-      enabled: true,
-    },
-    {
       id: "invoices-sync",
       name: "3PL and Postage Invoices from Drive",
       // After the morning syncs; Evobox invoices arrive overnight.
@@ -173,7 +163,6 @@ export function getTaskHandlerMap(): Record<string, string> {
     "gsc-sync": "sync:gsc",
     "sessions-sync": "sync:sessions",
     "inventory-sync": "sync:inventory",
-    "attentive-sync": "sync:attentive",
     "kb-sync": "sync:knowledge-base",
     "blog-generate": "blog:create",
     "ads-analysis": "meta:analysis",

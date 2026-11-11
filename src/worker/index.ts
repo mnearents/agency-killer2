@@ -26,7 +26,6 @@ import { envChecks, syncRuns } from "@/db/schema";
 // Reused rather than re-derived: the outcome vocabulary (ok / no-data /
 // auth-failed / api-error) is about syncs, not about Meta. A non-Meta error
 // classifies as api-error, which is the right answer for a scrape failure.
-import { classifyOutcome, isFailure } from "@/domain/meta/outcomes";
 import { runWithSyncRecord, type TaskOutcome } from "@/db/sync-runs";
 import { checkEnv, formatEnvCheck, toStoredVariables } from "@/config/env-manifest";
 import { expectedSchemaMark, awaitSchema, createSchemaProbe } from "@/db/schema-gate";
@@ -77,14 +76,6 @@ import { getPostSummary } from "@/domain/social/queries";
 import { formatStatusBlock } from "@/domain/social/analysis";
 import { generateWeeklyReport } from "@/domain/report/generate";
 import { createAssemblyAiClient } from "@/integrations/assemblyai";
-import {
-  importAttentiveCsv,
-  importCampaignMessages,
-  importCampaignSegments,
-  importJourneyMessages,
-  importMessageCosts,
-} from "@/domain/attentive/import";
-import { exportAttentiveReports } from "@/integrations/attentive-agent";
 import { detectTopics, buildLiveContext } from "@/domain/qa/context";
 import { backfillSocialInsights } from "@/domain/social/backfill";
 import { runAlertChecks, formatAlerts } from "@/domain/alerts/runner";
@@ -249,45 +240,6 @@ async function main() {
 
   // Proactive Slack messaging — set after Slack app starts
   let postToSlack: ((channel: string, text: string) => Promise<void>) | null = null;
-
-  // Pending 2FA reply callback — set when agent needs a code
-  let pending2faResolve: ((value: string) => void) | null = null;
-  /** How long to wait for a 2FA code in Slack. See createSlackAsker. */
-  const TWO_FA_REPLY_TIMEOUT_MS = 20 * 60 * 1000;
-
-  /**
-   * Create a function that posts a question to Slack and waits for a human reply.
-   * Used by the Attentive agent for 2FA codes.
-   */
-  function createSlackAsker(channel: string) {
-    return async (message: string): Promise<string | null> => {
-      if (!postToSlack) return null;
-
-      await postToSlack(channel, message);
-
-      /**
-       * Twenty minutes, not five.
-       *
-       * This is an interactive step inside a 15:00 cron: the SMS arrives
-       * unannounced and five minutes is not long enough to notice a Slack
-       * message, find the phone and type six digits. Three runs failed this
-       * way in a row while the codes themselves arrived fine.
-       *
-       * The cost of waiting longer is a worker holding a browser open. The
-       * cost of timing out is no Attentive data until tomorrow.
-       */
-      return new Promise<string | null>((resolve) => {
-        pending2faResolve = resolve;
-        setTimeout(() => {
-          if (pending2faResolve === resolve) {
-            pending2faResolve = null;
-            console.error("[attentive-agent] No 2FA reply within 20 minutes");
-            resolve(null);
-          }
-        }, TWO_FA_REPLY_TIMEOUT_MS);
-      });
-    };
-  }
 
   // ─── Build orchestrator ─────────────────────────────────────────────
   // Must read the DB, not the seed file: the /voice dashboard, the API route,
@@ -872,76 +824,6 @@ async function main() {
 
     "sync:social": async () => {
       await runSocialSync();
-    },
-
-    "sync:attentive": async () => {
-      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
-      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
-      if (!attUser || !attPass) {
-        console.log("[sync:attentive] Skipped — ATTENTIVE_AGENT_USERNAME or ATTENTIVE_AGENT_PASSWORD not set");
-        return;
-      }
-      console.log("[sync:attentive] Starting Attentive export agent...");
-      const startedAt = new Date();
-      const exportResult = await exportAttentiveReports({
-        username: attUser,
-        password: attPass,
-        db,
-        askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
-      });
-
-      let imported = 0;
-      const importErrors: string[] = [];
-
-      /** One report in, its rows counted and its failures kept. */
-      const load = async (
-        csv: string | null,
-        name: string,
-        run: (db: Db, csv: string) => Promise<{ imported: number; errors: string[] }>
-      ) => {
-        if (!csv) return;
-        const r = await run(db, csv);
-        imported += r.imported;
-        importErrors.push(...r.errors.map((e) => `${name}: ${e}`));
-        console.log(`[sync:attentive] ${name}: ${r.imported} rows imported`);
-      };
-
-      await load(exportResult.campaignCsv, "Campaign Performance", importAttentiveCsv);
-      await load(exportResult.revenueCsv, "Attributed Revenue", importAttentiveCsv);
-      await load(exportResult.campaignMessageCsv, "Campaign Messages", importCampaignMessages);
-      await load(exportResult.campaignSegmentCsv, "Campaign Segments", importCampaignSegments);
-      await load(exportResult.journeyMessageCsv, "Journey Messages", importJourneyMessages);
-      await load(exportResult.messageCostCsv, "Message Costs", importMessageCosts);
-
-      const failures = [...exportResult.errors, ...importErrors];
-
-      // Recorded, not just logged. Without a row here a run that errored, a run
-      // that found nothing and a run that never happened all look identical
-      // afterwards — which is how the Meta sync sat empty for months (#54).
-      const classified = classifyOutcome({
-        configured: true,
-        rowsWritten: imported,
-        error: failures[0],
-      });
-      await db.insert(syncRuns).values({
-        task: "sync:attentive",
-        outcome: classified.outcome,
-        rowsWritten: imported,
-        errorMessage: failures.length > 0 ? failures.join("; ") : null,
-        errorCode: classified.errorCode,
-        startedAt,
-        finishedAt: new Date(),
-      });
-
-      console.log(`[sync:attentive] Done: ${imported} rows, outcome ${classified.outcome}`);
-      if (failures.length > 0) {
-        console.error("[sync:attentive] Errors:", failures);
-      }
-      // After the record, so data_freshness still says why. Without this the
-      // scheduler logged "success" every day the login failed.
-      if (isFailure(classified.outcome) && imported === 0) {
-        throw new Error(`Attentive sync landed nothing: ${failures[0] ?? classified.outcome}`);
-      }
     },
 
     "blog:create": async () => {
@@ -1625,41 +1507,6 @@ async function main() {
       }
       return { text: `*Instagram sync complete!*\n${lines.join("\n")}`, isError: false };
     },
-    "sync:attentive": async () => {
-      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
-      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
-      if (!attUser || !attPass) {
-        return { text: "Attentive sync unavailable — ATTENTIVE_AGENT_USERNAME or ATTENTIVE_AGENT_PASSWORD not set.", isError: true };
-      }
-      const exportResult = await exportAttentiveReports({
-        username: attUser,
-        password: attPass,
-        db,
-        askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
-      });
-      let imported = 0;
-      const lines: string[] = [];
-      if (exportResult.campaignCsv) {
-        const r = await importAttentiveCsv(db, exportResult.campaignCsv);
-        imported += r.imported;
-        lines.push(`• Campaign Performance: ${r.imported} rows`);
-      }
-      if (exportResult.revenueCsv) {
-        const r = await importAttentiveCsv(db, exportResult.revenueCsv);
-        imported += r.imported;
-        lines.push(`• Attributed Revenue: ${r.imported} rows`);
-      }
-      if (exportResult.errors.length > 0) {
-        return {
-          text: `Attentive sync had errors:\n${exportResult.errors.map(e => `• ${e}`).join("\n")}${lines.length > 0 ? `\n\nPartially imported:\n${lines.join("\n")}` : ""}`,
-          isError: true,
-        };
-      }
-      return {
-        text: `*Attentive sync complete!*\n${lines.join("\n")}\n• ${imported} total rows imported`,
-        isError: false,
-      };
-    },
     "sync:invoices": async () => {
       let result: InvoiceFolderResult | null;
       try {
@@ -1775,26 +1622,6 @@ async function main() {
       } else {
         results.push("Instagram: skipped (no credentials)");
       }
-      const attUser = getEnvOptional("ATTENTIVE_AGENT_USERNAME");
-      const attPass = getEnvOptional("ATTENTIVE_AGENT_PASSWORD");
-      if (attUser && attPass) {
-        try {
-          const exp = await exportAttentiveReports({
-            username: attUser,
-            password: attPass,
-            db,
-            askSlack: slackReportChannel && postToSlack ? createSlackAsker(slackReportChannel) : undefined,
-          });
-          let rows = 0;
-          if (exp.campaignCsv) rows += (await importAttentiveCsv(db, exp.campaignCsv)).imported;
-          if (exp.revenueCsv) rows += (await importAttentiveCsv(db, exp.revenueCsv)).imported;
-          results.push(`Attentive: ${rows} rows${exp.errors.length > 0 ? ` (${exp.errors.length} errors)` : ""}`);
-        } catch {
-          results.push("Attentive: failed");
-        }
-      } else {
-        results.push("Attentive: skipped (no credentials)");
-      }
       if (dropboxClient) {
         const r = await syncKnowledgeBase(dropboxClient, dropboxKbRoot, new Map(), new Set());
         results.push(`KB: ${r.totalFiles} files (${r.newFiles} new)`);
@@ -1895,41 +1722,12 @@ async function main() {
       return orchestrator.run(request);
     },
     handlers: slackHandlers,
-    fileHandlers: {
-      "import:attentive": async (fileContent) => {
-        try {
-          const result = await importAttentiveCsv(db, fileContent);
-          if (result.errors.length > 0) {
-            return {
-              text: `Attentive ${result.type} import completed with errors:\n${result.errors.slice(0, 5).map(e => `• ${e}`).join("\n")}\n\nImported: ${result.imported} rows, skipped: ${result.skipped}`,
-              isError: true,
-            };
-          }
-          return {
-            text: `*Attentive ${result.type} data imported!*\n• ${result.imported} rows imported`,
-            isError: false,
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { text: `Import failed: ${msg}`, isError: true };
-        }
-      },
-    },
     getKbContext: embeddingClient
       ? async (query) => retrieveContext({ db, embeddingClient }, query)
       : undefined,
     getLiveContext: async (question) => {
       const topics = detectTopics(question);
       return buildLiveContext(db, topics);
-    },
-    onMessageInterceptor: (text) => {
-      // If a 2FA code is pending and someone sends a short numeric message, resolve it
-      if (pending2faResolve && /^\d{4,8}$/.test(text.trim())) {
-        pending2faResolve(text.trim());
-        pending2faResolve = null;
-        return true;
-      }
-      return false;
     },
   });
 

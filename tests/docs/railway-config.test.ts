@@ -40,8 +40,9 @@ describe("the Railway build commands", () => {
     expect(web).not.toMatch(/playwright install/);
   });
 
-  it("still installs one for the worker, which scrapes Attentive", () => {
-    expect(worker).toMatch(/playwright install --with-deps chromium/);
+  // The Attentive scraper was the worker's only browser user, and it is gone.
+  it("does not install a browser for the worker either", () => {
+    expect(worker).not.toMatch(/playwright install/);
   });
 
   it("still builds the Next app", () => {
@@ -51,11 +52,8 @@ describe("the Railway build commands", () => {
   // The reason web needs no browser is that nothing it serves uses one. If a
   // third importer appears, this goes red rather than the page failing in
   // production with a missing executable.
-  it("has no Playwright importer beyond the worker's scraper and the uncalled renderer", () => {
-    expect(playwrightImporters().sort()).toEqual([
-      "src/domain/email/renderer.ts",
-      "src/integrations/attentive-agent.ts",
-    ]);
+  it("has no Playwright importer beyond the uncalled renderer", () => {
+    expect(playwrightImporters().sort()).toEqual(["src/domain/email/renderer.ts"]);
   });
 
   // Named because it is the load-bearing fact: the renderer imports a browser

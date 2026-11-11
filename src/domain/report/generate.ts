@@ -20,12 +20,10 @@ import {
   type AdsWeekData,
   type ShopifyWeekData,
   type SocialWeekData,
-  type EmailSmsWeekData,
   type WeeklyReportData,
   type CreativeSummary,
 } from "./weekly-data";
 import { buildWeeklyReportRequest } from "./weekly-analysis";
-import { getAttentiveWeekSummary } from "@/domain/attentive/queries";
 import { getEntriesByWeek } from "@/domain/calendar/queries";
 
 export interface WeeklyReportDeps {
@@ -184,30 +182,6 @@ export async function generateWeeklyReport(
     console.error("[weekly-report] Failed to fetch social data:", err);
   }
 
-  // ─── Attentive (Email/SMS) data ───────────────────────────────────
-  let emailSms: EmailSmsWeekData | undefined;
-  try {
-    console.log(`[weekly-report] Fetching Attentive data for ${weekRange.start} to ${weekRange.end}...`);
-    const attentive = await getAttentiveWeekSummary(deps.db, startDate, endDate);
-    console.log(`[weekly-report] Attentive: ${attentive.emailDelivered} email delivered, ${attentive.smsDelivered} SMS delivered`);
-    if (attentive.emailDelivered > 0 || attentive.smsDelivered > 0) {
-      emailSms = {
-        emailDelivered: attentive.emailDelivered,
-        emailClicks: attentive.emailClicks,
-        emailConversions: attentive.emailConversions,
-        emailRevenueDollars: attentive.emailRevenueCents / 100,
-        emailUnsubscribes: attentive.emailUnsubscribes,
-        smsDelivered: attentive.smsDelivered,
-        smsClicks: attentive.smsClicks,
-        smsConversions: attentive.smsConversions,
-        smsRevenueDollars: attentive.smsRevenueCents / 100,
-        smsUnsubscribes: attentive.smsUnsubscribes,
-      };
-    }
-  } catch (err) {
-    console.error("[weekly-report] Failed to fetch Attentive data:", err);
-  }
-
   // ─── Calendar data ────────────────────────────────────────────────
   let calendarContext = "";
   try {
@@ -231,7 +205,7 @@ export async function generateWeeklyReport(
   }
 
   // ─── Assemble and generate ───────────────────────────────────────
-  const reportData: WeeklyReportData = { weekRange, ads, shopify, social, emailSms };
+  const reportData: WeeklyReportData = { weekRange, ads, shopify, social };
   let dataBlock = formatWeeklyDataBlock(reportData);
   if (calendarContext) {
     dataBlock += "\n\n" + calendarContext;

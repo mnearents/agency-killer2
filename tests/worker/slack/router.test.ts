@@ -197,7 +197,7 @@ describe("routeCommand: maps commands to handlers", () => {
   });
 
   // An unrecognised sync action falls through to `sync:all`, which runs every
-  // sync including the Attentive 2FA login. Footage has to be named.
+  // sync. Footage has to be named.
   it("routes ads watch to the ad account watch", () => {
     expect(routeCommand({
       type: "command", category: "ads", action: "watch", args: "", raw: "!ads watch",

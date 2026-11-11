@@ -2,7 +2,7 @@
  * Recording that a sync ran (#54, and the seven tasks that never did).
  *
  * `sync_runs` is what `data_freshness` reads to say WHY a table looks the way
- * it does. Only `sync:meta` and `sync:attentive` were writing to it, so for
+ * it does. Only `sync:meta` and the since-removed Attentive scrape were writing to it, so for
  * every other sync a run that stopped happening was indistinguishable from a
  * quiet week — the table just stayed where it was and nothing said whether
  * anything had tried.

@@ -50,81 +50,27 @@ Meta, Shopify, Dropbox, Attentive, Anthropic, OpenAI (embeddings only),
 AssemblyAI, Shotstack, Slack. See `.env.example` for the full list. Never commit
 `.env` or credentials.
 
-**Attentive has a REST API, and it has no reporting in it.** Those are two
-separate facts and conflating them is what produced the previous version of
-this paragraph, which said Attentive had no API at all.
+**Attentive has a REST API, and it has no reporting in it.**
 
 - `src/integrations/attentive-write.ts` uses `api.attentivemobile.com` with
   `ATTENTIVE_API_KEY` to push segment membership and read subscriber
-  eligibility. That is a real, working API.
+  eligibility.
 - There is no campaign, journey, message or report endpoint on it. Verified by
   probing: `/v1/me` answers 200, `/v1/campaigns`, `/v1/journeys`, `/v1/reports`
-  and `/v1/messages` all 404. Reporting is not in the public API at any tier.
-- So reporting is **scraped**, not imported by hand:
-  `src/integrations/attentive-agent.ts` drives Playwright through the Attentive
-  UI, handles SMS 2FA by asking Slack for the code, downloads CSV exports and
-  persists its cookies in `agent_sessions` for the next run. Credentials are
-  `ATTENTIVE_AGENT_USERNAME` / `ATTENTIVE_AGENT_PASSWORD`.
+  and `/v1/messages` all 404.
+- **Email and SMS results come from Attentive's own MCP connector**, which
+  Claude Desktop uses directly in the scheduled marketing analyses. This system
+  no longer collects them. A Playwright scraper used to log into the Attentive
+  UI, answer SMS 2FA through Slack and download CSV exports; it was removed on
+  2026-11-10 along with `!sync attentive`, `!import attentive`, the
+  `email_sms_performance` / `email_campaign_detail` / `email_journey_detail`
+  tools and the no-sends alert. The `attentive_*` tables and `agent_sessions`
+  still hold what it collected (through its last run) and nothing writes to
+  them. `marketing_context`, the weekly Slack report and the Slack Q&A say
+  email and SMS are not collected here rather than showing nothing.
 - **Segment membership cannot be read back from Attentive at any tier** (#23).
   We know our own segment sizes because we define them in Postgres and push
   them (#32); Attentive will not tell us what is in a list.
-
-Six reports are scraped. The slugs are listed at `/analytics/reports` —
-`/analytics/reports/library` renders nothing on its own, which is why they went
-unfound for so long:
-
-| slug | table |
-|---|---|
-| `campaign-performance-aggregate-group` | `attentive_campaigns` (one row per day per channel) |
-| `attributed-revenue` | `attentive_revenue` |
-| `campaign-aggregate-performance-aggregate-group` | `attentive_campaign_messages` |
-| `campaign-performance-by-segment` | `attentive_campaign_segments` |
-| `journeys-message-level-performance-v2` | `attentive_journey_messages` |
-| `daily-message-cost` | `attentive_message_costs` |
-
-Two traps in that data. **Campaign rows and segment rows are the same revenue
-counted twice** — segment rows break the same sends out by audience, so never
-sum the two tables. And **every export opens with an aggregate row**, labelled
-`Total` in five reports and `Overall Performance` in the sixth; kept, it
-becomes a campaign with six figures of deliveries and no date.
-
-**Attentive shows in-app marketing popups that cover the Export button.** They
-render into `#engagement-wrapper` and swallow the click, and Playwright reports
-the button "visible, enabled and stable" while retrying for thirty seconds — so
-the failure is a click timeout that names nothing. `exportReport` clears them
-first. If a new page stops exporting, look for an overlay before anything else.
-
-The session did not persist (#95), and the stored one says why: **4 cookies,
-none httpOnly, not one of them a session cookie** — `_ga`, `_dd_s`, `AMP_*`,
-all analytics, plus 16 localStorage keys of Amplitude and Pendo. Nothing that
-could authenticate anything. So every run logged in afresh and asked Slack for
-a 2FA code nobody answered.
-
-Capture is now `context.storageState()` — Playwright's own mechanism, which
-returns cookies for every domain the context touched, httpOnly included, and
-is consumed directly by `newContext`. **`sessionStorage` is captured
-separately** because storageState omits it, and it is the one place an SPA can
-hold a token that neither cookies nor localStorage would show; nothing had
-looked there. It is restored with `addInitScript`, before the app boots, rather
-than by navigating and calling `setItem` afterwards.
-
-**Attentive sends TWO codes with different values and only the newer works.**
-One on reaching `/2fa`, another when the resend button is clicked. From a phone
-they are indistinguishable, so the older one gets typed back and verification
-fails. The Slack message now names the time the resend was requested and says
-to ignore anything earlier, a rejected code asks for a fresh one rather than
-failing the run (three attempts), and the reply window is twenty minutes rather
-than five — this is an interactive step inside a 15:00 cron, and five minutes
-was not long enough to notice a message, find a phone and type six digits.
-
-Attentive offers no authenticator-app 2FA, so SMS is the only option and a
-human stays in the loop for any login. Session persistence is what keeps that
-to the first run rather than every run.
-
-`diagnoseSession` decides whether a capture could authenticate at all, and the
-run says so **before** reusing it rather than after a 2FA prompt ten minutes
-later. If a fresh login still yields nothing usable, that is reported as an
-error on the run instead of being discovered next time.
 
 ### Ad account watch (fraud)
 
@@ -314,7 +260,7 @@ and `data_freshness` reports active products with none.
 
 One MCP call composing the others: goals pace, top and bottom products with
 roles, live Meta campaigns (from the ad account watch) with 7- and 14-day
-results, the last 14 days of email/SMS with Attentive coverage, the next 12
+results, a pointer to the Attentive connector for email/SMS, the next 12
 weeks of calendar, open `strategy` pilot notes, recently rejected drafts and
 their feedback, and stale sources and quality issues. It calls the tools
 themselves (`dispatchTool`) rather than re-querying, so each section has the
@@ -612,7 +558,6 @@ src/
 │   ├── subscriptions/      # Seal facts, LTV, tier movement
 │   ├── economics/          # COD, contribution margin, target CPA, aMER, 3PL costs
 │   ├── email/              # Email/SMS campaigns, creative generation
-│   ├── attentive/          # Scraped report import and queries
 │   ├── social/             # Organic IG/FB analytics, reel creation
 │   ├── blog/               # SEO/GEO article generation
 │   ├── seo/                # Search Console and web sessions sync + queries
@@ -645,8 +590,7 @@ src/
 │   ├── google-drive.ts     # Drive, read-only: the Evobox invoice folder
 │   ├── video-frames.ts     # ffmpeg: length, cuts, loudness, frames, contact sheets
 │   ├── media-download.ts   # Fetching Instagram media for analysis
-│   ├── attentive-write.ts  # Attentive REST API (segment push, eligibility)
-│   └── attentive-agent.ts  # Playwright scrape of Attentive reports (no API)
+│   └── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 ├── ai/                     # LLM orchestration layer
 │   ├── guardrails.ts       # Output validation, fail-closed checks
 │   └── orchestrator.ts     # Route tasks to appropriate models/prompts
@@ -717,8 +661,8 @@ already ran as one still available. A clip moved across that folder is
 transcribed and analysed again as the other kind. The analysis reads speech
 only, so a hook that is on-screen text is recorded as null, and nothing yet
 links an ad file to its Meta results. **Playwright** has no wrapper
-module; it is used directly by `integrations/attentive-agent.ts` and
-`domain/email/renderer.ts`.
+module; it is used directly by `domain/email/renderer.ts`, which nothing
+calls, so no service installs a browser.
 
 Every other path above is asserted by `tests/docs/claude-md-structure.test.ts`,
 which fails if this tree names a file that does not exist. It was added after

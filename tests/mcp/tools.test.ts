@@ -35,33 +35,10 @@ vi.mock("@/domain/subscriptions/queries", () => ({
   getSnapshotFacts: vi.fn().mockResolvedValue([]),
   getTierChangeFacts: vi.fn().mockResolvedValue([]),
 }));
-vi.mock("@/domain/attentive/queries", () => ({
-  getAttentiveWeekSummary: vi.fn().mockResolvedValue({
-    emailDelivered: 0, emailClicks: 0, emailConversions: 0, emailRevenueCents: 0, emailUnsubscribes: 0,
-    smsDelivered: 0, smsClicks: 0, smsConversions: 0, smsRevenueCents: 0, smsUnsubscribes: 0,
-    totalAttributedConversions: 0, totalAttributedRevenueCents: 0,
-  }),
-  getCampaignMessagePerformance: vi.fn().mockResolvedValue([]),
-  getCampaignSegmentPerformance: vi.fn().mockResolvedValue([]),
-  getJourneyMessagePerformance: vi.fn().mockResolvedValue([]),
-  getMessageCostTotals: vi.fn().mockResolvedValue({
-    totalCents: 0, campaignCostCents: 0, automatedSendCostCents: 0, receivedCostCents: 0, carrierFeesCents: 0, days: 0,
-  }),
-}));
 // No product has a strategy yet; strategy-tools.test.ts covers the roles.
 vi.mock("@/domain/strategy/products", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/domain/strategy/products")>()),
   getCurrentStrategies: vi.fn().mockResolvedValue(new Map()),
-}));
-// The real classifier, over a sync that stopped on 2026-08-10 — before this
-// file's clock (2026-09-02), so every default window runs past the data.
-vi.mock("@/domain/attentive/coverage", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/domain/attentive/coverage")>()),
-  getAttentiveSyncState: vi.fn().mockResolvedValue({
-    dataThrough: new Date("2026-08-10T00:00:00Z"),
-    lastRun: { outcome: "api-error", finishedAt: new Date("2026-09-01T17:20:00Z"), errorMessage: "No 2FA code received from Slack" },
-    lastSuccessAt: new Date("2026-08-11T17:00:00Z"),
-  }),
 }));
 vi.mock("@/domain/social/queries", () => ({
   getPostSummary: vi.fn().mockResolvedValue({
@@ -2169,26 +2146,4 @@ describe("discouraged words are flagged, not enforced", () => {
   });
 });
 
-// The brief read an empty October as a quiet one: the Attentive data had
-// stopped on 2026-09-22 and nothing in these tools' answers said so.
-describe("Attentive tools carry their own coverage", () => {
-  it.each(["email_sms_performance", "email_campaign_detail", "email_journey_detail"])(
-    "%s says when its data stops and why",
-    async (tool) => {
-      const r = (await dispatchTool(ctx, tool, {})) as Record<string, any>;
-      expect(r.coverage.current).toBe(false);
-      expect(r.coverage.dataThrough).toBe("2026-08-10");
-      expect(r.coverage.warning).toMatch(/NOT a quiet period.*No 2FA code/);
-    },
-  );
 
-  it("says scheduled sends and subscriber counts are unavailable rather than returning nothing", async () => {
-    const r = (await dispatchTool(ctx, "email_sms_performance", {})) as Record<string, any>;
-    expect(r.unavailable.scheduledSends).toMatch(/not available/i);
-    expect(r.unavailable.subscriberCounts).toMatch(/not available/i);
-  });
-
-  it("no longer claims the data is imported by hand", () => {
-    expect(ALL_TOOLS.find((t) => t.name === "email_sms_performance")!.description).not.toMatch(/imported manually/);
-  });
-});

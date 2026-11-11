@@ -157,24 +157,11 @@ export const ENV_MANIFEST: EnvVariable[] = [
     impact: "The segment push tools are unavailable, so no audience can be sent to Attentive.",
   },
   {
-    name: "ATTENTIVE_AGENT_USERNAME",
-    surfaces: ["worker"],
-    severity: "degraded",
-    impact:
-      "Attentive reporting stops entirely — campaign, journey, segment and message cost. The scraper logs a clean skip.",
-  },
-  {
-    name: "ATTENTIVE_AGENT_PASSWORD",
-    surfaces: ["worker"],
-    severity: "degraded",
-    impact: "Same as the username: the scraper needs both to log in.",
-  },
-  {
     name: "SLACK_BOT_TOKEN",
     surfaces: ["worker"],
     severity: "degraded",
     impact:
-      "The Slack bot cannot post. Tara loses her whole interface, and the Attentive scraper cannot ask anyone for a 2FA code.",
+      "The Slack bot cannot post. Tara loses her whole interface.",
   },
   {
     name: "SLACK_APP_TOKEN",
