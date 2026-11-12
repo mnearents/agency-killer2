@@ -143,6 +143,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     subscriptions: "sync:seal",
     social: "sync:social",
     reels: "sync:reels",
+    reel: "sync:reels",
     inventory: "sync:inventory",
     kb: "sync:knowledge-base",
     footage: "sync:footage",
@@ -161,6 +162,12 @@ export function routeCommand(command: ParsedCommand): RouteResult {
   }
 
   const categoryRoutes = COMMAND_ROUTES[command.category];
+  // `!sync` alone runs every sync; `!sync <something unknown>` must not — a
+  // mistyped `!sync reel…` ran the whole thing, which is slow and, with reel
+  // downloads switched on, spends a paid quota nobody asked to spend.
+  if (command.category === "sync" && command.action !== "" && categoryRoutes?.[command.action] === undefined) {
+    return { handler: "unknown", params: {} };
+  }
   const handler =
     categoryRoutes?.[command.action] ??
     categoryRoutes?.[""] ??

@@ -196,8 +196,18 @@ describe("routeCommand: maps commands to handlers", () => {
     expect(result.handler).toBe("unknown");
   });
 
-  // An unrecognised sync action falls through to `sync:all`, which runs every
-  // sync. Footage has to be named.
+  // `!sync` alone runs everything; a mistyped target must not.
+  it("refuses a sync target it does not know rather than running every sync", () => {
+    expect(routeCommand({ type: "command", category: "sync", action: "teachers", args: "1", raw: "!sync teachers 1" }).handler).toBe("unknown");
+    expect(routeCommand({ type: "command", category: "sync", action: "", args: "", raw: "!sync" }).handler).toBe("sync:all");
+    expect(routeCommand({ type: "command", category: "sync", action: "all", args: "", raw: "!sync all" }).handler).toBe("sync:all");
+  });
+
+  it("takes reel as well as reels", () => {
+    expect(routeCommand({ type: "command", category: "sync", action: "reel", args: "teachers 1", raw: "!sync reel teachers 1" }).handler).toBe("sync:reels");
+  });
+
+  // Footage has to be named.
   it("routes ads watch to the ad account watch", () => {
     expect(routeCommand({
       type: "command", category: "ads", action: "watch", args: "", raw: "!ads watch",

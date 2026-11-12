@@ -98,7 +98,9 @@ export function formatOrchestratorResult(
 
 export function formatUnknownCommand(raw: string): SlackResponse {
   // Extract the attempted command word
-  const attempted = raw.replace(/^!/, "").split(/\s+/)[0] || "unknown";
+  const words = raw.replace(/^!/, "").trim().split(/\s+/);
+  // "sync reel" says more than "sync", which is a real command.
+  const attempted = (words[0] === "sync" && words[1] ? `${words[0]} ${words[1]}` : words[0]) || "unknown";
   return {
     text: `I don't recognize the command "${attempted}". Try \`!help\` for available commands.`,
     isError: true,
