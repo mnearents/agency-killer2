@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isGiveaway, buildPeerBaselines, scorePeerPost, summarisePeer, type PeerPost } from "@/domain/social/peers";
+import { isGiveaway, buildPeerBaselines, scorePeerPost, summarisePeer, peerReelsForUpload, type PeerPost } from "@/domain/social/peers";
 
 const NOW = new Date("2026-11-09T12:00:00Z");
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000);
@@ -92,5 +92,45 @@ describe("summarisePeer", () => {
   it("reports no weekly change from a single follower reading", () => {
     const s = summarisePeer("pippipost.shop", posts, [days[1]], "2026-11-02", "2026-11-08", NOW);
     expect(s.followers).toEqual({ latest: 250_599, latestOn: "2026-11-08", changeInWeek: null });
+  });
+});
+
+describe("summarisePeer — an uploaded reel", () => {
+  const visual = {
+    basis: "frames", visualType: "person", visualHook: "POV: day 365", faceInFirst2s: true, productVisible: true, handDrawn: false,
+    audio: "speech", cutsPerMinute: 24, summary: "A woman flips through a finished journal.", onScreenText: [], emotion: "proud", source: "manual_upload",
+  };
+
+  // What only the video shows — the opening face, the pace, the first words —
+  // reaches the review once a copy is uploaded.
+  it("carries what the video showed and the first words spoken", () => {
+    const posts = [reel(40_015, { id: "up", postedAt: daysAgo(4), visual, openingWords: "I finished it." })];
+    const s = summarisePeer("pippipost.shop", posts, [], "2026-11-02", "2026-11-08", NOW);
+    expect(s.postsInWeek[0]).toMatchObject({
+      openingWords: "I finished it.",
+      visual: { looked: "frames", faceInFirst2s: true, cutsPerMinute: 24, audio: "speech", source: "manual_upload" },
+    });
+  });
+});
+
+describe("peerReelsForUpload", () => {
+  const usual = Array.from({ length: 6 }, (_, i) => reel(10_000, { postedAt: daysAgo(12 + i) }));
+
+  // The reels worth uploading are the ones that did unusually well for them.
+  it("puts the reels furthest above their account's usual first", () => {
+    const r = peerReelsForUpload([...usual, reel(20_000, { id: "twice" }), reel(50_000, { id: "breakout" }), post({ id: "img" })], NOW);
+    expect(r.waiting.slice(0, 2).map((p) => [p.id, p.vsUsual])).toEqual([["breakout", 5], ["twice", 2]]);
+    expect(r.waiting.some((p) => p.id === "img")).toBe(false);
+  });
+
+  it("puts reels it cannot judge after the ones it can, biggest first", () => {
+    const r = peerReelsForUpload([...usual, reel(900, { id: "new", postedAt: daysAgo(1) }), reel(5_000, { id: "newer", postedAt: daysAgo(1) })], NOW);
+    expect(r.waiting.slice(-2).map((p) => p.id)).toEqual(["newer", "new"]);
+  });
+
+  it("moves a reel already uploaded out of the waiting list", () => {
+    const r = peerReelsForUpload([...usual, reel(50_000, { id: "done", visual: { basis: "frames", visualType: null, visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: null, cutsPerMinute: null, source: "manual_upload" } })], NOW);
+    expect(r.waiting.some((p) => p.id === "done")).toBe(false);
+    expect(r.uploaded.map((p) => p.id)).toEqual(["done"]);
   });
 });

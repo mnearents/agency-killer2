@@ -1639,7 +1639,8 @@ const shiftDay = (day: string, n: number) => isoDay(new Date(Date.parse(`${day}T
 const pct = (v: number | null) => (v === null ? null : Math.round(v * 1000) / 10);
 
 const PEER_CAVEAT =
-  "Instagram shows another account's likes, comments and reel views only — never its reach, saves, shares or watch time, and nothing spoken in its reels — so a peer's post is judged against that account's own usual, and its hooks are read from captions.";
+  "Instagram shows another account's likes, comments and reel views only — never its reach, saves, shares or watch time, and never its video — so a peer's post is judged against that account's own usual, and its hooks are read from captions. " +
+  "A peer reel whose `visual.source` is `manual_upload` was uploaded by Matt at /social/uploads: its frames, face in the first 2s, cuts, sound and `openingWords` are known; any other peer reel was seen by its cover alone.";
 
 /** What a post shows, for the review: only what was looked at, and how. */
 function describeVisual(postId: string, v: ReviewPostVisual | null | undefined) {

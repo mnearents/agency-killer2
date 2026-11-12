@@ -11,11 +11,17 @@
  * Instagram's download can drop or replace licensed music, so the sound
  * measured is the file's, not necessarily the posted track's: the post keeps
  * `licensed-music-likely` as its sound and the row says why.
+ *
+ * A peer's reel can be uploaded too: Instagram never gives another account's
+ * video, so without a copy it is seen by its cover alone. Its row is the
+ * peer's (`account = 'peer'`), its sound is what the file measured — the
+ * video was withheld because it is someone else's, not because of its music
+ * — and its transcript stays on the peer post, out of the knowledge base.
  */
 
 import { eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { kbDocuments, socialPostAnalyses, socialPosts, socialPostVisuals } from "@/db/schema";
+import { kbDocuments, socialPeerPosts, socialPostAnalyses, socialPosts, socialPostVisuals } from "@/db/schema";
 import type { AnthropicClient } from "@/integrations/anthropic";
 import type { AssemblyAiClient, TranscriptResult } from "@/integrations/assemblyai";
 import type { EmbeddingClient } from "@/integrations/openai";
@@ -37,6 +43,8 @@ export interface UploadDeps {
 export type UploadResult =
   | {
       ok: true;
+      /** Whose reel it was: Tara's, or a tracked peer's. */
+      account: "own" | "peer";
       summary: string;
       visualHook: string | null;
       durationMs: number | null;
@@ -50,7 +58,11 @@ export type UploadResult =
 export const UPLOAD_AUDIO_NOTE =
   "Sound measured from the uploaded file, which can differ from the posted reel: Instagram's download may drop or replace licensed music.";
 
+export const PEER_UPLOAD_AUDIO_NOTE =
+  "Sound measured from the uploaded file, which can differ from the posted reel: Instagram's download or a screen recording may drop or replace its music.";
+
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const isReel = (p: { mediaType: string; mediaProductType: string | null }) => p.mediaType === "VIDEO" || p.mediaProductType === "REELS";
 
 export async function analyseUploadedReel(
   deps: UploadDeps,
@@ -74,8 +86,8 @@ export async function analyseUploadedReel(
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
     .where(eq(socialPosts.id, input.postId))
     .limit(1);
-  if (!post) return { ok: false, reason: "not-found" };
-  if (post.mediaType !== "VIDEO" && post.mediaProductType !== "REELS") return { ok: false, reason: "not-a-reel" };
+  if (!post) return analyseUploadedPeerReel(deps, input);
+  if (!isReel(post)) return { ok: false, reason: "not-a-reel" };
 
   // Read before anything is written: a file ffmpeg cannot read is refused
   // whole, rather than leaving half an analysis behind.
@@ -107,6 +119,7 @@ export async function analyseUploadedReel(
 
   return {
     ok: true,
+    account: "own",
     summary: result.summary ?? "",
     visualHook: result.visualHook ?? null,
     durationMs: facts.durationMs,
@@ -115,6 +128,89 @@ export async function analyseUploadedReel(
     transcriptError: transcript.error,
     audioNote: UPLOAD_AUDIO_NOTE,
   };
+}
+
+/** A tracked peer's reel: frames, the file's own sound, and its words kept on the peer post. */
+async function analyseUploadedPeerReel(
+  deps: UploadDeps,
+  input: { postId: string; filePath: string; songUsed: string | null },
+): Promise<UploadResult> {
+  const [post] = await deps.db
+    .select({
+      id: socialPeerPosts.id,
+      caption: socialPeerPosts.caption,
+      mediaType: socialPeerPosts.mediaType,
+      mediaProductType: socialPeerPosts.mediaProductType,
+      transcript: socialPeerPosts.transcript,
+      openingWords: socialPeerPosts.openingWords,
+      visualAttempts: socialPostVisuals.attempts,
+    })
+    .from(socialPeerPosts)
+    .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
+    .where(eq(socialPeerPosts.id, input.postId))
+    .limit(1);
+  if (!post) return { ok: false, reason: "not-found" };
+  if (!isReel(post)) return { ok: false, reason: "not-a-reel" };
+
+  let looked: Looked;
+  try {
+    looked = await lookAtVideoFile(deps, input.filePath, post.transcript ? "ok" : null);
+  } catch (err) {
+    return { ok: false, reason: "unreadable-video", detail: errorText(err).slice(0, 300) };
+  }
+  const facts = looked.facts!;
+
+  const words = post.transcript ? { transcribed: false, transcript: post.transcript, openingWords: post.openingWords, error: null } : await transcribePeerUpload(deps, input.filePath, facts);
+  if (words.transcribed) {
+    await deps.db
+      .update(socialPeerPosts)
+      .set({ transcript: words.transcript, openingWords: words.openingWords })
+      .where(eq(socialPeerPosts.id, post.id));
+    await deps.db.update(socialPostAnalyses).set({ status: "stale", attempts: 0 }).where(eq(socialPostAnalyses.postId, post.id));
+  }
+  const audio = words.transcript ? "speech" : looked.audio;
+
+  const errors: string[] = [];
+  const result = await analyseOne(deps, "peer", { ...post, openingWords: words.openingWords }, async () => looked, errors, {
+    source: "manual_upload",
+    songUsed: input.songUsed,
+    audioNote: PEER_UPLOAD_AUDIO_NOTE,
+    audio,
+  });
+  if (result.outcome !== "ok") return { ok: false, reason: "analysis-failed", detail: result.detail };
+  return {
+    ok: true,
+    account: "peer",
+    summary: result.summary ?? "",
+    visualHook: result.visualHook ?? null,
+    durationMs: facts.durationMs,
+    cuts: facts.cuts,
+    transcribed: words.transcribed,
+    transcriptError: words.error,
+    audioNote: PEER_UPLOAD_AUDIO_NOTE,
+  };
+}
+
+/** Speech in a peer's upload, as text — nothing stored here. */
+async function transcribePeerUpload(
+  deps: UploadDeps,
+  path: string,
+  facts: VideoFacts,
+): Promise<{ transcribed: boolean; transcript: string | null; openingWords: string | null; error: string | null }> {
+  const none = { transcribed: false, transcript: null, openingWords: null, error: null };
+  if (!deps.transcriber) return none;
+  if (!facts.hasAudio || (facts.meanVolumeDb !== null && facts.meanVolumeDb < SILENT_DB)) return none;
+  let raw: TranscriptResult;
+  try {
+    raw = await deps.transcriber.transcribe(await deps.transcriber.uploadFile(await deps.video.extractAudio(path)));
+  } catch (err) {
+    return { ...none, error: errorText(err).slice(0, 300) };
+  }
+  const classified = classifyTranscription(raw);
+  if (classified.status !== "ok" || classified.text === null) {
+    return { ...none, error: classified.status === "no-audio" ? null : classified.detail };
+  }
+  return { transcribed: true, transcript: classified.text, openingWords: openingWords(raw.words), error: null };
 }
 
 /**

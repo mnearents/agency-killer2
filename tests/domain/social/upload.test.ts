@@ -27,8 +27,8 @@ function video(o: Partial<VideoToolkit> = {}): VideoToolkit {
   };
 }
 
-function setup(post: Record<string, unknown> | null = coverOnlyReel, o: Partial<UploadDeps> = {}) {
-  const d = fakeDb(post ? { social_posts: [post] } : {});
+function setup(post: Record<string, unknown> | null = coverOnlyReel, o: Partial<UploadDeps> = {}, peer: Record<string, unknown> | null = null) {
+  const d = fakeDb({ ...(post ? { social_posts: [post] } : {}), ...(peer ? { social_peer_posts: [peer] } : {}) });
   const deps: UploadDeps = {
     db: d.db,
     anthropic: createMockAnthropicClient({ generate: vi.fn().mockResolvedValue({ text: answer }) }),
@@ -124,5 +124,56 @@ describe("analyseUploadedReel", () => {
     const r = await analyseUploadedReel(deps, { postId: coverOnlyReel.id, filePath: "/tmp/up.mp4", songUsed: null });
     expect(r).toMatchObject({ ok: false, reason: "analysis-failed" });
     expect(updates.some((u) => u.table === "social_posts" && u.values.visualStatus === "analyzed")).toBe(false);
+  });
+});
+
+// Instagram never gives another account's video, so a peer's reel is seen by
+// its cover until Matt uploads a copy. The copy gets the same frames, cuts
+// and transcript as one of Tara's.
+const peerReel = {
+  id: "17999000111222333", username: "pippipost.shop", caption: "POV: you finally finish the journal", mediaType: "VIDEO", mediaProductType: "REELS",
+  transcript: null, openingWords: null, postedAt: new Date("2026-11-01T00:00:00Z"), visualAttempts: 1,
+};
+
+describe("analyseUploadedReel — a peer's reel", () => {
+  it("analyses the frames as the peer's, marked as an upload, with the sound the file has", async () => {
+    const { deps, inserts } = setup(null, {}, peerReel);
+    const r = await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: "Golden Hour" });
+    expect(deps.video.frames).toHaveBeenCalledWith("/tmp/p.mp4", [0, 1000, 2000, 3000, 6000, 9000]);
+    const row = inserts.find((w) => w.table === "social_post_visuals")!.values;
+    expect(row).toMatchObject({ postId: peerReel.id, account: "peer", status: "ok", basis: "frames", source: "manual_upload", songUsed: "Golden Hour", audio: "speech", cuts: 6 });
+    expect(String(row.audioNote)).toMatch(/uploaded file/);
+    expect(r).toMatchObject({ ok: true, account: "peer", transcribed: true });
+  });
+
+  // Competitor speech must not reach the knowledge base, which feeds the
+  // generation of Tara's own copy.
+  it("keeps the transcript on the peer post, never in the knowledge base, and has its hook read again", async () => {
+    const { deps, inserts, updates } = setup(null, {}, peerReel);
+    await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null });
+    expect(inserts.some((w) => w.table === "kb_documents")).toBe(false);
+    expect(updates.find((u) => u.table === "social_peer_posts")!.values).toMatchObject({
+      transcript: "Don't do this. I painted this sign in an hour.", openingWords: "Don't do this.",
+    });
+    expect(updates.find((u) => u.table === "social_post_analyses")!.values).toMatchObject({ status: "stale", attempts: 0 });
+  });
+
+  it("writes nothing to Tara's posts", async () => {
+    const { deps, updates } = setup(null, {}, peerReel);
+    await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null });
+    expect(updates.some((u) => u.table === "social_posts")).toBe(false);
+  });
+
+  it("records a silent upload as silent and does not transcribe it", async () => {
+    const { deps, inserts } = setup(null, { video: video({ inspect: vi.fn().mockResolvedValue({ durationMs: 12_000, hasAudio: false, meanVolumeDb: null, cuts: 6 }) }) }, peerReel);
+    const r = await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null });
+    expect(deps.transcriber!.uploadFile).not.toHaveBeenCalled();
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ audio: "silent" });
+    expect(r).toMatchObject({ ok: true, transcribed: false });
+  });
+
+  it("refuses a peer post that is not a reel", async () => {
+    const { deps } = setup(null, {}, { ...peerReel, mediaType: "IMAGE", mediaProductType: "FEED" });
+    expect(await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null })).toEqual({ ok: false, reason: "not-a-reel" });
   });
 });

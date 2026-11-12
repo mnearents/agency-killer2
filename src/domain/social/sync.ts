@@ -546,7 +546,8 @@ const PEER_ANALYSE_PER_RUN = 20;
 
 /**
  * What each peer post was, read from its caption — Instagram does not give
- * another account's video, so there is no transcript to wait for.
+ * another account's video, so there is no transcript to wait for. A reel Matt
+ * uploaded a copy of has one, and is read from that.
  */
 async function analysePeerPosts(
   db: Db,
@@ -560,6 +561,7 @@ async function analysePeerPosts(
       caption: socialPeerPosts.caption,
       mediaType: socialPeerPosts.mediaType,
       mediaProductType: socialPeerPosts.mediaProductType,
+      transcript: socialPeerPosts.transcript,
       analysisStatus: socialPostAnalyses.status,
       analysisAttempts: socialPostAnalyses.attempts,
     })
@@ -568,7 +570,7 @@ async function analysePeerPosts(
     .where(sql`${socialPostAnalyses.status} IS DISTINCT FROM 'ok'`)
     .orderBy(desc(socialPeerPosts.postedAt))
     .limit(PEER_ANALYSE_PER_RUN * 3);
-  return analyseCandidates(db, anthropic, now, errors, candidates.map((c) => ({ ...c, transcript: null })), PEER_ANALYSE_PER_RUN);
+  return analyseCandidates(db, anthropic, now, errors, candidates.map((c) => ({ ...c, transcript: c.transcript ?? null })), PEER_ANALYSE_PER_RUN);
 }
 
 /**

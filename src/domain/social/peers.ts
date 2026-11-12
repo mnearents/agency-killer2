@@ -29,6 +29,8 @@ export interface PeerPost {
   viewCount: number | null;
   analysis: ReviewPostAnalysis | null;
   visual?: ReviewPostVisual | null;
+  /** The first words spoken, from a copy Matt uploaded. */
+  openingWords?: string | null;
 }
 
 export interface PeerDay {
@@ -127,8 +129,14 @@ export function summarisePeer(username: string, allPosts: PeerPost[], days: Peer
       approach: p.analysis?.approach ?? null,
       topic: p.analysis?.topic ?? null,
       audience: p.analysis?.audience ?? null,
+      openingWords: p.openingWords ?? null,
       visual: p.visual
-        ? { looked: p.visual.basis, type: p.visual.visualType, onScreenText: p.visual.onScreenText ?? [], visualHook: p.visual.visualHook, productVisible: p.visual.productVisible, handDrawn: p.visual.handDrawn, emotion: p.visual.emotion ?? null, summary: p.visual.summary ?? null }
+        ? {
+            looked: p.visual.basis, type: p.visual.visualType, onScreenText: p.visual.onScreenText ?? [], visualHook: p.visual.visualHook,
+            productVisible: p.visual.productVisible, handDrawn: p.visual.handDrawn, emotion: p.visual.emotion ?? null, summary: p.visual.summary ?? null,
+            // Known only from an uploaded copy; null when the cover was all there was.
+            faceInFirst2s: p.visual.faceInFirst2s, cutsPerMinute: p.visual.cutsPerMinute, audio: p.visual.audio, source: p.visual.source ?? null,
+          }
         : null,
       ...s,
     };
@@ -167,4 +175,33 @@ export function summarisePeer(username: string, allPosts: PeerPost[], days: Peer
     giveawaysLast30Days: recent.filter((p) => isGiveaway(p.caption)).length,
     usual: [...baselines].map(([key, b]) => ({ format: key.split(":")[1], ...b })),
   };
+}
+
+const UPLOAD_DAYS = 30;
+
+/**
+ * Peer reels for the upload page, from the last 30 days: those still seen by
+ * their cover, the ones furthest above their account's usual first (the ones
+ * worth a closer look), then any it cannot judge yet, biggest first; and
+ * those already uploaded, newest first.
+ */
+export function peerReelsForUpload(posts: PeerPost[], now: Date) {
+  const baselines = new Map<string, PeerBaselines>();
+  for (const username of new Set(posts.map((p) => p.username))) {
+    baselines.set(username, buildPeerBaselines(posts.filter((p) => p.username === username), now));
+  }
+  const from = now.getTime() - UPLOAD_DAYS * 86_400_000;
+  const reels = posts
+    .filter((p) => p.format === "reel" && p.postedAt.getTime() >= from)
+    .map((p) => ({ ...p, ...scorePeerPost(p, baselines.get(p.username)!, now) }));
+  const uploaded = reels.filter((p) => p.visual?.source === "manual_upload").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
+  const waiting = reels
+    .filter((p) => p.visual?.source !== "manual_upload")
+    .sort((a, b) => {
+      if (a.vsUsual !== null && b.vsUsual !== null) return b.vsUsual - a.vsUsual;
+      if (a.vsUsual !== null) return -1;
+      if (b.vsUsual !== null) return 1;
+      return (b.viewCount ?? -1) - (a.viewCount ?? -1);
+    });
+  return { waiting, uploaded };
 }

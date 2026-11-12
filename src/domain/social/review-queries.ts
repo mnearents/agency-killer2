@@ -235,6 +235,7 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       likeCount: socialPeerPosts.likeCount,
       commentsCount: socialPeerPosts.commentsCount,
       viewCount: socialPeerPosts.viewCount,
+      openingWords: socialPeerPosts.openingWords,
       analysisStatus: socialPostAnalyses.status,
       hook: socialPostAnalyses.hook,
       hookType: socialPostAnalyses.hookType,
@@ -283,6 +284,7 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       ? { hook: r.hook, hookType: r.hookType, approach: r.approach, audience: r.audience, topic: r.topic }
       : null,
     visual: toVisual(r),
+    openingWords: r.openingWords,
   }));
 }
 

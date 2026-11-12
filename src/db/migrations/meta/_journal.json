@@ -414,6 +414,13 @@
       "when": 1794270361059,
       "tag": "0058_wonderful_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794451889830,
+      "tag": "0059_lovely_mandroid",
+      "breakpoints": true
     }
   ]
 }

@@ -941,6 +941,13 @@ export const socialPeerPosts = pgTable(
      * is refreshed each sync and read soon after.
      */
     imageUrls: jsonb("image_urls").$type<string[]>(),
+    /**
+     * Speech in a copy Matt uploaded — Instagram never gives a peer's video.
+     * Kept here rather than in the knowledge base, which feeds the generation
+     * of Tara's own copy and must not carry another brand's words.
+     */
+    transcript: text("transcript"),
+    openingWords: text("opening_words"),
     postedAt: timestamp("posted_at", { withTimezone: true }).notNull(),
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull(),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),

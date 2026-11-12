@@ -446,6 +446,15 @@ describe("syncSocialPosts — peer accounts", () => {
     expect(inserts.find((w) => w.table === "social_post_analyses")!.values).toMatchObject({ postId: "m1", basis: "caption", hookType: "question" });
     expect(r.analysed).toBe(1);
   });
+
+  // An uploaded copy of a peer reel brings its words: the hook is read from them.
+  it("reads a peer reel's hook from its transcript once an upload gave one", async () => {
+    const generate = vi.fn().mockResolvedValue({ text: JSON.stringify({ summary: "s", hook: "I finished it", hookType: "story", approach: "story", topic: "journaling", audience: "journalers" }) });
+    const { db, inserts } = fakeDb({ social_peer_posts: [{ id: "m1", caption: "POV", mediaType: "VIDEO", mediaProductType: "REELS", transcript: "I finished it. Every page.", analysisStatus: "stale", analysisAttempts: 0 }] });
+    await syncSocialPosts({ client: client(), db, igUserId: "ig1", anthropic: createMockAnthropicClient({ generate }), now: () => NOW, sleep: noSleep });
+    expect(generate.mock.calls[0][0]).toContain("I finished it. Every page.");
+    expect(inserts.find((w) => w.table === "social_post_analyses")!.values).toMatchObject({ postId: "m1", basis: "transcript" });
+  });
 });
 
 describe("syncSocialPosts — visuals", () => {

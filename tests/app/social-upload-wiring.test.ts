@@ -29,6 +29,13 @@ describe("upload routes", () => {
     expect(wiring).toMatch(/saveBody: \(body, max\) => saveStreamToTemp\(/);
   });
 
+  // Without this the peer section renders nothing and looks like no peers.
+  it("lists peer reels on the upload page, ranked against their own usual", () => {
+    const page = read("app/social/uploads/page.tsx");
+    expect(page).toMatch(/getPeerPosts\(db\(\)/);
+    expect(page).toMatch(/peers=\{peerReelsForUpload\(peerPosts, now\)\}/);
+  });
+
   it("uses the cost form's credentials", () => {
     expect(read("src/domain/social/upload-wiring.ts")).toMatch(/user: process\.env\.COST_FORM_USER, password: process\.env\.COST_FORM_PASSWORD/);
   });

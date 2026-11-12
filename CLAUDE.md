@@ -338,8 +338,9 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   **Instagram withholds the video of reels with licensed music** (31 of 77
   on 2026-11-09): those are read from their cover, their sound recorded as
   `licensed-music-likely`, and nothing about their opening seconds is
-  claimed. Peers never give video, so never sound. 40 of hers and 20 of
-  theirs a run, newest first, over 90 and 30 days.
+  claimed. Peers never give video, so never sound, unless a copy is uploaded
+  (below). 40 of hers and 20 of theirs a run, newest first, over 90 and 30
+  days.
 - **Targets and the scorecard** (`social_targets`, `social_target_set`):
   followers by a date (straight-line pace from the first reading), posts and
   reels per week. The scorecard is arithmetic in `buildScorecard`, never
@@ -359,6 +360,18 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   exposes no track name (no music field exists; `boost_eligibility_info`
   only says "Remove or choose different audio."), so the song is typed in.
   `social_review` lists `reelsMissingVisuals` with permalinks.
+- **Peer reels can be uploaded too.** Instagram never gives another
+  account's video, so a peer reel is seen by its cover until Matt uploads a
+  copy (Instagram's download when the creator allows it, else a screen
+  recording). `/social/uploads` lists tracked peers' reels from the last 30
+  days, furthest above their account's usual first (`peerReelsForUpload`);
+  the same PUT route finds the media ID in `social_peer_posts` when it is
+  not Tara's. The row is `account = 'peer'`, `source = 'manual_upload'`, with
+  the sound the FILE measured (the video was withheld for being someone
+  else's, not for its music). **Its transcript is kept on
+  `social_peer_posts.transcript` / `opening_words`, never in the knowledge
+  base**, which feeds the generation of Tara's own copy; the peer's text
+  analysis is marked stale and re-read from the transcript.
 - **ManyChat has no reporting API** (its API lists flows, sends, and manages
   subscribers), so keyword, DM and email counts are not in the review.
 - **`social_review`** (MCP) assembles a week: account vs the week before and
