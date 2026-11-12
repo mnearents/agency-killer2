@@ -457,6 +457,23 @@ describe("syncSocialPosts — peer accounts", () => {
   });
 });
 
+describe("syncSocialPosts — teacher accounts", () => {
+  // The step that turns a teacher's posts into lessons has to run in the sync.
+  it("reads teacher posts for what they teach, and counts it", async () => {
+    const generate = vi.fn().mockResolvedValue({ text: JSON.stringify({ lessons: [{ principle: "Open with the result.", howToApply: null, area: "hook", kind: "practice", quote: null }] }) });
+    const { db, inserts } = fakeDb({ social_peer_posts: [{ id: "t1", username: "lana.k.social", caption: "Hooks 101", mediaType: "IMAGE", mediaProductType: "FEED", transcript: null, onScreenText: null, visualStatus: null, visualAttempts: null, runStatus: null, runAttempts: null, analysisStatus: "ok", analysisAttempts: 1 }] });
+    const r = await syncSocialPosts({ client: client(), db, igUserId: "ig1", anthropic: createMockAnthropicClient({ generate }), now: () => NOW, sleep: noSleep });
+    expect(inserts.find((w) => w.table === "social_lessons")).toBeDefined();
+    expect(r.lessons).toEqual({ configured: true, extracted: 1, none: 0, failed: 0, lessons: 1 });
+  });
+
+  it("says lessons were not read without Anthropic", async () => {
+    const { db } = fakeDb({});
+    const r = await syncSocialPosts({ client: client(), db, igUserId: "ig1", now: () => NOW, sleep: noSleep });
+    expect(r.lessons).toEqual({ configured: false, extracted: 0, none: 0, failed: 0, lessons: 0 });
+  });
+});
+
 describe("syncSocialPosts — visuals", () => {
   it("keeps a peer post's pictures, refreshed each sync because the links expire", async () => {
     const c = client({

@@ -42,6 +42,7 @@ import {
 } from "./transcription";
 import { accountDaysToFetch, openingWords } from "./review";
 import { syncVisuals, type VisualSyncDeps } from "./visual-sync";
+import { extractLessons, type LessonSyncResult } from "./lesson-sync";
 import {
   buildPostAnalysisPrompt,
   parsePostAnalysis,
@@ -171,6 +172,8 @@ export interface SyncSocialResult {
   analysisFailed: number;
   /** What each post shows. `configured: false` without the video tools or Anthropic. */
   visuals: { configured: boolean; analysed: number; failed: number; unavailable: number; failures: Array<{ postId: string; detail: string }> };
+  /** What teacher accounts' posts teach. `configured: false` without Anthropic. */
+  lessons: LessonSyncResult & { configured: boolean };
   errors: string[];
 }
 
@@ -424,6 +427,12 @@ export async function syncSocialPosts(
     ? { configured: true, ...(await syncVisuals({ db, client, anthropic: deps.anthropic, now: () => syncedAt, ...deps.visuals }, errors)) }
     : { configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] };
 
+  // Step 9: what the teacher accounts' posts teach — after step 8 has read
+  // their slides, whose text is most of what a carousel teaches.
+  const lessons = deps.anthropic
+    ? { configured: true, ...(await extractLessons({ db, anthropic: deps.anthropic, now: () => syncedAt }, { waitForVisuals: deps.visuals !== undefined }, errors)) }
+    : { configured: false, extracted: 0, none: 0, failed: 0, lessons: 0 };
+
   return {
     posts: rows.length,
     insightsFetched,
@@ -437,6 +446,7 @@ export async function syncSocialPosts(
     analysisConfigured: deps.anthropic !== undefined,
     ...analysis,
     visuals,
+    lessons,
     errors,
   };
 }

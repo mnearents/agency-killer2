@@ -31,6 +31,8 @@ export interface PeerPost {
   visual?: ReviewPostVisual | null;
   /** The first words spoken, from a copy Matt uploaded. */
   openingWords?: string | null;
+  /** peer (benchmarked for ideas) or teacher (read for its advice). Peer when unknown. */
+  purpose?: "peer" | "teacher";
 }
 
 export interface PeerDay {
@@ -192,7 +194,7 @@ export function peerReelsForUpload(posts: PeerPost[], now: Date) {
   }
   const from = now.getTime() - UPLOAD_DAYS * 86_400_000;
   const reels = posts
-    .filter((p) => p.format === "reel" && p.postedAt.getTime() >= from)
+    .filter((p) => p.format === "reel" && p.purpose !== "teacher" && p.postedAt.getTime() >= from)
     .map((p) => ({ ...p, ...scorePeerPost(p, baselines.get(p.username)!, now) }));
   const uploaded = reels.filter((p) => p.visual?.source === "manual_upload").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
   const waiting = reels
@@ -204,4 +206,17 @@ export function peerReelsForUpload(posts: PeerPost[], now: Date) {
       return (b.viewCount ?? -1) - (a.viewCount ?? -1);
     });
   return { waiting, uploaded };
+}
+
+/**
+ * Teacher accounts' reels for the upload page: a talking-head reel teaches in
+ * what is said, which only an uploaded copy gives. Every one held, newest
+ * first — advice does not expire after 30 days — and those uploaded apart.
+ */
+export function teacherReelsForUpload(posts: PeerPost[]) {
+  const reels = posts.filter((p) => p.format === "reel" && p.purpose === "teacher").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
+  return {
+    waiting: reels.filter((p) => p.visual?.source !== "manual_upload"),
+    uploaded: reels.filter((p) => p.visual?.source === "manual_upload"),
+  };
 }

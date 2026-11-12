@@ -896,6 +896,11 @@ export const socialReviews = pgTable(
  */
 export const socialPeers = pgTable("social_peers", {
   username: text("username").primaryKey(),
+  /**
+   * peer: an account in the niche, benchmarked against its own usual for
+   * ideas. teacher: an account followed for its advice, read for lessons.
+   */
+  purpose: text("purpose").notNull().default("peer"),
   active: integer("active").notNull().default(1),
   notes: text("notes"),
   addedBy: text("added_by"),
@@ -954,6 +959,46 @@ export const socialPeerPosts = pgTable(
   },
   (table) => [index("social_peer_posts_user_posted_idx").on(table.username, table.postedAt)]
 );
+
+/**
+ * What a teacher account's post teaches (`lessons.ts`): a principle in our own
+ * words, how Tara could apply it, its area, and whether it is a practice or
+ * an unverified claim. Rewritten whole when the post is read again.
+ */
+export const socialLessons = pgTable(
+  "social_lessons",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    postId: text("post_id").notNull(),
+    username: text("username").notNull(),
+    area: text("area").notNull(),
+    principle: text("principle").notNull(),
+    howToApply: text("how_to_apply"),
+    /** practice | claim */
+    kind: text("kind").notNull(),
+    quote: text("quote"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("social_lessons_post_idx").on(table.postId), index("social_lessons_user_idx").on(table.username)]
+);
+
+/**
+ * Whether each teacher post has been read for lessons. status: ok (lessons
+ * found) | none (it teaches nothing — an answer) | error (retried three
+ * times) | stale (an upload brought its words; read again).
+ */
+export const socialLessonRuns = pgTable("social_lesson_runs", {
+  postId: text("post_id").primaryKey(),
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  /** caption, slides, transcript — joined with + */
+  basis: text("basis"),
+  lessonCount: integer("lesson_count"),
+  detail: text("detail"),
+  analysedAt: timestamp("analysed_at", { withTimezone: true }).notNull(),
+});
 
 /**
  * What a post SHOWS — ours or a peer's — read by Claude from what Instagram

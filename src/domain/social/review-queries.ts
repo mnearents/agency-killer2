@@ -5,9 +5,10 @@
 
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { socialAccountDays, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets } from "@/db/schema";
+import { socialAccountDays, socialLessonRuns, socialLessons, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets } from "@/db/schema";
 import { formatGroup, type AccountDayRow, type ReviewPost, type ReviewPostVisual, type TargetMetric } from "./review";
 import type { PeerDay, PeerPost } from "./peers";
+import type { LessonArea, LessonRow } from "./lessons";
 
 /**
  * Posts since a date, newest first, each with its analysis. Stories are left
@@ -193,8 +194,12 @@ export async function listReviews(db: Db, limit = 52): Promise<Array<Pick<Social
   return rows;
 }
 
+export type PeerPurpose = "peer" | "teacher";
+
 export interface Peer {
   username: string;
+  /** peer: benchmarked for ideas. teacher: read for its advice. */
+  purpose: PeerPurpose;
   notes: string | null;
   active: boolean;
 }
@@ -202,22 +207,27 @@ export interface Peer {
 /** Peer accounts — active only unless asked. */
 export async function getPeers(db: Db, includeInactive = false): Promise<Peer[]> {
   const rows = await db
-    .select({ username: socialPeers.username, notes: socialPeers.notes, active: socialPeers.active })
+    .select({ username: socialPeers.username, purpose: socialPeers.purpose, notes: socialPeers.notes, active: socialPeers.active })
     .from(socialPeers)
     .where(includeInactive ? undefined : eq(socialPeers.active, 1))
     .orderBy(socialPeers.username);
-  return rows.map((r) => ({ ...r, active: r.active === 1 }));
+  return rows.map((r) => ({ ...r, purpose: r.purpose as PeerPurpose, active: r.active === 1 }));
 }
 
 /** Start or stop watching an account. Stopping keeps its history. */
-export async function setPeer(db: Db, peer: { username: string; active: boolean; notes?: string; addedBy: string | null }): Promise<Peer> {
-  const values = { active: peer.active ? 1 : 0, updatedAt: new Date(), ...(peer.notes !== undefined ? { notes: peer.notes } : {}) };
+export async function setPeer(db: Db, peer: { username: string; active: boolean; purpose?: PeerPurpose; notes?: string; addedBy: string | null }): Promise<Peer> {
+  const values = {
+    active: peer.active ? 1 : 0,
+    updatedAt: new Date(),
+    ...(peer.notes !== undefined ? { notes: peer.notes } : {}),
+    ...(peer.purpose !== undefined ? { purpose: peer.purpose } : {}),
+  };
   const [row] = await db
     .insert(socialPeers)
     .values({ username: peer.username, addedBy: peer.addedBy, ...values })
     .onConflictDoUpdate({ target: socialPeers.username, set: values })
-    .returning({ username: socialPeers.username, notes: socialPeers.notes, active: socialPeers.active });
-  return { ...row, active: row.active === 1 };
+    .returning({ username: socialPeers.username, purpose: socialPeers.purpose, notes: socialPeers.notes, active: socialPeers.active });
+  return { ...row, purpose: row.purpose as PeerPurpose, active: row.active === 1 };
 }
 
 /** Peer posts since a date, newest first, each with what it was. */
@@ -236,6 +246,7 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       commentsCount: socialPeerPosts.commentsCount,
       viewCount: socialPeerPosts.viewCount,
       openingWords: socialPeerPosts.openingWords,
+      purpose: socialPeers.purpose,
       analysisStatus: socialPostAnalyses.status,
       hook: socialPostAnalyses.hook,
       hookType: socialPostAnalyses.hookType,
@@ -267,6 +278,7 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
     .from(socialPeerPosts)
     .leftJoin(socialPostAnalyses, eq(socialPostAnalyses.postId, socialPeerPosts.id))
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
+    .leftJoin(socialPeers, eq(socialPeers.username, socialPeerPosts.username))
     .where(gte(socialPeerPosts.postedAt, since))
     .orderBy(desc(socialPeerPosts.postedAt));
   return rows.map((r) => ({
@@ -285,7 +297,51 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
       : null,
     visual: toVisual(r),
     openingWords: r.openingWords,
+    purpose: (r.purpose ?? "peer") as PeerPurpose,
   }));
+}
+
+/** Lessons from teacher accounts, newest post first, optionally one account or area. */
+export async function getLessons(db: Db, filter: { since: Date; username?: string; area?: LessonArea }): Promise<LessonRow[]> {
+  const rows = await db
+    .select({
+      postId: socialLessons.postId,
+      username: socialLessons.username,
+      area: socialLessons.area,
+      principle: socialLessons.principle,
+      howToApply: socialLessons.howToApply,
+      kind: socialLessons.kind,
+      quote: socialLessons.quote,
+      permalink: socialPeerPosts.permalink,
+      postedAt: socialPeerPosts.postedAt,
+      basis: socialLessonRuns.basis,
+    })
+    .from(socialLessons)
+    .innerJoin(socialPeerPosts, eq(socialPeerPosts.id, socialLessons.postId))
+    .leftJoin(socialLessonRuns, eq(socialLessonRuns.postId, socialLessons.postId))
+    .where(and(
+      gte(socialPeerPosts.postedAt, filter.since),
+      filter.username !== undefined ? eq(socialLessons.username, filter.username) : undefined,
+      filter.area !== undefined ? eq(socialLessons.area, filter.area) : undefined,
+    ))
+    .orderBy(desc(socialPeerPosts.postedAt));
+  return rows.map((r) => ({ ...r, area: r.area as LessonArea, kind: r.kind as LessonRow["kind"] }));
+}
+
+/** Per teacher account: posts held, read for lessons, and that taught something. */
+export async function getLessonCoverage(db: Db): Promise<Array<{ username: string; posts: number; read: number; withLessons: number }>> {
+  const rows = await db
+    .select({
+      username: socialPeerPosts.username,
+      posts: sql<number>`count(*)::int`,
+      read: sql<number>`count(*) FILTER (WHERE ${socialLessonRuns.status} IN ('ok', 'none'))::int`,
+      withLessons: sql<number>`count(*) FILTER (WHERE ${socialLessonRuns.status} = 'ok')::int`,
+    })
+    .from(socialPeerPosts)
+    .innerJoin(socialPeers, and(eq(socialPeers.username, socialPeerPosts.username), eq(socialPeers.purpose, "teacher")))
+    .leftJoin(socialLessonRuns, eq(socialLessonRuns.postId, socialPeerPosts.id))
+    .groupBy(socialPeerPosts.username);
+  return rows.map((r) => ({ username: r.username, posts: Number(r.posts), read: Number(r.read), withLessons: Number(r.withLessons) }));
 }
 
 /** Peer follower readings between two dates inclusive. */

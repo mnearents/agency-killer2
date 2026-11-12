@@ -36,6 +36,10 @@ describe("upload routes", () => {
     expect(page).toMatch(/peers=\{peerReelsForUpload\(peerPosts, now\)\}/);
   });
 
+  it("lists teacher reels on the upload page", () => {
+    expect(read("app/social/uploads/page.tsx")).toMatch(/teachers=\{teacherReelsForUpload\(peerPosts\)\}/);
+  });
+
   it("uses the cost form's credentials", () => {
     expect(read("src/domain/social/upload-wiring.ts")).toMatch(/user: process\.env\.COST_FORM_USER, password: process\.env\.COST_FORM_PASSWORD/);
   });

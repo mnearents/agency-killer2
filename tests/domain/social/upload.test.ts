@@ -158,6 +158,13 @@ describe("analyseUploadedReel — a peer's reel", () => {
     expect(updates.find((u) => u.table === "social_post_analyses")!.values).toMatchObject({ status: "stale", attempts: 0 });
   });
 
+  // A teacher's reel teaches in what is said: its lessons are read again with the words.
+  it("has the reel's lessons read again now its words are known", async () => {
+    const { deps, updates } = setup(null, {}, peerReel);
+    await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null });
+    expect(updates.find((u) => u.table === "social_lesson_runs")!.values).toEqual({ status: "stale", attempts: 0 });
+  });
+
   it("writes nothing to Tara's posts", async () => {
     const { deps, updates } = setup(null, {}, peerReel);
     await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null });

@@ -389,6 +389,24 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   to win") are named and kept out of the usual. `social_peers` answers ad
   hoc; `social_review` carries a `peers` section; `social_peer_set` adds or
   stops one. Ideas to borrow, never a scoreboard against a bigger account.
+- **Teacher accounts** (`social_peers.purpose = 'teacher'`, set with
+  `social_peer_set purpose: "teacher"`) are followed for their advice, not
+  benchmarked: they are read by the same sync but kept out of `social_peers`
+  and the review's `peers`. Step 9 of the sync (`lesson-sync.ts`, after the
+  visual step has read their slides, 20 posts a run, every post held
+  whatever its age) has Claude list what each post teaches
+  (`social_lessons`): a principle in our own words, how Tara could apply
+  it, its area, and `practice` or `claim` — an assertion about the
+  algorithm or a number that nothing here verified, which is also what an
+  unclear answer defaults to. A post teaching nothing is `none` in
+  `social_lesson_runs`, an answer; an unreadable reply is an error, retried
+  three times. Talking-head reels teach in what is said, so they are listed
+  on `/social/uploads`; an upload's transcript marks the run `stale` and
+  the post's lessons are replaced. **`social_playbook`** serves the lessons
+  grouped by area with their source posts, each teacher's coverage and
+  reels awaiting upload, and Tara's own 90-day patterns (`taraEvidence`) so
+  a lesson is tested against her numbers before it is recommended. Claude
+  Desktop writes skills from it; nothing here generates skill files.
 - **`social_review_save`** publishes the written review to
   `/social/review` on the dashboard (archive at `/social/review/<id>`),
   where Tara reads it with the week's numbers and posts beside it. Written

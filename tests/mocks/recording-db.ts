@@ -10,6 +10,7 @@ export type Write = { table: string; values: Record<string, unknown>; set?: Reco
 export function fakeDb(seed: Record<string, Record<string, unknown>[]> = {}) {
   const inserts: Write[] = [];
   const updates: Write[] = [];
+  const deletes: Array<{ table: string }> = [];
   const chain = (rows: () => unknown[]) => {
     const c: Record<string, unknown> = {};
     for (const m of ["where", "limit", "orderBy", "leftJoin", "innerJoin"]) c[m] = () => c;
@@ -31,12 +32,15 @@ export function fakeDb(seed: Record<string, Record<string, unknown>[]> = {}) {
         };
       },
     }),
+    delete: (t: Parameters<typeof getTableName>[0]) => ({
+      where: async () => { deletes.push({ table: getTableName(t) }); },
+    }),
     update: (t: Parameters<typeof getTableName>[0]) => ({
       set: (values: Record<string, unknown>) => ({
         where: async () => { updates.push({ table: getTableName(t), values }); },
       }),
     }),
   };
-  return { db: db as never, inserts, updates };
+  return { db: db as never, inserts, updates, deletes };
 }
 

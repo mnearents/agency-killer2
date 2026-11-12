@@ -21,7 +21,7 @@
 
 import { eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { kbDocuments, socialPeerPosts, socialPostAnalyses, socialPosts, socialPostVisuals } from "@/db/schema";
+import { kbDocuments, socialLessonRuns, socialPeerPosts, socialPostAnalyses, socialPosts, socialPostVisuals } from "@/db/schema";
 import type { AnthropicClient } from "@/integrations/anthropic";
 import type { AssemblyAiClient, TranscriptResult } from "@/integrations/assemblyai";
 import type { EmbeddingClient } from "@/integrations/openai";
@@ -167,6 +167,8 @@ async function analyseUploadedPeerReel(
       .set({ transcript: words.transcript, openingWords: words.openingWords })
       .where(eq(socialPeerPosts.id, post.id));
     await deps.db.update(socialPostAnalyses).set({ status: "stale", attempts: 0 }).where(eq(socialPostAnalyses.postId, post.id));
+    // A teacher's reel teaches mostly in what is said: read its lessons again.
+    await deps.db.update(socialLessonRuns).set({ status: "stale", attempts: 0 }).where(eq(socialLessonRuns.postId, post.id));
   }
   const audio = words.transcript ? "speech" : looked.audio;
 

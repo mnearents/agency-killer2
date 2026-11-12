@@ -421,6 +421,13 @@
       "when": 1794451889830,
       "tag": "0059_lovely_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1794452801440,
+      "tag": "0060_purple_boom_boom",
+      "breakpoints": true
     }
   ]
 }
