@@ -8,7 +8,7 @@ import { fakeDb } from "../../mocks/recording-db";
 
 vi.mock("@/domain/social/reel-backfill", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/domain/social/reel-backfill")>()),
-  runReelDownloads: vi.fn().mockResolvedValue({ calls: 1, ok: 1, failed: 0, stopped: null, deferred: { own: 0, teacher: 2, peer: 0 }, results: [] }),
+  runReelDownloads: vi.fn().mockResolvedValue({ calls: 1, ok: 1, failed: 0, stopped: null, queued: { own: 1, teacher: 2, peer: 0 }, deferred: { own: 0, teacher: 2, peer: 0 }, results: [] }),
 }));
 
 const NOW = new Date("2026-11-12T12:00:00Z");

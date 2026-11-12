@@ -151,7 +151,7 @@ describe("runReelDownloads", () => {
     const { deps } = setup({ limits: { plan: 3, teacher: 60, peer: 40 } });
     const r = await runReelDownloads(deps, {});
     expect(deps.downloader.resolve).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ calls: 0, stopped: "plan-limit", deferred: { own: 1, teacher: 1, peer: 0 } });
+    expect(r).toMatchObject({ calls: 0, stopped: "plan-limit", queued: { own: 1, teacher: 1, peer: 0 }, deferred: { own: 1, teacher: 1, peer: 0 } });
   });
 
   it("returns what each reel showed, for the reply", async () => {

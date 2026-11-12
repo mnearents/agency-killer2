@@ -96,6 +96,10 @@ export interface ReelDownloadRun {
   failed: number;
   /** Why the run stopped short of its queue, if it did. */
   stopped: "rate-limited" | "plan-limit" | "quota-exhausted" | null;
+  /** Reels waiting when the run began, of the accounts asked for — zero is an empty queue, not a run that did nothing. */
+  queued: DownloadUsage;
+  /** The accounts this run was limited to, if any. */
+  only: DownloadAccount | null;
   /** Reels left queued — for next month when a cap or the plan stopped them. */
   deferred: DownloadUsage;
   results: ReelDownloadResult[];
@@ -110,7 +114,8 @@ export async function runReelDownloads(deps: ReelDownloadDeps, opts: { only?: Do
     usage, limits: deps.limits, quota, now, max: opts.max,
   });
 
-  const run: ReelDownloadRun = { calls: 0, ok: 0, failed: 0, stopped: plan.blocked, deferred: plan.deferred, results: [] };
+  const queued = { own: pick("own", queue.own).length, teacher: pick("teacher", queue.teachers).length, peer: pick("peer", queue.peers).length };
+  const run: ReelDownloadRun = { calls: 0, ok: 0, failed: 0, stopped: plan.blocked, queued, only: opts.only ?? null, deferred: plan.deferred, results: [] };
   for (const [i, reel] of plan.planned.entries()) {
     if (i > 0) await deps.sleep(DOWNLOAD_PAUSE_MS);
     const calledAt = deps.now();

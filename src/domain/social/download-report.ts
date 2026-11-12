@@ -20,7 +20,14 @@ export async function describeDownloadRun(db: Db, run: ReelDownloadRun, opts: { 
     db.select().from(socialLessons).where(inArray(socialLessons.postId, ids)),
   ]);
 
+  const waiting = run.queued.own + run.queued.teacher + run.queued.peer;
+  if (run.calls === 0 && waiting === 0) {
+    const what = { own: "Tara's cover-only reels", teacher: "teachers' new reels", peer: "peers' standout reels" };
+    const scope = run.only ? what[run.only] : "Tara's cover-only reels, teachers' new reels or peers' standouts";
+    return [`Nothing to download: none of ${scope} are waiting — all are already analysed or have failed three times. No RapidAPI call was made.`];
+  }
   const lines = [
+    `Waiting: Tara ${run.queued.own}, teachers ${run.queued.teacher}, peers ${run.queued.peer}. ` +
     `${run.calls} download call(s): ${run.ok} analysed, ${run.failed} failed` +
       (run.stopped ? ` — stopped: ${run.stopped}` : "") +
       (run.deferred.teacher + run.deferred.peer + run.deferred.own > 0 ? ` — still queued: Tara ${run.deferred.own}, teachers ${run.deferred.teacher}, peers ${run.deferred.peer}` : ""),
