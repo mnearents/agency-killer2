@@ -45,6 +45,8 @@ const STATUS: Record<Exclude<UploadResult, { ok: true }>["reason"], number> = {
   "not-a-reel": 422,
   "unreadable-video": 422,
   "analysis-failed": 502,
+  // Only a download is refused this way; an upload always replaces.
+  "manual-upload-exists": 409,
 };
 
 export async function handleReelUpload(request: Request, postId: string, deps: UploadHttpDeps): Promise<Response> {

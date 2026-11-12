@@ -151,3 +151,14 @@ describe("teacher reels", () => {
     expect(r.uploaded.map((p) => p.id)).toEqual(["done"]);
   });
 });
+
+describe("peerReelsForUpload — downloaded reels", () => {
+  const usual = Array.from({ length: 6 }, (_, i) => reel(10_000, { postedAt: daysAgo(12 + i) }));
+  const fetched = { basis: "frames", visualType: null, visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: null, cutsPerMinute: null, source: "api_backfill" };
+
+  it("counts a reel the downloader fetched as done, but not one only its cover was seen of", () => {
+    const r = peerReelsForUpload([...usual, reel(50_000, { id: "dl", visual: fetched }), reel(50_000, { id: "cover", visual: { ...fetched, basis: "cover", source: "api" } })], NOW);
+    expect(r.uploaded.map((p) => p.id)).toEqual(["dl"]);
+    expect(r.waiting.map((p) => p.id)).toContain("cover");
+  });
+});

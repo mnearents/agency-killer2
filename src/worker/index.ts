@@ -70,6 +70,11 @@ import { generateEmailCreative } from "@/domain/email/generate";
 import { generateBlogArticle } from "@/domain/blog/generate";
 import { syncSocialPosts, DEFAULT_MEDIA_LIMIT, type SyncSocialResult } from "@/domain/social/sync";
 import { createFfmpegToolkit } from "@/integrations/video-frames";
+import { createReelDownloader } from "@/integrations/reel-downloader";
+import { readDownloadLimits, type DownloadAccount } from "@/domain/social/download-plan";
+import { runReelDownloads } from "@/domain/social/reel-backfill";
+import { describeDownloadRun } from "@/domain/social/download-report";
+import { extractLessons } from "@/domain/social/lesson-sync";
 import { fetchMedia, writeTemp } from "@/integrations/media-download";
 import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
@@ -227,6 +232,14 @@ async function main() {
   const assemblyAiClient = getEnvOptional("ASSEMBLYAI_API_KEY")
     ? createAssemblyAiClient(getEnv("ASSEMBLYAI_API_KEY"))
     : null;
+
+  // The reel downloader (RapidAPI). The key stays here: nothing in src/mcp
+  // imports the downloader, so no connector can reach it. The daily sync uses
+  // it only when REEL_AUTO_DOWNLOAD=on — a free plan's three calls a month
+  // must not be spent unasked; `!sync reels` runs it on request either way.
+  const reelDownloader = getEnvOptional("RAPIDAPI_KEY") ? createReelDownloader({ apiKey: getEnv("RAPIDAPI_KEY") }) : null;
+  const downloadLimits = readDownloadLimits(process.env);
+  const autoDownloads = getEnvOptional("REEL_AUTO_DOWNLOAD") === "on";
 
   const igClient = getEnvOptional("META_ACCESS_TOKEN")
     ? createInstagramApiClient(getEnv("META_ACCESS_TOKEN"))
@@ -392,6 +405,7 @@ async function main() {
           embeddingClient: embeddingClient ?? undefined,
           anthropic: anthropicClient ?? undefined,
           visuals: { video: createFfmpegToolkit(), fetchMedia, writeTemp },
+          downloads: reelDownloader && autoDownloads ? { downloader: reelDownloader, limits: downloadLimits } : undefined,
         },
         limit,
       );
@@ -407,7 +421,10 @@ async function main() {
             : "visuals NOT configured") + ", " +
           (result.lessons.configured
             ? `lessons: ${result.lessons.lessons} from ${result.lessons.extracted} teacher post(s), ${result.lessons.none} teaching nothing, ${result.lessons.failed} failed`
-            : "lessons NOT configured"),
+            : "lessons NOT configured") + ", " +
+          (result.downloads.configured
+            ? `reel downloads: ${result.downloads.calls} call(s), ${result.downloads.ok} analysed, ${result.downloads.failed} failed${result.downloads.stopped ? ` (stopped: ${result.downloads.stopped})` : ""}`
+            : `reel downloads off (${reelDownloader ? "REEL_AUTO_DOWNLOAD is not on" : "RAPIDAPI_KEY not set"})`),
       );
       for (const f of result.visuals.failures) console.error(`[sync:social] Visuals failed for post ${f.postId} (retried next run): ${f.detail}`);
       if (!result.analysisConfigured) console.error("[sync:social] ANTHROPIC_API_KEY not set — posts are not analysed, so the weekly review has no hooks or topics");
@@ -1512,6 +1529,31 @@ async function main() {
         return { text: `*Instagram sync finished with problems*\n${lines.join("\n")}\n\n${result.errors.map((e) => `• ${e}`).join("\n")}`, isError: true };
       }
       return { text: `*Instagram sync complete!*\n${lines.join("\n")}`, isError: false };
+    },
+    /**
+     * `!sync reels [tara|teachers|peers] [N]` — fetch withheld reels through
+     * the downloader now, within the plan's limits and caps, and say what each
+     * showed. Teachers' advice is read straight after, for the reply.
+     */
+    "sync:reels": async (args) => {
+      if (!reelDownloader) return { text: "Reel downloads unavailable — RAPIDAPI_KEY is not set on the worker.", isError: true };
+      if (!anthropicClient) return { text: "Reel downloads unavailable — ANTHROPIC_API_KEY is not set.", isError: true };
+      const words = (args ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+      const kinds: Record<string, DownloadAccount | undefined> = { tara: "own", own: "own", teacher: "teacher", teachers: "teacher", peer: "peer", peers: "peer", all: undefined };
+      const only = words.map((w) => kinds[w]).find((k) => k !== undefined);
+      const n = words.map((w) => parseInt(w, 10)).find((v) => !Number.isNaN(v));
+      const run = await runReelDownloads({
+        db, anthropic: anthropicClient, video: createFfmpegToolkit(), downloader: reelDownloader, limits: downloadLimits,
+        transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined,
+        now: () => new Date(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      }, { only, max: n !== undefined ? Math.max(n, 0) : undefined });
+      if (run.results.some((r) => r.account === "teacher" && r.outcome === "ok")) {
+        await extractLessons({ db, anthropic: anthropicClient, now: () => new Date() }, { waitForVisuals: true }, []);
+      }
+      const lines = await describeDownloadRun(db, run, { transcriptChars: 600 });
+      // The full transcripts go to the log, where there is room for them.
+      for (const line of await describeDownloadRun(db, run, { transcriptChars: 20_000 })) console.log(`[sync:reels] ${line}`);
+      return { text: `*Reel downloads*\n${lines.join("\n")}`, isError: run.failed > 0 && run.ok === 0 };
     },
     "sync:invoices": async () => {
       let result: InvoiceFolderResult | null;

@@ -53,10 +53,19 @@ export type UploadResult =
       transcriptError: string | null;
       audioNote: string;
     }
-  | { ok: false; reason: "not-found" | "not-a-reel" | "unreadable-video" | "analysis-failed"; detail?: string };
+  | { ok: false; reason: "not-found" | "not-a-reel" | "unreadable-video" | "analysis-failed" | "manual-upload-exists"; detail?: string };
+
+/**
+ * Where the file came from: Matt's upload, or the downloader (RapidAPI)
+ * fetching it automatically. A download never replaces an upload.
+ */
+export type UploadOrigin = "manual_upload" | "api_backfill";
 
 export const UPLOAD_AUDIO_NOTE =
   "Sound measured from the uploaded file, which can differ from the posted reel: Instagram's download may drop or replace licensed music.";
+
+export const DOWNLOAD_AUDIO_NOTE =
+  "Sound measured from a copy fetched through a third-party downloader (RapidAPI). It should carry the reel's posted sound, but this was not checked against Instagram.";
 
 export const PEER_UPLOAD_AUDIO_NOTE =
   "Sound measured from the uploaded file, which can differ from the posted reel: Instagram's download or a screen recording may drop or replace its music.";
@@ -67,7 +76,9 @@ const isReel = (p: { mediaType: string; mediaProductType: string | null }) => p.
 export async function analyseUploadedReel(
   deps: UploadDeps,
   input: { postId: string; filePath: string; songUsed: string | null },
+  opts: { origin?: UploadOrigin } = {},
 ): Promise<UploadResult> {
+  const origin = opts.origin ?? "manual_upload";
   const now = deps.now();
   const [post] = await deps.db
     .select({
@@ -81,13 +92,15 @@ export async function analyseUploadedReel(
       durationMs: socialPosts.durationMs,
       postedAt: socialPosts.postedAt,
       visualAttempts: socialPostVisuals.attempts,
+      visualSource: socialPostVisuals.source,
     })
     .from(socialPosts)
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
     .where(eq(socialPosts.id, input.postId))
     .limit(1);
-  if (!post) return analyseUploadedPeerReel(deps, input);
+  if (!post) return analyseUploadedPeerReel(deps, input, origin);
   if (!isReel(post)) return { ok: false, reason: "not-a-reel" };
+  if (origin === "api_backfill" && post.visualSource === "manual_upload") return { ok: false, reason: "manual-upload-exists" };
 
   // Read before anything is written: a file ffmpeg cannot read is refused
   // whole, rather than leaving half an analysis behind.
@@ -103,12 +116,17 @@ export async function analyseUploadedReel(
   const opening = transcript.openingWords ?? post.openingWords;
 
   const errors: string[] = [];
+  const downloaded = origin === "api_backfill";
   const result = await analyseOne(deps, "own", { ...post, openingWords: opening }, async () => looked, errors, {
-    source: "manual_upload",
+    source: origin,
     songUsed: input.songUsed,
-    audioNote: UPLOAD_AUDIO_NOTE,
-    // The posted reel's sound: Instagram withheld its video for licensed music.
-    audio: "licensed-music-likely",
+    audioNote: downloaded ? DOWNLOAD_AUDIO_NOTE : UPLOAD_AUDIO_NOTE,
+    // Instagram withheld the video for licensed music. A download carries the
+    // reel's sound, so speech and silence can be told apart from it; anything
+    // else is still most likely the licensed track.
+    audio: downloaded && (transcript.transcribed || post.transcriptionStatus === "ok") ? "speech"
+      : downloaded && looked.audio === "silent" ? "silent"
+      : "licensed-music-likely",
   });
   if (result.outcome !== "ok") return { ok: false, reason: "analysis-failed", detail: result.detail };
 
@@ -126,7 +144,7 @@ export async function analyseUploadedReel(
     cuts: facts.cuts,
     transcribed: transcript.transcribed,
     transcriptError: transcript.error,
-    audioNote: UPLOAD_AUDIO_NOTE,
+    audioNote: downloaded ? DOWNLOAD_AUDIO_NOTE : UPLOAD_AUDIO_NOTE,
   };
 }
 
@@ -134,6 +152,7 @@ export async function analyseUploadedReel(
 async function analyseUploadedPeerReel(
   deps: UploadDeps,
   input: { postId: string; filePath: string; songUsed: string | null },
+  origin: UploadOrigin,
 ): Promise<UploadResult> {
   const [post] = await deps.db
     .select({
@@ -144,6 +163,7 @@ async function analyseUploadedPeerReel(
       transcript: socialPeerPosts.transcript,
       openingWords: socialPeerPosts.openingWords,
       visualAttempts: socialPostVisuals.attempts,
+      visualSource: socialPostVisuals.source,
     })
     .from(socialPeerPosts)
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
@@ -151,6 +171,8 @@ async function analyseUploadedPeerReel(
     .limit(1);
   if (!post) return { ok: false, reason: "not-found" };
   if (!isReel(post)) return { ok: false, reason: "not-a-reel" };
+  if (origin === "api_backfill" && post.visualSource === "manual_upload") return { ok: false, reason: "manual-upload-exists" };
+  const audioNote = origin === "api_backfill" ? DOWNLOAD_AUDIO_NOTE : PEER_UPLOAD_AUDIO_NOTE;
 
   let looked: Looked;
   try {
@@ -174,9 +196,9 @@ async function analyseUploadedPeerReel(
 
   const errors: string[] = [];
   const result = await analyseOne(deps, "peer", { ...post, openingWords: words.openingWords }, async () => looked, errors, {
-    source: "manual_upload",
+    source: origin,
     songUsed: input.songUsed,
-    audioNote: PEER_UPLOAD_AUDIO_NOTE,
+    audioNote,
     audio,
   });
   if (result.outcome !== "ok") return { ok: false, reason: "analysis-failed", detail: result.detail };
@@ -189,7 +211,7 @@ async function analyseUploadedPeerReel(
     cuts: facts.cuts,
     transcribed: words.transcribed,
     transcriptError: words.error,
-    audioNote: PEER_UPLOAD_AUDIO_NOTE,
+    audioNote,
   };
 }
 

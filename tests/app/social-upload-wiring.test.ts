@@ -36,6 +36,14 @@ describe("upload routes", () => {
     expect(page).toMatch(/peers=\{peerReelsForUpload\(peerPosts, now\)\}/);
   });
 
+  // Where a broken downloader or a spent plan shows first.
+  it("shows this month's downloads and each reel's failed downloads", () => {
+    const page = read("app/social/uploads/page.tsx");
+    expect(page).toMatch(/getDownloadUsage\(db\(\), now\)/);
+    expect(page).toMatch(/downloads=\{downloads\}/);
+    expect(page).toMatch(/failures=\{failures\}/);
+  });
+
   it("lists teacher reels on the upload page", () => {
     expect(read("app/social/uploads/page.tsx")).toMatch(/teachers=\{teacherReelsForUpload\(peerPosts\)\}/);
   });

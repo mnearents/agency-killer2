@@ -157,6 +157,36 @@ export const ENV_MANIFEST: EnvVariable[] = [
     impact: "The segment push tools are unavailable, so no audience can be sent to Attentive.",
   },
   {
+    name: "RAPIDAPI_KEY",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Reels Instagram withholds (Tara's licensed-music reels, teachers' and peers') are not downloaded; they wait for a manual upload at /social/uploads.",
+  },
+  {
+    name: "REEL_AUTO_DOWNLOAD",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Unless `on`, the daily sync downloads no reels — deliberately, so a small RapidAPI plan is not spent unasked. `!sync reels` still runs on request.",
+  },
+  {
+    name: "RAPIDAPI_MONTHLY_LIMIT",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Unset, reel downloads stop at 3 calls a month (the free plan) — Tara's included.",
+  },
+  {
+    name: "TEACHER_MONTHLY_CAP",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Unset, teachers' reel downloads are capped at 60 a month; the rest queue for next month.",
+  },
+  {
+    name: "PEER_MONTHLY_CAP",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact: "Unset, peers' reel downloads are capped at 40 a month; the rest queue for next month.",
+  },
+  {
     name: "SLACK_BOT_TOKEN",
     surfaces: ["worker"],
     severity: "degraded",

@@ -142,6 +142,7 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
     seal: "sync:seal",
     subscriptions: "sync:seal",
     social: "sync:social",
+    reels: "sync:reels",
     inventory: "sync:inventory",
     kb: "sync:knowledge-base",
     footage: "sync:footage",

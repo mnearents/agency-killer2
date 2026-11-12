@@ -38,6 +38,7 @@ const ACK_MESSAGES: Record<string, string> = {
   "blog:create": "Generating blog article...",
   "social:analyze": "Analyzing social performance...",
   "sync:social": "Syncing Instagram data...",
+  "sync:reels": "Downloading withheld reels and looking at them (about a minute each)...",
   "report:weekly": "Generating weekly report...",
   "social:backfill": "Backfilling Instagram insights (this may take a few minutes)...",
 };
@@ -171,6 +172,7 @@ When the user asks a question:
               "• `!calendar` — View upcoming week's calendar",
               "• `!calendar add <date> <channel> <title>` — Add entry",
               "• `!sync social` — Pull Instagram posts and insights",
+              "• `!sync reels [tara|teachers|peers] [N]` — Download reels Instagram withholds and analyse them",
               "• `!inventory` — What's in stock, what's running out",
               "• `!inventory alerts` — Only the stock problems worth acting on",
               "• `!sync inventory` — Pull the latest stock levels from Shopify",

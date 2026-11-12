@@ -43,6 +43,9 @@ import {
 import { accountDaysToFetch, openingWords } from "./review";
 import { syncVisuals, type VisualSyncDeps } from "./visual-sync";
 import { extractLessons, type LessonSyncResult } from "./lesson-sync";
+import { runReelDownloads, type ReelDownloadRun } from "./reel-backfill";
+import type { ReelDownloaderClient } from "@/integrations/reel-downloader";
+import type { DownloadLimits } from "./download-plan";
 import {
   buildPostAnalysisPrompt,
   parsePostAnalysis,
@@ -147,6 +150,11 @@ export interface SyncSocialDeps {
   anthropic?: AnthropicClient;
   /** ffmpeg and downloads, for what each post shows. Needs `anthropic` too. */
   visuals?: Pick<VisualSyncDeps, "video" | "fetchMedia" | "writeTemp">;
+  /**
+   * The reel downloader (RapidAPI), for reels Instagram withholds. Given only
+   * when automatic downloads are switched on; needs `visuals` and `anthropic`.
+   */
+  downloads?: { downloader: ReelDownloaderClient; limits: DownloadLimits };
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -172,6 +180,8 @@ export interface SyncSocialResult {
   analysisFailed: number;
   /** What each post shows. `configured: false` without the video tools or Anthropic. */
   visuals: { configured: boolean; analysed: number; failed: number; unavailable: number; failures: Array<{ postId: string; detail: string }> };
+  /** Reels fetched through the downloader. `configured: false` when automatic downloads are off. */
+  downloads: { configured: boolean } & Pick<ReelDownloadRun, "calls" | "ok" | "failed" | "stopped" | "deferred">;
   /** What teacher accounts' posts teach. `configured: false` without Anthropic. */
   lessons: LessonSyncResult & { configured: boolean };
   errors: string[];
@@ -427,6 +437,20 @@ export async function syncSocialPosts(
     ? { configured: true, ...(await syncVisuals({ db, client, anthropic: deps.anthropic, now: () => syncedAt, ...deps.visuals }, errors)) }
     : { configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] };
 
+  // Step 8b: the reels Instagram withholds, fetched through the downloader —
+  // before step 9, so a teacher reel's words are read for lessons this run.
+  let downloads: SyncSocialResult["downloads"] = { configured: false, calls: 0, ok: 0, failed: 0, stopped: null, deferred: { own: 0, teacher: 0, peer: 0 } };
+  if (deps.anthropic && deps.visuals && deps.downloads) {
+    const run = await runReelDownloads({
+      db, anthropic: deps.anthropic, video: deps.visuals.video, downloader: deps.downloads.downloader, limits: deps.downloads.limits,
+      transcriber: deps.transcriber, embeddingClient: deps.embeddingClient, now: () => syncedAt, sleep,
+    }, {});
+    downloads = { configured: true, calls: run.calls, ok: run.ok, failed: run.failed, stopped: run.stopped, deferred: run.deferred };
+    for (const r of run.results.filter((x) => x.outcome !== "ok")) {
+      errors.push(`Reel download for ${r.account === "own" ? "Tara's" : `@${r.username}'s`} post ${r.postId} (${r.permalink}): ${r.outcome}${r.detail ? ` — ${r.detail}` : ""}`);
+    }
+  }
+
   // Step 9: what the teacher accounts' posts teach — after step 8 has read
   // their slides, whose text is most of what a carousel teaches.
   const lessons = deps.anthropic
@@ -446,6 +470,7 @@ export async function syncSocialPosts(
     analysisConfigured: deps.anthropic !== undefined,
     ...analysis,
     visuals,
+    downloads,
     lessons,
     errors,
   };

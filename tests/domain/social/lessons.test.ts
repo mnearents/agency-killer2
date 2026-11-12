@@ -30,6 +30,13 @@ describe("buildLessonPrompt", () => {
     expect(prompt).toMatch(/empty list/i);
   });
 
+  // Advice is hers: quoted where specific, never embellished.
+  it("asks for her exact words where specific, and nothing she did not say", () => {
+    const { prompt } = buildLessonPrompt({ username: "a", format: "Reel", caption: "c", slideText: null, transcript: "t" })!;
+    expect(prompt).toMatch(/exact words/);
+    expect(prompt).toMatch(/Never add advice it did not give/);
+  });
+
   it("has nothing to read when there is no caption, slide text or transcript", () => {
     expect(buildLessonPrompt({ username: "a", format: "Reel", caption: "  ", slideText: [], transcript: null })).toBeNull();
   });

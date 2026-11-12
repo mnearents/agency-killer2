@@ -184,3 +184,49 @@ describe("analyseUploadedReel — a peer's reel", () => {
     expect(await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/p.mp4", songUsed: null })).toEqual({ ok: false, reason: "not-a-reel" });
   });
 });
+
+// The same pipeline, fed by the downloader instead of by hand.
+describe("analyseUploadedReel — downloaded automatically", () => {
+  it("marks Tara's reel as an automatic download, with the sound the copy carries", async () => {
+    const { deps, inserts } = setup();
+    const r = await analyseUploadedReel(deps, { postId: coverOnlyReel.id, filePath: "/tmp/a.mp4", songUsed: null }, { origin: "api_backfill" });
+    const row = inserts.find((w) => w.table === "social_post_visuals")!.values;
+    expect(row).toMatchObject({ source: "api_backfill", basis: "frames", audio: "speech" });
+    expect(String(row.audioNote)).toMatch(/third-party/);
+    expect(r).toMatchObject({ ok: true });
+  });
+
+  it("calls a downloaded reel with sound but no speech licensed music, likely", async () => {
+    const { deps, inserts } = setup(coverOnlyReel, {
+      transcriber: createMockAssemblyAiClient({ transcribe: vi.fn().mockResolvedValue({ id: "t", status: "completed", text: "", durationMs: 12_000, words: [] }) }),
+    });
+    await analyseUploadedReel(deps, { postId: coverOnlyReel.id, filePath: "/tmp/a.mp4", songUsed: null }, { origin: "api_backfill" });
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ audio: "licensed-music-likely" });
+  });
+
+  // A file Matt uploaded is never replaced by a downloaded one.
+  it("refuses to overwrite a manual upload", async () => {
+    const { deps, inserts } = setup({ ...coverOnlyReel, visualSource: "manual_upload" });
+    const r = await analyseUploadedReel(deps, { postId: coverOnlyReel.id, filePath: "/tmp/a.mp4", songUsed: null }, { origin: "api_backfill" });
+    expect(r).toEqual({ ok: false, reason: "manual-upload-exists" });
+    expect(inserts).toEqual([]);
+  });
+
+  it("refuses to overwrite a peer reel Matt uploaded", async () => {
+    const { deps } = setup(null, {}, { ...peerReel, visualSource: "manual_upload" });
+    expect(await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/a.mp4", songUsed: null }, { origin: "api_backfill" })).toEqual({ ok: false, reason: "manual-upload-exists" });
+  });
+
+  it("marks a teacher's or peer's reel as an automatic download", async () => {
+    const { deps, inserts } = setup(null, {}, peerReel);
+    await analyseUploadedReel(deps, { postId: peerReel.id, filePath: "/tmp/a.mp4", songUsed: null }, { origin: "api_backfill" });
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ account: "peer", source: "api_backfill", audio: "speech" });
+  });
+
+  // Matt's own upload still replaces whatever a download produced.
+  it("lets a manual upload replace an automatic one", async () => {
+    const { deps, inserts } = setup({ ...coverOnlyReel, visualSource: "api_backfill" });
+    await analyseUploadedReel(deps, { postId: coverOnlyReel.id, filePath: "/tmp/a.mp4", songUsed: null });
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ source: "manual_upload" });
+  });
+});

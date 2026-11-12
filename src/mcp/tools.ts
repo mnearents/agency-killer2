@@ -51,8 +51,9 @@ import {
 } from "@/domain/subscriptions/analytics";
 import { summarisePricing } from "@/domain/subscriptions/pricing";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
-import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget, getLessons, getLessonCoverage, type Peer, type PeerPurpose } from "@/domain/social/review-queries";
-import { groupLessons, LESSON_AREAS, type LessonArea } from "@/domain/social/lessons";
+import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget, getLessons, getLessonCoverage, getTeacherAdvice, type Peer, type PeerPurpose } from "@/domain/social/review-queries";
+import { getDownloadSummary } from "@/domain/social/download-queries";
+import { groupAdviceByPost, groupLessons, LESSON_AREAS, type LessonArea } from "@/domain/social/lessons";
 import { teacherReelsForUpload } from "@/domain/social/peers";
 import { summarisePeer } from "@/domain/social/peers";
 import { IG_USERNAME } from "@/integrations/instagram-api";
@@ -1665,7 +1666,7 @@ function describeVisual(postId: string, v: ReviewPostVisual | null | undefined) 
     cuts: v.cuts ?? null,
     cutsPerMinute: v.cutsPerMinute,
     contactSheetPath: v.hasContactSheet ? `/api/social/sheet/${postId}` : null,
-    /** api, or manual_upload for a reel Instagram withheld and Matt uploaded. */
+    /** api; manual_upload (Matt uploaded it); api_backfill (fetched by the downloader). */
     source: v.source ?? null,
     songUsed: v.songUsed ?? null,
     audioNote: v.audioNote ?? null,
@@ -1716,7 +1717,7 @@ const socialReview: McpTool = {
     const end = shiftDay(start, 6);
     const since = new Date(Math.min(Date.parse(`${start}T00:00:00Z`), now.getTime() - BASELINE_DAYS * 86_400_000));
 
-    const [posts, days, previous, peers, targets, allDays, tracked] = await Promise.all([
+    const [posts, days, previous, peers, targets, allDays, tracked, downloads] = await Promise.all([
       getReviewPosts(ctx.db, since),
       getAccountDayRows(ctx.db, shiftDay(start, -28), end),
       getLatestReview(ctx.db),
@@ -1725,6 +1726,7 @@ const socialReview: McpTool = {
       // The follower pace runs from the first reading ever taken.
       getAccountDayRows(ctx.db, FIRST_DAY, end),
       section(() => getPeers(ctx.db)),
+      section(() => getDownloadSummary(ctx.db, new Date(now.getTime() - 7 * 86_400_000))),
     ]);
 
     const baselines = buildBaselines(posts, now);
@@ -1770,6 +1772,8 @@ const socialReview: McpTool = {
         vsUsual: score.vsUsual,
         ageHours: score.ageHours,
         visualStatus: p.visualStatus ?? null,
+        /** Where the frames came from: api, manual_upload or api_backfill; null when nothing was looked at. */
+        source: p.visual?.source ?? null,
         visual: describeVisual(p.id, p.visual),
       };
     });
@@ -1837,6 +1841,7 @@ const socialReview: McpTool = {
       patterns: findPatterns(posts, baselines, now).slice(0, 60),
       reelsMissingVisuals,
       uploadPage: UPLOAD_PAGE,
+      backfill: "error" in downloads ? downloads : { last7Days: downloads },
       scorecard: buildScorecard({
         readings: allDays,
         targets,
@@ -1884,7 +1889,10 @@ const socialPeersTool: McpTool = {
     if (only !== undefined && peers.length === 0) {
       return { error: `@${only} is not tracked. Start with social_peer_set.` };
     }
-    return { week: { start, end }, peers, caveat: PEER_CAVEAT };
+    const accounts = (await getPeers(ctx.db))
+      .filter((p) => only === undefined || p.username === only)
+      .map((p) => ({ username: p.username, role: p.purpose, notes: p.notes }));
+    return { week: { start, end }, accounts, peers, caveat: PEER_CAVEAT };
   },
 };
 
@@ -1893,28 +1901,31 @@ const socialPeerSet: McpTool = {
   title: "Track a peer or teacher Instagram account",
   description:
     "Start watching another Instagram account (`username`, with or without @), add `notes` on why, or stop with `active: false` — its history is kept. " +
-    "`purpose`: `peer` (the default for a new account) is an account in the niche, benchmarked against its own usual for ideas (social_peers); `teacher` is an account followed for its advice, whose posts are read for lessons (social_playbook). Leave it out to keep an existing account's purpose. " +
+    "`role`: `peer` (the default for a new account) is an account in the niche, benchmarked against its own usual for ideas (social_peers); `teacher` is an account followed for its advice, whose posts are read for lessons (social_playbook, teacher_advice). Leave it out to keep an existing account's role. " +
+    "A new teacher's reels are fetched from 30 days before the day it became one, and every new reel after; never older history. " +
     "Only business and creator accounts can be read; the next daily sync says if Instagram will not describe it.",
   readOnly: false,
   schema: {
     username: { type: "string", required: true },
     active: { type: "boolean", default: true },
-    purpose: { type: "enum", values: ["peer", "teacher"] },
+    role: { type: "enum", values: ["peer", "teacher"] },
     notes: { type: "string" },
   },
   async run(ctx, args) {
     const username = normaliseUsername(args.username as string);
     if (!IG_USERNAME.test(username)) throw new McpArgumentError(`"${args.username}" is not an Instagram username`);
     const notes = typeof args.notes === "string" ? args.notes.trim() : undefined;
-    const purpose = args.purpose as PeerPurpose | undefined;
+    const purpose = args.role as PeerPurpose | undefined;
     const peer = await setPeer(ctx.db, { username, active: args.active as boolean, purpose, notes, addedBy: ctx.actor ?? null });
     const when = "the next daily Instagram sync (13:30 UTC), or now with `!sync social` in Slack";
+    const { purpose: role, ...rest } = peer;
     return {
       written: true,
-      ...peer,
+      ...rest,
+      role,
       note: !peer.active
         ? "No longer read; what was collected is kept."
-        : peer.purpose === "teacher"
+        : role === "teacher"
           ? `Read from ${when}; its posts' lessons build up over a few syncs (20 a run) and are served by social_playbook. Its talking-head reels teach in what is said — upload them at ${UPLOAD_PAGE}.`
           : `Read from ${when}.`,
     };
@@ -1984,6 +1995,44 @@ const socialPlaybook: McpTool = {
       uploadPage: UPLOAD_PAGE,
       taraEvidence: "error" in review ? review : { usual: (review as Json).usual, patterns: (review as Json).patterns },
       caveat: PLAYBOOK_CAVEAT,
+    };
+  },
+};
+
+const ADVICE_TRANSCRIPT_CHARS = 6000;
+const ADVICE_MAX_REELS = 60;
+
+const teacherAdvice: McpTool = {
+  name: "teacher_advice",
+  title: "Search teacher accounts' advice, reel by reel",
+  description:
+    "Each teacher post's advice with the post it came from: its permalink, where its frames came from (`source`), face in the first 2s, cuts per minute, sound, its first words and transcript, and `advice` — the specific tips and claims it makes (`tip` in Claude's words, `quote` in hers where she was specific; `kind: claim` is an assertion nothing here verified). " +
+    "Search with `query` (words in the advice, a quote or the transcript), `username`, `area`, `kind`, and `days` (default 365). " +
+    "Before recommending any of it, check it against Tara's own results in social_review (its `patterns`): say whether her numbers agree, disagree or cannot tell.",
+  readOnly: true,
+  schema: {
+    query: { type: "string" },
+    username: { type: "string" },
+    area: { type: "enum", values: LESSON_AREAS },
+    kind: { type: "enum", values: ["practice", "claim"] },
+    days: { type: "integer", min: 1, max: 730, default: PLAYBOOK_DAYS },
+  },
+  async run(ctx, args) {
+    const since = new Date(ctx.now().getTime() - (args.days as number) * 86_400_000);
+    const rows = await getTeacherAdvice(ctx.db, {
+      since,
+      query: typeof args.query === "string" && args.query.trim() !== "" ? args.query.trim() : undefined,
+      username: typeof args.username === "string" ? normaliseUsername(args.username) : undefined,
+      area: args.area as string | undefined,
+      kind: args.kind as string | undefined,
+    });
+    const reels = groupAdviceByPost(rows, { transcriptChars: ADVICE_TRANSCRIPT_CHARS });
+    return {
+      reels: reels.slice(0, ADVICE_MAX_REELS),
+      reelsMatched: reels.length,
+      reelsReturned: Math.min(reels.length, ADVICE_MAX_REELS),
+      adviceMatched: rows.length,
+      caveat: "Advice is read from each post's caption, on-screen text and transcript; a reel with no transcript taught only what its caption says. Test each piece against Tara's own patterns (social_review) before recommending it, and never copy her wording as Tara's.",
     };
   },
 };
@@ -4347,6 +4396,7 @@ export const ALL_TOOLS: McpTool[] = [
   socialPeersTool,
   socialPeerSet,
   socialPlaybook,
+  teacherAdvice,
   socialTargetSet,
   kbSearch,
   kbDocumentsTool,

@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { getPeerPosts, getUploadableReels } from "@/domain/social/review-queries";
 import { peerReelsForUpload, teacherReelsForUpload } from "@/domain/social/peers";
+import { getDownloadStatusByPost, getDownloadUsage } from "@/domain/social/download-queries";
 import { createInstagramApiClient } from "@/integrations/instagram-api";
 import { UploadsView } from "./uploads-view";
 
@@ -36,9 +37,11 @@ async function freshCovers(ids: string[]): Promise<Map<string, string>> {
 
 export default async function ReelUploadsPage() {
   const now = new Date();
-  const [reels, peerPosts] = await Promise.all([
+  const [reels, peerPosts, downloads, failures] = await Promise.all([
     getUploadableReels(db(), new Date(now.getTime() - DAYS * 86_400_000)),
     getPeerPosts(db(), new Date(now.getTime() - PEER_HISTORY_DAYS * 86_400_000)),
+    getDownloadUsage(db(), now),
+    getDownloadStatusByPost(db()),
   ]);
   // Only reels still waiting show a cover. A peer's comes from the daily sync.
   const covers = await freshCovers(reels.filter((r) => !r.upload).map((r) => r.id));
@@ -49,6 +52,8 @@ export default async function ReelUploadsPage() {
       days={DAYS}
       teachers={teacherReelsForUpload(peerPosts)}
       peers={peerReelsForUpload(peerPosts, now)}
+      downloads={downloads}
+      failures={failures}
     />
   );
 }

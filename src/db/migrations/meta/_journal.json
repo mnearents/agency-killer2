@@ -428,6 +428,13 @@
       "when": 1794452801440,
       "tag": "0060_purple_boom_boom",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1794453867530,
+      "tag": "0061_next_hobgoblin",
+      "breakpoints": true
     }
   ]
 }

@@ -3,7 +3,7 @@
  * were, the account's days, and the saved reviews themselves.
  */
 
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { socialAccountDays, socialLessonRuns, socialLessons, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets } from "@/db/schema";
 import { formatGroup, type AccountDayRow, type ReviewPost, type ReviewPostVisual, type TargetMetric } from "./review";
@@ -222,10 +222,16 @@ export async function setPeer(db: Db, peer: { username: string; active: boolean;
     ...(peer.notes !== undefined ? { notes: peer.notes } : {}),
     ...(peer.purpose !== undefined ? { purpose: peer.purpose } : {}),
   };
+  // A teacher's first fill is fixed the first time it becomes one and never
+  // moves: its reels are downloaded from 30 days before that date only.
+  const teacher = peer.purpose === "teacher";
   const [row] = await db
     .insert(socialPeers)
-    .values({ username: peer.username, addedBy: peer.addedBy, ...values })
-    .onConflictDoUpdate({ target: socialPeers.username, set: values })
+    .values({ username: peer.username, addedBy: peer.addedBy, ...values, ...(teacher ? { firstFillAt: new Date() } : {}) })
+    .onConflictDoUpdate({
+      target: socialPeers.username,
+      set: { ...values, ...(teacher ? { firstFillAt: sql`COALESCE(${socialPeers.firstFillAt}, now())` } : {}) },
+    })
     .returning({ username: socialPeers.username, purpose: socialPeers.purpose, notes: socialPeers.notes, active: socialPeers.active });
   return { ...row, purpose: row.purpose as PeerPurpose, active: row.active === 1 };
 }
@@ -398,8 +404,8 @@ export interface UploadableReel {
   thumbnailUrl: string | null;
   views: number | null;
   visualStatus: string | null;
-  /** Set once uploaded and analysed. */
-  upload: { analysedAt: Date; songUsed: string | null; visualHook: string | null; summary: string | null } | null;
+  /** Set once uploaded or downloaded, and analysed. */
+  upload: { analysedAt: Date; songUsed: string | null; visualHook: string | null; summary: string | null; source: "manual_upload" | "api_backfill" } | null;
 }
 
 /**
@@ -427,7 +433,7 @@ export async function getUploadableReels(db: Db, since: Date): Promise<Uploadabl
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
     .where(and(
       gte(socialPosts.postedAt, since),
-      sql`(${socialPosts.visualStatus} = 'cover_only' OR ${socialPostVisuals.source} = 'manual_upload')`,
+      sql`(${socialPosts.visualStatus} = 'cover_only' OR ${socialPostVisuals.source} IN ('manual_upload', 'api_backfill'))`,
     ))
     .orderBy(desc(socialPosts.postedAt));
   return rows.map((r) => ({
@@ -438,8 +444,69 @@ export async function getUploadableReels(db: Db, since: Date): Promise<Uploadabl
     thumbnailUrl: r.thumbnailUrl,
     views: r.views,
     visualStatus: r.visualStatus,
-    upload: r.source === "manual_upload" && r.visualOk === "ok" && r.analysedAt
-      ? { analysedAt: r.analysedAt, songUsed: r.songUsed, visualHook: r.visualHook, summary: r.summary }
+    upload: (r.source === "manual_upload" || r.source === "api_backfill") && r.visualOk === "ok" && r.analysedAt
+      ? { analysedAt: r.analysedAt, songUsed: r.songUsed, visualHook: r.visualHook, summary: r.summary, source: r.source }
       : null,
   }));
+}
+
+export interface TeacherAdviceRow {
+  postId: string;
+  username: string;
+  permalink: string | null;
+  postedAt: Date;
+  format: string;
+  transcript: string | null;
+  openingWords: string | null;
+  faceInFirst2s: number | null;
+  cutsPerMinute: number | null;
+  audio: string | null;
+  source: string | null;
+  area: string;
+  principle: string;
+  howToApply: string | null;
+  kind: string;
+  quote: string | null;
+}
+
+/** Teachers' advice with the post it came from, newest first; `query` matches the advice, its quote or the transcript. */
+export async function getTeacherAdvice(
+  db: Db,
+  filter: { since: Date; username?: string; area?: string; kind?: string; query?: string },
+): Promise<TeacherAdviceRow[]> {
+  const like = filter.query ? `%${filter.query.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
+  const rows = await db
+    .select({
+      postId: socialLessons.postId,
+      username: socialLessons.username,
+      permalink: socialPeerPosts.permalink,
+      postedAt: socialPeerPosts.postedAt,
+      mediaType: socialPeerPosts.mediaType,
+      mediaProductType: socialPeerPosts.mediaProductType,
+      transcript: socialPeerPosts.transcript,
+      openingWords: socialPeerPosts.openingWords,
+      faceInFirst2s: socialPostVisuals.faceInFirst2s,
+      cutsPerMinute: socialPostVisuals.cutsPerMinute,
+      audio: socialPostVisuals.audio,
+      source: socialPostVisuals.source,
+      area: socialLessons.area,
+      principle: socialLessons.principle,
+      howToApply: socialLessons.howToApply,
+      kind: socialLessons.kind,
+      quote: socialLessons.quote,
+    })
+    .from(socialLessons)
+    .innerJoin(socialPeerPosts, eq(socialPeerPosts.id, socialLessons.postId))
+    .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialLessons.postId))
+    .where(and(
+      gte(socialPeerPosts.postedAt, filter.since),
+      filter.username !== undefined ? eq(socialLessons.username, filter.username) : undefined,
+      filter.area !== undefined ? eq(socialLessons.area, filter.area) : undefined,
+      filter.kind !== undefined ? eq(socialLessons.kind, filter.kind) : undefined,
+      like !== null
+        ? or(ilike(socialLessons.principle, like), ilike(socialLessons.quote, like), ilike(socialLessons.howToApply, like), ilike(socialPeerPosts.transcript, like))
+        : undefined,
+    ))
+    .orderBy(desc(socialPeerPosts.postedAt));
+  return rows.map(({ mediaType, mediaProductType, ...r }) => ({ ...r, format: formatGroup(mediaType, mediaProductType) }));
 }

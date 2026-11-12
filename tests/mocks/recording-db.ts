@@ -27,7 +27,11 @@ export function fakeDb(seed: Record<string, Record<string, unknown>[]> = {}) {
         inserts.push(w);
         const done = Promise.resolve();
         return {
-          onConflictDoUpdate: async (o: { set: Record<string, unknown> }) => { w.set = o.set; },
+          onConflictDoUpdate: (o: { set: Record<string, unknown> }) => {
+            w.set = o.set;
+            const p = Promise.resolve();
+            return { then: p.then.bind(p), returning: async () => [{ ...values, ...o.set }] };
+          },
           then: done.then.bind(done),
         };
       },

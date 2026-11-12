@@ -181,6 +181,9 @@ export function summarisePeer(username: string, allPosts: PeerPost[], days: Peer
 
 const UPLOAD_DAYS = 30;
 
+/** A reel whose frames have been seen — uploaded by hand or fetched by the downloader. */
+export const hasVideo = (p: PeerPost) => p.visual?.source === "manual_upload" || (p.visual?.source === "api_backfill" && p.visual?.basis === "frames");
+
 /**
  * Peer reels for the upload page, from the last 30 days: those still seen by
  * their cover, the ones furthest above their account's usual first (the ones
@@ -196,9 +199,9 @@ export function peerReelsForUpload(posts: PeerPost[], now: Date) {
   const reels = posts
     .filter((p) => p.format === "reel" && p.purpose !== "teacher" && p.postedAt.getTime() >= from)
     .map((p) => ({ ...p, ...scorePeerPost(p, baselines.get(p.username)!, now) }));
-  const uploaded = reels.filter((p) => p.visual?.source === "manual_upload").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
+  const uploaded = reels.filter(hasVideo).sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
   const waiting = reels
-    .filter((p) => p.visual?.source !== "manual_upload")
+    .filter((p) => !hasVideo(p))
     .sort((a, b) => {
       if (a.vsUsual !== null && b.vsUsual !== null) return b.vsUsual - a.vsUsual;
       if (a.vsUsual !== null) return -1;
@@ -216,7 +219,7 @@ export function peerReelsForUpload(posts: PeerPost[], now: Date) {
 export function teacherReelsForUpload(posts: PeerPost[]) {
   const reels = posts.filter((p) => p.format === "reel" && p.purpose === "teacher").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
   return {
-    waiting: reels.filter((p) => p.visual?.source !== "manual_upload"),
-    uploaded: reels.filter((p) => p.visual?.source === "manual_upload"),
+    waiting: reels.filter((p) => !hasVideo(p)),
+    uploaded: reels.filter(hasVideo),
   };
 }

@@ -901,6 +901,12 @@ export const socialPeers = pgTable("social_peers", {
    * ideas. teacher: an account followed for its advice, read for lessons.
    */
   purpose: text("purpose").notNull().default("peer"),
+  /**
+   * Teachers only: when the account first became one. Its reels are
+   * auto-downloaded from 30 days before this date on — fixed, so the cutoff
+   * never moves with later syncs and older history is never reached for.
+   */
+  firstFillAt: timestamp("first_fill_at", { withTimezone: true }),
   active: integer("active").notNull().default(1),
   notes: text("notes"),
   addedBy: text("added_by"),
@@ -958,6 +964,34 @@ export const socialPeerPosts = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
   },
   (table) => [index("social_peer_posts_user_posted_idx").on(table.username, table.postedAt)]
+);
+
+/**
+ * Every call to the reel downloader (RapidAPI), one row each, with what came
+ * of it — the record of quota spent and of whether the service still works.
+ * account: own | teacher | peer. outcome: ok | rate-limited | api-error |
+ * no-video | bad-file | analysis-failed | manual-upload-exists. A reel's
+ * attempts are its failed rows; rate-limited ones say nothing about the reel
+ * and are not counted.
+ */
+export const socialDownloads = pgTable(
+  "social_downloads",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    postId: text("post_id").notNull(),
+    account: text("account").notNull(),
+    username: text("username"),
+    calledAt: timestamp("called_at", { withTimezone: true }).notNull(),
+    outcome: text("outcome").notNull(),
+    detail: text("detail"),
+    quality: text("quality"),
+    rateLimit: integer("rate_limit"),
+    rateRemaining: integer("rate_remaining"),
+    rateResetAt: timestamp("rate_reset_at", { withTimezone: true }),
+  },
+  (table) => [index("social_downloads_called_idx").on(table.calledAt), index("social_downloads_post_idx").on(table.postId)]
 );
 
 /**

@@ -53,7 +53,8 @@ export function buildLessonPrompt(input: {
       "`howToApply` (one sentence on how Tara could apply it to her own posts, or null); " +
       `\`area\` (one of ${LESSON_AREAS.join(", ")}); ` +
       '`kind` ("practice" for a way of doing something, "claim" for an assertion of fact — about the algorithm, reach, or a number — that the post does not prove); ' +
-      "`quote` (their words for it, under 25 words, or null).",
+      "`quote` (their exact words for it, under 25 words — always when their wording is specific, such as a number, a phrase to say or a step; null only when they put it vaguely).",
+    "List only advice the post itself gives, in its caption, its on-screen text or what is said. Never add advice it did not give, however sound.",
     `At most ${MAX_LESSONS_PER_POST} lessons. A post that teaches nothing (a promotion, a personal update, a joke) gets an empty list. ` +
       'Return JSON only: {"lessons": [...]}.',
     `Format: ${input.format}`,
@@ -140,4 +141,33 @@ export function groupLessons(rows: LessonRow[]) {
   return [...areas]
     .map(([area, lessons]) => ({ area, lessons: [...lessons.values()].sort((a, b) => b.sources.length - a.sources.length) }))
     .sort((a, b) => b.lessons.length - a.lessons.length);
+}
+
+/**
+ * Advice per post, for searching a teacher's reels: each post once, with what
+ * it was and said, and every piece of advice read from it.
+ */
+export function groupAdviceByPost(rows: Array<{
+  postId: string; username: string; permalink: string | null; postedAt: Date; format: string;
+  transcript: string | null; openingWords: string | null; faceInFirst2s: number | null; cutsPerMinute: number | null;
+  audio: string | null; source: string | null; area: string; principle: string; howToApply: string | null; kind: string; quote: string | null;
+}>, opts: { transcriptChars: number }) {
+  const posts = new Map<string, ReturnType<typeof toPost>>();
+  function toPost(r: (typeof rows)[number]) {
+    const t = r.transcript;
+    return {
+      postId: r.postId, username: r.username, permalink: r.permalink, postedAt: r.postedAt.toISOString(), format: r.format,
+      source: r.source, faceInFirst2s: r.faceInFirst2s === null ? null : r.faceInFirst2s === 1, cutsPerMinute: r.cutsPerMinute, audio: r.audio,
+      openingWords: r.openingWords,
+      transcript: t !== null && t.length > opts.transcriptChars ? t.slice(0, opts.transcriptChars) : t,
+      transcriptTruncated: t !== null && t.length > opts.transcriptChars,
+      advice: [] as Array<{ tip: string; quote: string | null; area: string; kind: string; howToApply: string | null }>,
+    };
+  }
+  for (const r of rows) {
+    const post = posts.get(r.postId) ?? toPost(r);
+    post.advice.push({ tip: r.principle, quote: r.quote, area: r.area, kind: r.kind, howToApply: r.howToApply });
+    posts.set(r.postId, post);
+  }
+  return [...posts.values()];
 }

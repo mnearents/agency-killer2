@@ -18,6 +18,11 @@ vi.mock("@/domain/social/review-queries", async (importOriginal) => ({
   recordTarget: vi.fn(),
   getLessons: vi.fn(),
   getLessonCoverage: vi.fn(),
+  getTeacherAdvice: vi.fn(),
+}));
+vi.mock("@/domain/social/download-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/social/download-queries")>()),
+  getDownloadSummary: vi.fn().mockResolvedValue({ ok: 4, failed: 1, rateLimited: 0 }),
 }));
 
 const NOW = new Date("2026-11-09T12:00:00Z");
@@ -289,13 +294,22 @@ describe("teacher accounts", () => {
 
   it("starts following an account as a teacher", async () => {
     vi.mocked(reviewQueries.setPeer).mockResolvedValue(teacher);
-    const r = (await dispatchTool(ctx, "social_peer_set", { username: "@lana.k.social", purpose: "teacher" })) as Record<string, any>;
+    const r = (await dispatchTool(ctx, "social_peer_set", { username: "@lana.k.social", role: "teacher" })) as Record<string, any>;
     expect(vi.mocked(reviewQueries.setPeer).mock.calls[0][1]).toMatchObject({ username: "lana.k.social", purpose: "teacher" });
     expect(r.note).toMatch(/lessons/);
+    expect(r.role).toBe("teacher");
+  });
+
+  it("lists every tracked account with its role", async () => {
+    const r = (await dispatchTool(ctx, "social_peers", {})) as Record<string, any>;
+    expect(r.accounts).toEqual([
+      { username: "pippipost.shop", role: "peer", notes: "bookish merch" },
+      { username: "lana.k.social", role: "teacher", notes: "IG growth advice" },
+    ]);
   });
 
   it("refuses a purpose that is neither peer nor teacher", async () => {
-    await expect(dispatchTool(ctx, "social_peer_set", { username: "lana.k.social", purpose: "mentor" })).rejects.toBeInstanceOf(McpArgumentError);
+    await expect(dispatchTool(ctx, "social_peer_set", { username: "lana.k.social", role: "mentor" })).rejects.toBeInstanceOf(McpArgumentError);
   });
 
   // A teacher is not a benchmark: it stays out of the peer comparisons.
@@ -340,5 +354,53 @@ describe("teacher accounts", () => {
   it("refuses an account that is not a teacher", async () => {
     const r = (await dispatchTool(ctx, "social_playbook", { username: "pippipost.shop" })) as Record<string, any>;
     expect(r.error).toMatch(/not a teacher.*social_peer_set/);
+  });
+});
+
+describe("social_review — reel sources and downloads", () => {
+  it("gives each post's source and the last 7 days' automatic downloads", async () => {
+    vi.mocked(reviewQueries.getReviewPosts).mockResolvedValue([
+      reel({ id: "dl", postedAt: daysAgo(5), visualStatus: "analyzed", visual: { basis: "frames", visualType: "person", visualHook: null, faceInFirst2s: true, productVisible: false, handDrawn: false, audio: "speech", cutsPerMinute: 12, source: "api_backfill" } } as never),
+    ]);
+    const r = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
+    expect(r.posts[0]).toMatchObject({ id: "dl", visualStatus: "analyzed", source: "api_backfill" });
+    expect(r.backfill).toEqual({ last7Days: { ok: 4, failed: 1, rateLimited: 0 } });
+    expect(r).toHaveProperty("reelsMissingVisuals");
+  });
+});
+
+describe("teacher_advice", () => {
+  const row = (o: Record<string, unknown> = {}) => ({
+    postId: "t1", username: "lana.k.social", permalink: "https://instagram.com/reel/t1/", postedAt: daysAgo(3), format: "reel",
+    transcript: "Stop opening with hi. Lead with the payoff.", openingWords: "Stop opening with hi.",
+    faceInFirst2s: 1, cutsPerMinute: 18, audio: "speech", source: "api_backfill",
+    area: "hook", principle: "Open with the payoff.", howToApply: "Show the finished page first.", kind: "practice", quote: "Lead with the payoff", ...o,
+  });
+
+  beforeEach(() => {
+    vi.mocked(reviewQueries.getTeacherAdvice).mockResolvedValue([row(), row({ principle: "Reply to comments in the first hour.", area: "engagement", kind: "claim", quote: null })]);
+  });
+
+  it("gives each reel's advice with what the reel was and said", async () => {
+    const r = (await dispatchTool(ctx, "teacher_advice", {})) as Record<string, any>;
+    expect(r.reels).toEqual([expect.objectContaining({
+      postId: "t1", username: "lana.k.social", permalink: "https://instagram.com/reel/t1/", source: "api_backfill",
+      faceInFirst2s: true, cutsPerMinute: 18, audio: "speech", openingWords: "Stop opening with hi.", transcript: "Stop opening with hi. Lead with the payoff.",
+      advice: [
+        { tip: "Open with the payoff.", quote: "Lead with the payoff", area: "hook", kind: "practice", howToApply: "Show the finished page first." },
+        { tip: "Reply to comments in the first hour.", quote: null, area: "engagement", kind: "claim", howToApply: "Show the finished page first." },
+      ],
+    })]);
+    expect(r.adviceMatched).toBe(2);
+    expect(r.caveat).toMatch(/social_review/);
+  });
+
+  it("searches by words, account, area and kind", async () => {
+    await dispatchTool(ctx, "teacher_advice", { query: "hook", username: "@Lana.K.Social", area: "hook", kind: "practice" });
+    expect(vi.mocked(reviewQueries.getTeacherAdvice).mock.calls[0][1]).toMatchObject({ query: "hook", username: "lana.k.social", area: "hook", kind: "practice" });
+  });
+
+  it("refuses an unknown kind", async () => {
+    await expect(dispatchTool(ctx, "teacher_advice", { kind: "rumour" })).rejects.toBeInstanceOf(McpArgumentError);
   });
 });
