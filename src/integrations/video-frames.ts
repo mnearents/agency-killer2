@@ -25,7 +25,7 @@ export interface VideoFacts {
 
 export interface VideoToolkit {
   inspect(file: string): Promise<VideoFacts>;
-  /** One JPEG per requested time, in order. */
+  /** One JPEG per requested time, in order — stopping at the last picture, so possibly fewer. */
   frames(file: string, timesMs: number[]): Promise<Buffer[]>;
   /** The frames tiled into one JPEG, left to right, top to bottom. */
   contactSheet(frames: Buffer[]): Promise<Buffer>;
@@ -88,8 +88,16 @@ export function createFfmpegToolkit(binaries = { ffmpeg: "ffmpeg", ffprobe: "ffp
         const out: Buffer[] = [];
         for (const [i, t] of timesMs.entries()) {
           const path = join(dir, `f${i}.jpg`);
-          await run(binaries.ffmpeg, ["-hide_banner", "-loglevel", "error", "-ss", (t / 1000).toFixed(3), "-i", file, "-frames:v", "1", "-vf", `scale=${FRAME_WIDTH}:-2`, "-q:v", "4", "-y", path], big);
-          out.push(await readFile(path));
+          try {
+            await run(binaries.ffmpeg, ["-hide_banner", "-loglevel", "error", "-ss", (t / 1000).toFixed(3), "-i", file, "-frames:v", "1", "-vf", `scale=${FRAME_WIDTH}:-2`, "-q:v", "4", "-y", path], big);
+            out.push(await readFile(path));
+          } catch (err) {
+            // Past the last picture (sound can outlast it): ffmpeg errors or
+            // writes nothing, depending on its version. The frames before it
+            // stand; a video with no frame at all is still a failure.
+            if (out.length === 0) throw err;
+            break;
+          }
         }
         return out;
       } finally {

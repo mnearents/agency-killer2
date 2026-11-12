@@ -53,3 +53,29 @@ describe("countSceneCuts", () => {
     expect(countSceneCuts(stderr)).toBe(2);
   });
 });
+
+// A reel's sound can run past its picture: the container's length is the
+// audio's, and a frame asked for after the last picture is never written.
+describe("ffmpeg frames past the end of the picture", () => {
+  it("returns the frames the picture has, in order, instead of failing the reel", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createFfmpegToolkit } = await import("@/integrations/video-frames");
+    const dir = mkdtempSync(join(tmpdir(), "short-picture-"));
+    const file = join(dir, "reel.mp4");
+    try {
+      execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=8", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-y", file]);
+      const video = createFfmpegToolkit();
+      const facts = await video.inspect(file);
+      expect(facts.durationMs).toBeGreaterThan(7000);
+      const frames = await video.frames(file, frameTimes(facts.durationMs));
+      expect(frames).toHaveLength(2);
+      expect(frames.every((f) => f[0] === 0xff && f[1] === 0xd8)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});

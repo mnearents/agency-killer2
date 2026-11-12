@@ -40,6 +40,8 @@ export const OWN_VISUALS_PER_RUN = 40;
 export const PEER_VISUALS_PER_RUN = 20;
 /** A carousel holds up to 20; ten slides say what it is. */
 const MAX_SLIDES = 10;
+/** Ten slides of a text-heavy carousel transcribed as on-screen text ran past 1,200. */
+const VISUAL_MAX_TOKENS = 4096;
 
 export interface VisualSyncDeps {
   db: Db;
@@ -87,8 +89,8 @@ export async function lookAtVideoFile(
   transcriptionStatus: string | null,
 ): Promise<Looked> {
   const facts = await deps.video.inspect(path);
-  const times = frameTimes(facts.durationMs);
-  const frames = await deps.video.frames(path, times);
+  const frames = await deps.video.frames(path, frameTimes(facts.durationMs));
+  const times = frameTimes(facts.durationMs).slice(0, frames.length);
   const labels = buildVisualPrompt({ kind: "frames", account: "own", caption: null, frameTimesMs: times }).labels;
   return {
     kind: "frames",
@@ -204,9 +206,13 @@ export async function analyseOne(
   let detail: string | null = null;
   let parsed = null;
   try {
-    const result = await deps.anthropic.generate(prompt, { images: looked.images, maxTokens: 1200, temperature: 0 });
+    const result = await deps.anthropic.generate(prompt, { images: looked.images, maxTokens: VISUAL_MAX_TOKENS, temperature: 0 });
     parsed = parseVisualAnalysis(result.text, looked.kind);
-    if (parsed === null) detail = `unreadable answer: ${result.text.slice(0, 200)}`;
+    if (parsed === null) {
+      detail = result.stopReason === "max_tokens"
+        ? `answer cut off at the token limit (${VISUAL_MAX_TOKENS}): ${result.text.slice(0, 200)}`
+        : `unreadable answer: ${result.text.slice(0, 200)}`;
+    }
   } catch (err) {
     detail = errorText(err).slice(0, 300);
   }

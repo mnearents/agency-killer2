@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { syncVisuals, type VisualSyncDeps } from "@/domain/social/visual-sync";
+import { syncVisuals, lookAtVideoFile, type VisualSyncDeps } from "@/domain/social/visual-sync";
 import { createMockInstagramApiClient } from "../../mocks/instagram-api";
 import { createMockAnthropicClient } from "../../mocks/anthropic";
 import { fakeDb } from "../../mocks/recording-db";
@@ -100,6 +100,22 @@ describe("syncVisuals — Tara's reels", () => {
     expect(r.failed).toBe(1);
   });
 
+  // A ten-slide carousel of gift ideas spent 1,200 tokens on on-screen text
+  // and was cut off mid-JSON, the same way on all three attempts.
+  it("gives the answer room for ten slides of on-screen text", async () => {
+    const { deps: d, anthropic } = deps({ social_posts: [ownReel] });
+    await syncVisuals(d, []);
+    expect(vi.mocked(anthropic.generate).mock.calls[0][1]!.maxTokens).toBeGreaterThanOrEqual(4000);
+  });
+
+  it("says an answer was cut off at the token limit, not that it was unreadable", async () => {
+    const { deps: d, inserts } = deps({ social_posts: [ownReel] }, {
+      anthropic: createMockAnthropicClient({ generate: vi.fn().mockResolvedValue({ text: '```json\n{\n  "summary": "A gift guide",', stopReason: "max_tokens", inputTokens: 1, outputTokens: 4000 }) }),
+    });
+    await syncVisuals(d, []);
+    expect(inserts.find((w) => w.table === "social_post_visuals")!.values).toMatchObject({ status: "error", detail: expect.stringMatching(/^answer cut off at the token limit/) });
+  });
+
   it("records a download that failed as an error and carries on", async () => {
     const errors: string[] = [];
     const { deps: d, inserts } = deps({ social_posts: [ownReel] }, { fetchMedia: vi.fn().mockRejectedValue(new Error("403 from cdn")) });
@@ -141,5 +157,17 @@ describe("syncVisuals — the post's visual status", () => {
     const { deps: d, inserts } = deps({ social_posts: [ownReel] });
     await syncVisuals(d, []);
     expect(inserts.find((w) => w.table === "social_post_visuals")!.values.source).toBe("api");
+  });
+});
+
+describe("lookAtVideoFile", () => {
+  // Sound can outlast the picture; ffmpeg then gives fewer frames than asked.
+  it("labels only the frames the video gave, so each image keeps its own time", async () => {
+    const v = video();
+    v.frames = vi.fn().mockResolvedValue([Buffer.from("a"), Buffer.from("b")]);
+    const looked = await lookAtVideoFile({ video: v }, "/tmp/r.mp4", "ok");
+    expect(looked.frameTimesMs).toEqual([0, 1000]);
+    expect(looked.images.map((i) => i.label)).toHaveLength(2);
+    expect(v.contactSheet).toHaveBeenCalledWith([Buffer.from("a"), Buffer.from("b")]);
   });
 });
