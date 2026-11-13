@@ -2517,6 +2517,24 @@ export const shipheroLabels = pgTable(
   ]
 );
 
+/**
+ * ShipHero's OAuth tokens (`db/shiphero-tokens.ts`): one row, both tokens
+ * encrypted with SHIPHERO_TOKEN_KEY, which only the worker holds. A table and
+ * not an environment variable because a refresh can return a new refresh
+ * token that must replace the old one. Never exposed in the analytics schema.
+ */
+export const shipheroTokens = pgTable("shiphero_tokens", {
+  id: text("id").primaryKey(),
+  accessTokenEnc: text("access_token_enc").notNull(),
+  refreshTokenEnc: text("refresh_token_enc").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  /** The scopes ShipHero granted — not secret, kept in clear to be checked. */
+  scope: text("scope").notNull(),
+  /** When the sign-in that produced these happened. */
+  obtainedAt: timestamp("obtained_at", { withTimezone: true }).notNull(),
+  refreshedAt: timestamp("refreshed_at", { withTimezone: true }),
+});
+
 export type ShipheroShipmentRow = typeof shipheroShipments.$inferInsert;
 export type ShipheroLabelRow = typeof shipheroLabels.$inferInsert;
 

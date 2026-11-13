@@ -18,6 +18,8 @@ describe("sync:shiphero wiring", () => {
     const shared = worker.match(/const runShipHeroSync = async[\s\S]*?\n  \};/);
     expect(shared, "no runShipHeroSync").not.toBeNull();
     expect(shared![0]).toMatch(/recorded\("sync:shiphero"/);
+    // Not signed in is not configured, not a failure of ShipHero.
+    expect(shared![0]).toMatch(/if \(!\(await hasShipHeroTokens\(db\)\)\) \{[\s\S]*?configured: false/);
     expect(shared![0]).toMatch(/syncShipHero\(\{ db, client: shipheroClient/);
     expect(shared![0]).toMatch(/backfillShipHeroRange\(/);
     expect(shared![0]).toMatch(/dailyShipHeroRange\(/);
@@ -26,8 +28,8 @@ describe("sync:shiphero wiring", () => {
     expect(shared![0]).toMatch(/task: SHIPHERO_BILLING_PROBE_TASK/);
   });
 
-  it("builds the client from the refresh token and logs every throttle", () => {
-    expect(worker).toMatch(/createShipHeroClient\(\{\s*refreshToken: getEnv\("SHIPHERO_REFRESH_TOKEN"\)/);
+  it("builds the client over the encrypted database tokens and logs every throttle", () => {
+    expect(worker).toMatch(/createShipHeroClient\(\{\s*tokens: createShipHeroTokenProvider\(\{ store: createDbTokenStore\(db, parseTokenKey\(getEnv\("SHIPHERO_TOKEN_KEY"\)\)\) \}\)/);
     expect(worker).toMatch(/onThrottle: \(e\) => \{\s*shipheroThrottles\.push\(e\);\s*console\.error/);
   });
 
@@ -53,7 +55,7 @@ describe("sync:shiphero wiring", () => {
   });
 
   it("names its token in the environment manifest, for the worker only", () => {
-    const entry = ENV_MANIFEST.find((e) => e.name === "SHIPHERO_REFRESH_TOKEN");
+    const entry = ENV_MANIFEST.find((e) => e.name === "SHIPHERO_TOKEN_KEY");
     expect(entry?.surfaces).toEqual(["worker"]);
   });
 

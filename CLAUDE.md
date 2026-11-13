@@ -213,11 +213,25 @@ its notes rather than dropped.
 `!sync shiphero [backfill]`), the system Evobox runs. The Public API is
 GraphQL; `integrations/shiphero-api.ts` is **read-only by construction**:
 fixed query documents, no generic query method, every document checked to be
-a `query`, asserted in tests, and nothing in `src/mcp` imports it. A
-third-party developer user's refresh token (`SHIPHERO_REFRESH_TOKEN`) is
-exchanged for a 28-day access token held in memory. Credits are 2,002 at 30
-a second on this account (the docs say 4,004 at 60); a code-30 error is
-waited out for its `time_remaining`, a 429 backed off, and both logged.
+a `query`, asserted in tests, and nothing in `src/mcp` imports it. Credits
+are 2,002 at 30 a second on this account (the docs say 4,004 at 60); a
+code-30 error is waited out for its `time_remaining`, a 429 backed off, and
+both logged.
+
+- **The token is scoped OAuth, never the username/password endpoint**
+  (`/auth/token`, whose tokens ignore scopes; asserted absent).
+  `pnpm shiphero:auth` (`scripts/shiphero-auth.ts`) runs Authorization Code
+  + PKCE on Matt's machine (callback on localhost:3000) asking for exactly
+  `openid profile offline_access view:orders view:shipments view:billing` —
+  no `view:pii`, no `change:`. If ShipHero grants anything else or withholds
+  `view:billing` (it needs the user's "Billing: Read"), it stops, revokes
+  what was issued and stores nothing.
+- **Tokens live in `shiphero_tokens`**, not an environment variable, because
+  a refresh can return a new refresh token that must replace the old. Both
+  are encrypted with `SHIPHERO_TOKEN_KEY` (worker only), so a database read
+  does not reveal them. The access token (28 days) is refreshed within 3 days
+  of expiry or on a 401, under a row lock so two processes never spend one
+  refresh token twice; a refresh whose scope differs is refused.
 
 - `shiphero_shipments` / `shiphero_labels`, upserted by ShipHero id. Daily
   re-reads the last 7 days (late labels, voids); the backfill starts
@@ -715,7 +729,8 @@ src/
 
 scripts/
 ├── build-mcp.ts            # Bundles the MCP server for another machine
-└── import-threepl.ts       # Imports 3PL charges, shipments and invoices
+├── import-threepl.ts       # Imports 3PL charges, shipments and invoices
+└── shiphero-auth.ts        # Signs in to ShipHero (OAuth + PKCE) and stores the token
 
 app/                        # Next.js App Router (dashboard)
 templates/email/            # HTML/CSS email templates (Playwright renders)

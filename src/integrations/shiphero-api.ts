@@ -7,10 +7,11 @@
  * query method, every document is checked to be a `query` before it is sent,
  * and tests assert both — so no code path can send a mutation.
  *
- * Auth (developer.shiphero.com, Getting Started): a third-party developer
- * user's refresh token is exchanged at /auth/refresh for an access token
- * (valid 28 days), which is reused in memory rather than refreshed per call,
- * and refreshed once on a 401. Tokens never appear in an error or a log.
+ * Auth: a scoped OAuth token (Authorization Code + PKCE, `shiphero-auth.ts`)
+ * held encrypted in the database and refreshed near expiry by the token
+ * provider (`db/shiphero-tokens.ts`). This module only asks the provider for
+ * a token, and asks it to refresh once on a 401. Tokens never appear in an
+ * error or a log, and travel only in the Authorization header.
  *
  * Throttling: a GraphQL error with code 30 means not enough credits; it
  * reports `time_remaining` ("3 seconds"), which is waited out before one
@@ -24,8 +25,13 @@
 
 import type { RawShipment } from "@/domain/economics/shiphero-transform";
 
+/** Where the client gets its bearer token. Implemented over the database in db/shiphero-tokens.ts. */
+export interface AccessTokens {
+  getAccessToken(): Promise<string>;
+  forceRefresh(rejected: string): Promise<string>;
+}
+
 export const SHIPHERO_GRAPHQL_URL = "https://public-api.shiphero.com/graphql";
-export const SHIPHERO_REFRESH_URL = "https://public-api.shiphero.com/auth/refresh";
 
 /** ShipHero's page size ceiling is 100; one credit per shipment plus one. */
 const PAGE_SIZE = 100;
@@ -95,7 +101,7 @@ export interface ShipHeroClient {
 }
 
 export interface ShipHeroConfig {
-  refreshToken: string;
+  tokens: AccessTokens;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   onThrottle?: (event: ThrottleEvent) => void;
@@ -132,32 +138,9 @@ interface GraphQlError {
 export function createShipHeroClient(config: ShipHeroConfig): ShipHeroClient {
   const doFetch = config.fetchImpl ?? fetch;
   const sleep = config.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  let accessToken: string | null = null;
+  let lastToken: string | null = null;
 
-  const scrub = (text: string) => {
-    let out = text;
-    for (const secret of [config.refreshToken, accessToken]) if (secret) out = out.split(secret).join("[token]");
-    return out.slice(0, 500);
-  };
-
-  async function refresh(): Promise<string> {
-    const res = await doFetch(SHIPHERO_REFRESH_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ refresh_token: config.refreshToken }),
-    });
-    const body = await res.text().catch(() => "");
-    if (!res.ok) throw new ShipHeroError(scrub(`ShipHero refused the token refresh: ${res.status} ${body}`), null, null, res.status);
-    let token: unknown;
-    try {
-      token = (JSON.parse(body) as { access_token?: unknown }).access_token;
-    } catch {
-      token = undefined;
-    }
-    if (typeof token !== "string" || token === "") throw new ShipHeroError("ShipHero's token refresh returned no access_token", null, null, res.status);
-    accessToken = token;
-    return token;
-  }
+  const scrub = (text: string) => (lastToken ? text.split(lastToken).join("[token]") : text).slice(0, 500);
 
   async function send(document: string, variables: Record<string, unknown>): Promise<{ data: Record<string, unknown> | null; errors: GraphQlError[] }> {
     // The guard every request passes: queries only.
@@ -165,8 +148,9 @@ export function createShipHeroClient(config: ShipHeroConfig): ShipHeroClient {
       throw new ShipHeroError("Refused: only GraphQL queries are sent to ShipHero", null, null, null);
     }
     let refreshed = false;
+    let token = await config.tokens.getAccessToken();
     for (let attempt = 0; ; attempt++) {
-      const token = accessToken ?? (await refresh());
+      lastToken = token;
       const res = await doFetch(SHIPHERO_GRAPHQL_URL, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -176,7 +160,7 @@ export function createShipHeroClient(config: ShipHeroConfig): ShipHeroClient {
 
       if (res.status === 401 && !refreshed) {
         refreshed = true;
-        accessToken = null;
+        token = await config.tokens.forceRefresh(token);
         continue;
       }
       if (res.status === 429) {

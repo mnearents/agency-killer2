@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createShipHeroClient, ShipHeroError, SHIPHERO_GRAPHQL_URL, SHIPHERO_REFRESH_URL, parseTimeRemainingMs } from "@/integrations/shiphero-api";
+import { createShipHeroClient, ShipHeroError, SHIPHERO_GRAPHQL_URL, parseTimeRemainingMs } from "@/integrations/shiphero-api";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -29,36 +29,35 @@ function setup(responses: Array<Response | (() => Response)>) {
   }) as unknown as typeof fetch;
   const sleep = vi.fn().mockResolvedValue(undefined);
   const throttles: unknown[] = [];
-  const client = createShipHeroClient({ refreshToken: "REFRESH-SECRET", fetchImpl, sleep, onThrottle: (e) => throttles.push(e) });
-  return { client, calls, sleep, throttles };
+  const tokens = { getAccessToken: vi.fn().mockResolvedValue("ACCESS-1"), forceRefresh: vi.fn().mockResolvedValue("ACCESS-2") };
+  const client = createShipHeroClient({ tokens, fetchImpl, sleep, onThrottle: (e) => throttles.push(e) });
+  return { client, calls, sleep, throttles, tokens };
 }
 
 const WINDOW = { from: new Date("2026-11-01T00:00:00Z"), to: new Date("2026-11-07T23:59:59Z") };
 
 describe("ShipHero client", () => {
-  it("exchanges the refresh token once, then sends the access token as a bearer", async () => {
-    const { client, calls } = setup([json({ access_token: "ACCESS-1", expires_in: 2419200 }), json(page(["a"], "c1")), json(page(["b"], null))]);
+  it("sends the provider's access token as a bearer, in the header only", async () => {
+    const { client, calls, tokens } = setup([json(page(["a"], "c1")), json(page(["b"], null))]);
     await client.shipments(WINDOW, null);
     await client.shipments(WINDOW, "c1");
-    expect(calls[0].url).toBe(SHIPHERO_REFRESH_URL);
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ refresh_token: "REFRESH-SECRET" });
-    // Reused, not refreshed on every call.
-    expect(calls.filter((c) => c.url === SHIPHERO_REFRESH_URL)).toHaveLength(1);
-    expect(calls[1].url).toBe(SHIPHERO_GRAPHQL_URL);
-    expect((calls[1].init.headers as Record<string, string>).authorization).toBe("Bearer ACCESS-1");
+    expect(calls.every((c) => c.url === SHIPHERO_GRAPHQL_URL)).toBe(true);
+    expect((calls[0].init.headers as Record<string, string>).authorization).toBe("Bearer ACCESS-1");
+    expect(calls.some((c) => c.url.includes("ACCESS-1") || String(c.init.body).includes("ACCESS-1"))).toBe(false);
+    expect(tokens.forceRefresh).not.toHaveBeenCalled();
   });
 
   it("always sends a date window and a page size of at most 100", async () => {
-    const { client, calls } = setup([json({ access_token: "A" }), json(page(["a"], null))]);
+    const { client, calls } = setup([json(page(["a"], null))]);
     await client.shipments(WINDOW, null);
-    const body = JSON.parse(String(calls[1].init.body));
+    const body = JSON.parse(String(calls[0].init.body));
     expect(body.variables).toEqual({ from: "2026-11-01T00:00:00Z", to: "2026-11-07T23:59:59Z", after: null });
     const first = Number(String(body.query).match(/first:\s*(\d+)/)![1]);
     expect(first).toBeLessThanOrEqual(100);
   });
 
   it("returns the page's shipments, cursor and request id", async () => {
-    const { client } = setup([json({ access_token: "A" }), json(page(["a", "b"], "c1"))]);
+    const { client } = setup([json(page(["a", "b"], "c1"))]);
     const r = await client.shipments(WINDOW, null);
     expect(r).toMatchObject({ requestId: "req-1", hasNextPage: true, endCursor: "c1" });
     expect(r.nodes.map((n) => n.id)).toEqual(["a", "b"]);
@@ -66,9 +65,9 @@ describe("ShipHero client", () => {
 
   // Never select a customer field: the token can see them, the app must not keep them.
   it("selects no address, email or name of a customer", async () => {
-    const { client, calls } = setup([json({ access_token: "A" }), json(page([], null))]);
+    const { client, calls } = setup([json(page([], null))]);
     await client.shipments(WINDOW, null);
-    const query = String(JSON.parse(String(calls[1].init.body)).query);
+    const query = String(JSON.parse(String(calls[0].init.body)).query);
     for (const field of ["address", "email", "first_name", "last_name", "phone", "company", "customer", "to_address", "from_address", "profile"]) {
       expect(query, field).not.toMatch(new RegExp(`\\b${field}\\b`));
     }
@@ -76,7 +75,6 @@ describe("ShipHero client", () => {
 
   it("waits the time_remaining a credit error reports, records it, and retries", async () => {
     const { client, sleep, throttles } = setup([
-      json({ access_token: "A" }),
       json({ errors: [{ code: 30, message: "There are not enough credits", time_remaining: "3 seconds", request_id: "req-t" }], data: { shipments: null } }),
       json(page(["a"], null)),
     ]);
@@ -87,7 +85,7 @@ describe("ShipHero client", () => {
   });
 
   it("backs off on HTTP 429 and records it", async () => {
-    const { client, sleep, throttles } = setup([json({ access_token: "A" }), json({}, 429), json(page(["a"], null))]);
+    const { client, sleep, throttles } = setup([json({}, 429), json(page(["a"], null))]);
     await client.shipments(WINDOW, null);
     expect(sleep).toHaveBeenCalledWith(30_000);
     expect(throttles).toEqual([{ kind: "http-429", waitedMs: 30_000, requestId: null, detail: expect.any(String) }]);
@@ -95,43 +93,44 @@ describe("ShipHero client", () => {
 
   it("gives up after repeated throttling with an error that says so", async () => {
     const throttled = () => json({ errors: [{ code: 30, time_remaining: "1 second" }] });
-    const { client } = setup([json({ access_token: "A" }), ...Array.from({ length: 10 }, () => throttled)]);
+    const { client } = setup([...Array.from({ length: 10 }, () => throttled)]);
     await expect(client.shipments(WINDOW, null)).rejects.toMatchObject({ code: 30, message: expect.stringMatching(/throttled/i) });
   });
 
-  it("refreshes once on 401 and retries with the new token", async () => {
-    const { client, calls } = setup([json({ access_token: "OLD" }), json({ message: "expired" }, 401), json({ access_token: "NEW" }), json(page(["a"], null))]);
+  it("asks the provider to refresh once on 401 and retries with the new token", async () => {
+    const { client, calls, tokens } = setup([json({ message: "expired" }, 401), json(page(["a"], null))]);
     await client.shipments(WINDOW, null);
-    expect((calls[3].init.headers as Record<string, string>).authorization).toBe("Bearer NEW");
+    expect(tokens.forceRefresh).toHaveBeenCalledWith("ACCESS-1");
+    expect((calls[1].init.headers as Record<string, string>).authorization).toBe("Bearer ACCESS-2");
   });
 
   it("reports a GraphQL error with its code and request id", async () => {
-    const { client } = setup([json({ access_token: "A" }), json({ errors: [{ code: 7, message: "Missing permission billing.manage.read", request_id: "req-7" }] })]);
+    const { client } = setup([json({ errors: [{ code: 7, message: "Missing permission billing.manage.read", request_id: "req-7" }] })]);
     const err = await client.shipments(WINDOW, null).catch((e) => e);
     expect(err).toBeInstanceOf(ShipHeroError);
     expect(err).toMatchObject({ code: 7, requestId: "req-7" });
   });
 
   it("never puts a token in an error", async () => {
-    const { client } = setup([json({ access_token: "ACCESS-SECRET" }), json({ errors: [{ code: 9, message: "bad token ACCESS-SECRET / REFRESH-SECRET" }] })]);
+    const { client } = setup([json({ errors: [{ code: 9, message: "bad token ACCESS-1 here" }] })]);
     const err = await client.shipments(WINDOW, null).catch((e) => e);
-    expect(String(err.message)).not.toMatch(/ACCESS-SECRET|REFRESH-SECRET/);
+    expect(String(err.message)).not.toMatch(/ACCESS-1/);
   });
 
-  it("fails clearly when the refresh is refused", async () => {
-    const { client } = setup([json({ error: "invalid_grant" }, 403)]);
-    await expect(client.shipments(WINDOW, null)).rejects.toMatchObject({ message: expect.stringMatching(/refresh.*403/i) });
+  it("does not loop on a second 401", async () => {
+    const { client } = setup([json({}, 401), json({}, 401)]);
+    await expect(client.shipments(WINDOW, null)).rejects.toMatchObject({ status: 401 });
   });
 });
 
 describe("billing probe", () => {
   it("says a query refused for a missing permission is not permitted", async () => {
-    const { client } = setup([json({ access_token: "A" }), json({ errors: [{ code: 7, message: "Missing Billing: Read", request_id: "r" }] })]);
+    const { client } = setup([json({ errors: [{ code: 7, message: "Missing Billing: Read", request_id: "r" }] })]);
     expect(await client.probe("bills")).toEqual({ query: "bills", readable: false, code: 7, detail: expect.stringMatching(/Billing/), requestId: "r" });
   });
 
   it("says a query that answered is readable", async () => {
-    const { client } = setup([json({ access_token: "A" }), json({ data: { fulfillment_invoices: { request_id: "r2", data: { edges: [] } } } })]);
+    const { client } = setup([json({ data: { fulfillment_invoices: { request_id: "r2", data: { edges: [] } } } })]);
     expect(await client.probe("fulfillment_invoices")).toEqual({ query: "fulfillment_invoices", readable: true, code: null, detail: null, requestId: "r2" });
   });
 });
@@ -159,7 +158,7 @@ describe("no mutation can be sent", () => {
   });
 
   it("every GraphQL body it sends starts with `query`", async () => {
-    const { client, calls } = setup([json({ access_token: "A" }), json(page([], null)), json({ data: { bills: { request_id: "r", data: { edges: [] } } } })]);
+    const { client, calls } = setup([json(page([], null)), json({ data: { bills: { request_id: "r", data: { edges: [] } } } })]);
     await client.shipments(WINDOW, null);
     await client.probe("bills");
     for (const c of calls.filter((c) => c.url === SHIPHERO_GRAPHQL_URL)) {

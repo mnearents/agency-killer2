@@ -157,10 +157,10 @@ export const ENV_MANIFEST: EnvVariable[] = [
     impact: "The segment push tools are unavailable, so no audience can be sent to Attentive.",
   },
   {
-    name: "SHIPHERO_REFRESH_TOKEN",
+    name: "SHIPHERO_TOKEN_KEY",
     surfaces: ["worker"],
     severity: "degraded",
-    impact: "ShipHero is not read, so postage per order stops at the hand-imported shipment export (2026-09-21) and the shipping tools fall back to invoice averages. A third-party developer user's refresh token, read-only use.",
+    impact: "ShipHero is not read, so postage per order stops at the hand-imported shipment export (2026-09-21) and the shipping tools fall back to invoice averages. The random key (base64; see .env.example) that encrypts ShipHero's OAuth tokens in shiphero_tokens; the tokens come from `pnpm shiphero:auth`.",
   },
   {
     name: "RAPIDAPI_KEY",

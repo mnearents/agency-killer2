@@ -449,6 +449,13 @@
       "when": 1794605706751,
       "tag": "0063_shiphero",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1794606930516,
+      "tag": "0064_shiphero_tokens",
+      "breakpoints": true
     }
   ]
 }

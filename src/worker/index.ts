@@ -72,6 +72,7 @@ import { syncSocialPosts, DEFAULT_MEDIA_LIMIT, type SyncSocialResult } from "@/d
 import { createFfmpegToolkit } from "@/integrations/video-frames";
 import { createReelDownloader } from "@/integrations/reel-downloader";
 import { createShipHeroClient, type BillingProbe, type ThrottleEvent } from "@/integrations/shiphero-api";
+import { createDbTokenStore, createShipHeroTokenProvider, hasShipHeroTokens, parseTokenKey } from "@/db/shiphero-tokens";
 import { syncShipHero, dailyShipHeroRange, backfillShipHeroRange, type ShipHeroSyncResult } from "@/domain/economics/shiphero-sync";
 import { SHIPHERO_BILLING_PROBE_TASK } from "@/domain/economics/shiphero-queries";
 import { readDownloadLimits, type DownloadAccount } from "@/domain/social/download-plan";
@@ -244,9 +245,10 @@ async function main() {
   // Read-only: the client holds fixed queries and sends nothing else. Every
   // throttle wait is logged here and counted in the run's reply.
   const shipheroThrottles: ThrottleEvent[] = [];
-  const shipheroClient = getEnvOptional("SHIPHERO_REFRESH_TOKEN")
+  // Tokens are in the database (they rotate), encrypted with this key.
+  const shipheroClient = getEnvOptional("SHIPHERO_TOKEN_KEY")
     ? createShipHeroClient({
-        refreshToken: getEnv("SHIPHERO_REFRESH_TOKEN"),
+        tokens: createShipHeroTokenProvider({ store: createDbTokenStore(db, parseTokenKey(getEnv("SHIPHERO_TOKEN_KEY"))) }),
         onThrottle: (e) => {
           shipheroThrottles.push(e);
           console.error(`[sync:shiphero] Throttled (${e.kind}), waiting ${e.waitedMs}ms${e.requestId ? ` — request id ${e.requestId}` : ""}: ${e.detail}`);
@@ -464,7 +466,11 @@ async function main() {
     let outcome: { result: ShipHeroSyncResult; throttles: ThrottleEvent[]; billing: BillingProbe[] } | null = null;
     await recorded("sync:shiphero", async () => {
       if (!shipheroClient) {
-        console.error("[sync:shiphero] NOT CONFIGURED — SHIPHERO_REFRESH_TOKEN is not set, so postage per order stops at the shipment export");
+        console.error("[sync:shiphero] NOT CONFIGURED — SHIPHERO_TOKEN_KEY is not set, so postage per order stops at the shipment export");
+        return { configured: false, rowsWritten: 0 };
+      }
+      if (!(await hasShipHeroTokens(db))) {
+        console.error("[sync:shiphero] NOT SIGNED IN — no ShipHero token is stored. Run `pnpm shiphero:auth` on Matt's machine.");
         return { configured: false, rowsWritten: 0 };
       }
       const throttledBefore = shipheroThrottles.length;
@@ -1639,7 +1645,7 @@ async function main() {
       } catch (err) {
         return { text: `ShipHero sync failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
-      if (!run) return { text: "ShipHero sync unavailable — SHIPHERO_REFRESH_TOKEN is not set on the worker.", isError: true };
+      if (!run) return { text: "ShipHero sync unavailable — SHIPHERO_TOKEN_KEY is not set on the worker, or nobody has signed in yet (`pnpm shiphero:auth`).", isError: true };
       const { result, throttles, billing } = run;
       const lines = [
         `• ${mode === "backfill" ? "From 2025-07-22" : "Last 7 days"}: ${result.shipments} shipments, ${result.labels} labels (${result.windows} week(s), ${result.pages} page(s))`,

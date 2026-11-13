@@ -16,6 +16,7 @@
     "mcp:hosted": "tsx src/mcp/serve.ts",
     "mcp:bundle": "tsx scripts/build-mcp.ts",
     "threepl:import": "tsx scripts/import-threepl.ts",
+    "shiphero:auth": "tsx scripts/shiphero-auth.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:all": "vitest run --config vitest.config.ts && vitest run --config vitest.evals.config.ts",
