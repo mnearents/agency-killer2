@@ -78,6 +78,12 @@ export interface OrderForEconomics {
    * pack and a label; a printable carries neither. Absent counts as not shipped.
    */
   shipped?: boolean;
+  /**
+   * What this order's labels cost, where known (`order-postage.ts`): the
+   * invoice/CSV figure first, else ShipHero's label cost. Absent is unknown —
+   * the average per shipped order stands in, and is counted as doing so.
+   */
+  postage?: { cents: number; source: "invoice" | "shiphero" } | null;
 }
 
 export type CostBasis = "measured" | "estimated" | "missing";
@@ -150,16 +156,46 @@ export function breakEvenAmer(codPct: number): number | null {
 const HANDLING_LABEL = "Fulfilment handling (pick/pack, packaging, returns)";
 const POSTAGE_LABEL = "Postage (shipping labels)";
 
+/** How a set of shipped orders' postage was arrived at. */
+export interface PostageMix {
+  /** Shipped orders whose own label cost was used. */
+  known: number;
+  /** Shipped orders charged the average per shipped order instead. */
+  fallback: number;
+  /** Shipped orders with neither: no postage counted. */
+  unknown: number;
+  cents: number;
+}
+
+/** Each shipped order's own postage where known, else the average — counted, never silent. */
+export function postageMix(orders: OrderForEconomics[], rates: FulfilmentRates | undefined): PostageMix {
+  const mix: PostageMix = { known: 0, fallback: 0, unknown: 0, cents: 0 };
+  for (const o of orders) {
+    if (!o.shipped) continue;
+    if (o.postage) {
+      mix.known++;
+      mix.cents += o.postage.cents;
+    } else if (rates?.postage) {
+      mix.fallback++;
+      mix.cents += rates.postage.perShippedOrderCents;
+    } else {
+      mix.unknown++;
+    }
+  }
+  return mix;
+}
+
 /** The two fulfilment components for a set of orders. Storage and fees are overhead, not COD. */
 function fulfilmentComponents(orders: OrderForEconomics[], rates: FulfilmentRates | undefined): CostComponent[] {
   const shipped = orders.filter((o) => o.shipped).length;
+  const postage = postageMix(orders, rates);
+  const postageBasis: CostBasis =
+    postage.unknown > 0 ? "missing" : postage.fallback === 0 ? "measured" : rates!.postage!.basis;
   return [
     rates?.handling
       ? { label: HANDLING_LABEL, cents: shipped * rates.handling.perShippedOrderCents, basis: rates.handling.basis }
       : { label: HANDLING_LABEL, cents: 0, basis: "missing" },
-    rates?.postage
-      ? { label: POSTAGE_LABEL, cents: shipped * rates.postage.perShippedOrderCents, basis: rates.postage.basis }
-      : { label: POSTAGE_LABEL, cents: 0, basis: "missing" },
+    { label: POSTAGE_LABEL, cents: postage.cents, basis: shipped === 0 && !rates?.postage ? "missing" : postageBasis },
   ];
 }
 
@@ -296,6 +332,12 @@ export interface BandMargin {
   paymentCents: number;
   /** Handling and postage on the band's shipped orders. Zero when not invoiced. */
   fulfilmentCents: number;
+  /** Shipped orders priced on their own label cost. */
+  postageKnownOrders: number;
+  /** Shipped orders priced on the average per shipped order instead. */
+  postageFallbackOrders: number;
+  /** Shipped orders with no postage counted at all. */
+  postageUnknownOrders: number;
   marginCents: number;
   /** Null when the band is empty — never 0, which would read as no margin. */
   marginPct: number | null;
@@ -323,6 +365,7 @@ export function bandMargins(orders: OrderForEconomics[], rates: RateSettings, fu
 
     const fulfilmentCents = fulfilmentComponents(inBand, fulfilment).reduce((s, c) => s + c.cents, 0);
     const marginCents = revenueCents - productCostCents - paymentCents - fulfilmentCents;
+    const postage = postageMix(inBand, fulfilment);
 
     return {
       label: band.label,
@@ -331,6 +374,9 @@ export function bandMargins(orders: OrderForEconomics[], rates: RateSettings, fu
       productCostCents,
       paymentCents,
       fulfilmentCents,
+      postageKnownOrders: postage.known,
+      postageFallbackOrders: postage.fallback,
+      postageUnknownOrders: postage.unknown,
       marginCents,
       marginPct: revenueCents === 0 ? null : marginCents / revenueCents,
     };
@@ -369,6 +415,16 @@ export function thresholdVerdict(bands: BandMargin[]): ThresholdVerdict {
   }
 
   const subsidising = above.marginPct < below.marginPct;
+  const shipped = [below, above].reduce((n, b) => n + b.postageKnownOrders + b.postageFallbackOrders + b.postageUnknownOrders, 0);
+  const notMeasured = [below, above].reduce((n, b) => n + b.postageFallbackOrders + b.postageUnknownOrders, 0);
+  const handled = below.fulfilmentCents > 0 || above.fulfilmentCents > 0;
+  const provisional = !handled
+    ? ` PROVISIONAL: fulfilment cost is not in the database, and the shipping label is the cost the ` +
+      `threshold actually absorbs. This compares margin net of product cost and payment fees only.`
+    : notMeasured > 0
+      ? ` PROVISIONAL: ${notMeasured} of ${shipped} orders in these two bands have no label cost of their own and ` +
+        `carry the average per shipped order, which flatters the heavier band.`
+      : "";
 
   return {
     subsidising,
@@ -380,7 +436,6 @@ export function thresholdVerdict(bands: BandMargin[]): ThresholdVerdict {
       (subsidising
         ? `The band above the threshold is worse, which is what moving it to $65 or $70 would address.`
         : `The band above the threshold is no worse, so the threshold is not subsidising on this evidence.`) +
-      ` PROVISIONAL: fulfilment cost is not in the database, and the shipping label is the cost the ` +
-      `threshold actually absorbs. This compares margin net of product cost and payment fees only.`,
+      provisional,
   };
 }

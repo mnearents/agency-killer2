@@ -2435,6 +2435,92 @@ export type ThreeplShipmentRow = typeof threeplShipments.$inferSelect;
 export type NewThreeplShipmentRow = typeof threeplShipments.$inferInsert;
 
 /**
+ * Shipments read from ShipHero's Public API (`sync:shiphero`), the system the
+ * 3PL runs — per label cost where the hand-imported exports and invoices
+ * give only averages or stop (the CSV's last shipment is 2026-09-21).
+ *
+ * Nothing about the customer is selected or stored: no name, address or
+ * email, though the token can see them. Order money is Shopify's — ShipHero's
+ * order subtotal disagrees with it (RH361008: 176.00 against 132.00) — with
+ * one exception kept for comparison: the shipping line's price.
+ */
+export const shipheroShipments = pgTable(
+  "shiphero_shipments",
+  {
+    /** ShipHero's shipment id (base64 GraphQL id). */
+    id: text("id").primaryKey(),
+    legacyId: bigint("legacy_id", { mode: "number" }),
+    /** `RH######`, the Shopify order name. */
+    orderNumber: text("order_number"),
+    /** Shopify's numeric order id, as ShipHero holds it. */
+    partnerOrderId: text("partner_order_id"),
+    /** `gid://shopify/Order/<partner_order_id>` — joins `shopify_orders.id`. Null when it is not a Shopify id. */
+    shopifyOrderId: text("shopify_order_id"),
+    shopName: text("shop_name"),
+    orderSource: text("order_source"),
+    createdDate: timestamp("created_date", { withTimezone: true }),
+    totalPackages: integer("total_packages"),
+    shippedOffShiphero: integer("shipped_off_shiphero"),
+    dropshipment: integer("dropshipment"),
+    refunded: integer("refunded"),
+    shippingLineTitle: text("shipping_line_title"),
+    shippingLineCarrier: text("shipping_line_carrier"),
+    shippingLineMethod: text("shipping_line_method"),
+    /** ShipHero's copy of the shipping line price. Shopify's figure is the one the tools use. */
+    shippingChargedCents: integer("shipping_charged_cents"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("shiphero_shipments_order_idx").on(table.shopifyOrderId),
+    index("shiphero_shipments_number_idx").on(table.orderNumber),
+    index("shiphero_shipments_created_idx").on(table.createdDate),
+  ]
+);
+
+/**
+ * A shipment's labels. `cost_cents` is NULL, never 0, when ShipHero reports
+ * 0.00: that is a label billed to a carrier account the 3PL does not invoice
+ * (every DHL eCommerce label seen), the same rule `threepl_shipments` keeps.
+ * `cost_basis` says which: reported, zero-reported or absent.
+ *
+ * An order's postage is the sum of its labels whose status is in
+ * INCLUDED_LABEL_STATUSES and which are not refunded — statuses not yet seen
+ * are excluded and counted, not guessed into a cost.
+ */
+export const shipheroLabels = pgTable(
+  "shiphero_labels",
+  {
+    id: text("id").primaryKey(),
+    shipmentId: text("shipment_id").notNull(),
+    carrier: text("carrier"),
+    shippingMethod: text("shipping_method"),
+    shippingName: text("shipping_name"),
+    carrierAccountId: text("carrier_account_id"),
+    costCents: integer("cost_cents"),
+    costBasis: text("cost_basis").notNull(),
+    status: text("status"),
+    refunded: integer("refunded"),
+    boxName: text("box_name"),
+    packageNumber: integer("package_number"),
+    /** Parsed from strings carrying their unit ("3.6500 lb"); NULL for a unit not recognised. */
+    weightLb: real("weight_lb"),
+    lengthIn: real("length_in"),
+    widthIn: real("width_in"),
+    heightIn: real("height_in"),
+    source: text("source"),
+    createdDate: timestamp("created_date", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index("shiphero_labels_shipment_idx").on(table.shipmentId),
+    index("shiphero_labels_created_idx").on(table.createdDate),
+  ]
+);
+
+export type ShipheroShipmentRow = typeof shipheroShipments.$inferInsert;
+export type ShipheroLabelRow = typeof shipheroLabels.$inferInsert;
+
+/**
  * Tier changes read out of Seal's log, materialised.
  *
  * The fold that produces these lives in src/domain/subscriptions/tier-changes.ts

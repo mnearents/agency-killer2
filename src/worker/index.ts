@@ -71,6 +71,9 @@ import { generateBlogArticle } from "@/domain/blog/generate";
 import { syncSocialPosts, DEFAULT_MEDIA_LIMIT, type SyncSocialResult } from "@/domain/social/sync";
 import { createFfmpegToolkit } from "@/integrations/video-frames";
 import { createReelDownloader } from "@/integrations/reel-downloader";
+import { createShipHeroClient, type BillingProbe, type ThrottleEvent } from "@/integrations/shiphero-api";
+import { syncShipHero, dailyShipHeroRange, backfillShipHeroRange, type ShipHeroSyncResult } from "@/domain/economics/shiphero-sync";
+import { SHIPHERO_BILLING_PROBE_TASK } from "@/domain/economics/shiphero-queries";
 import { readDownloadLimits, type DownloadAccount } from "@/domain/social/download-plan";
 import { runReelDownloads } from "@/domain/social/reel-backfill";
 import { describeDownloadRun } from "@/domain/social/download-report";
@@ -238,6 +241,18 @@ async function main() {
   // it only when REEL_AUTO_DOWNLOAD=on — a free plan's three calls a month
   // must not be spent unasked; `!sync reels` runs it on request either way.
   const reelDownloader = getEnvOptional("RAPIDAPI_KEY") ? createReelDownloader({ apiKey: getEnv("RAPIDAPI_KEY") }) : null;
+  // Read-only: the client holds fixed queries and sends nothing else. Every
+  // throttle wait is logged here and counted in the run's reply.
+  const shipheroThrottles: ThrottleEvent[] = [];
+  const shipheroClient = getEnvOptional("SHIPHERO_REFRESH_TOKEN")
+    ? createShipHeroClient({
+        refreshToken: getEnv("SHIPHERO_REFRESH_TOKEN"),
+        onThrottle: (e) => {
+          shipheroThrottles.push(e);
+          console.error(`[sync:shiphero] Throttled (${e.kind}), waiting ${e.waitedMs}ms${e.requestId ? ` — request id ${e.requestId}` : ""}: ${e.detail}`);
+        },
+      })
+    : null;
   const downloadLimits = readDownloadLimits(process.env);
   const autoDownloads = getEnvOptional("REEL_AUTO_DOWNLOAD") === "on";
 
@@ -434,6 +449,45 @@ async function main() {
         rowsWritten: result.posts,
         errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
       };
+    });
+    return outcome;
+  };
+
+  /**
+   * ShipHero shipments and label costs, shared by the daily cron (last 7
+   * days) and `!sync shiphero [backfill]` (from 2025-07-22). Probes whether
+   * ShipHero's billing is readable yet and records that as its own run.
+   * Returns null when the token is not set; throws, after recording, on a
+   * failed window.
+   */
+  const runShipHeroSync = async (mode: "daily" | "backfill"): Promise<{ result: ShipHeroSyncResult; throttles: ThrottleEvent[]; billing: BillingProbe[] } | null> => {
+    let outcome: { result: ShipHeroSyncResult; throttles: ThrottleEvent[]; billing: BillingProbe[] } | null = null;
+    await recorded("sync:shiphero", async () => {
+      if (!shipheroClient) {
+        console.error("[sync:shiphero] NOT CONFIGURED — SHIPHERO_REFRESH_TOKEN is not set, so postage per order stops at the shipment export");
+        return { configured: false, rowsWritten: 0 };
+      }
+      const throttledBefore = shipheroThrottles.length;
+      const range = mode === "backfill" ? backfillShipHeroRange(new Date()) : dailyShipHeroRange(new Date());
+      const result = await syncShipHero({ db, client: shipheroClient, now: () => new Date() }, range);
+      const billing = [await shipheroClient.probe("bills"), await shipheroClient.probe("fulfillment_invoices")];
+      await db.insert(syncRuns).values({
+        task: SHIPHERO_BILLING_PROBE_TASK,
+        outcome: billing.every((b) => b.readable) ? "ok" : "no-access",
+        rowsWritten: 0,
+        errorMessage: billing.filter((b) => !b.readable).map((b) => `${b.query}: code ${b.code ?? "?"} ${b.detail ?? ""}${b.requestId ? ` (request id ${b.requestId})` : ""}`).join("; ") || null,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+      });
+      const throttles = shipheroThrottles.slice(throttledBefore);
+      outcome = { result, throttles, billing };
+      console.log(
+        `[sync:shiphero] ${mode} ${range.from.toISOString().slice(0, 10)}..${range.to.toISOString().slice(0, 10)}: ` +
+          `${result.windows} window(s), ${result.pages} page(s), ${result.shipments} shipment(s), ${result.labels} label(s); ` +
+          `statuses ${Object.entries(result.statuses).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}; ` +
+          `${throttles.length} throttle wait(s); billing ${billing.map((b) => `${b.query} ${b.readable ? "readable" : "not readable"}`).join(", ")}`,
+      );
+      return { configured: true, rowsWritten: result.shipments + result.labels };
     });
     return outcome;
   };
@@ -836,6 +890,10 @@ async function main() {
 
     "sync:invoices": async () => {
       await runInvoiceSync();
+    },
+
+    "sync:shiphero": async () => {
+      await runShipHeroSync("daily");
     },
 
     "watch:meta": async () => {
@@ -1571,6 +1629,25 @@ async function main() {
       ];
       if (result.failed > 0) lines.push(`• ${result.failed} could not be read:\n${result.errors.map((e) => `   – ${e}`).join("\n")}`);
       return { text: `*Invoices imported from Drive*\n${lines.join("\n")}`, isError: result.failed > 0 };
+    },
+
+    "sync:shiphero": async (args) => {
+      const mode = args.trim().toLowerCase() === "backfill" ? "backfill" : "daily";
+      let run: Awaited<ReturnType<typeof runShipHeroSync>>;
+      try {
+        run = await runShipHeroSync(mode);
+      } catch (err) {
+        return { text: `ShipHero sync failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+      if (!run) return { text: "ShipHero sync unavailable — SHIPHERO_REFRESH_TOKEN is not set on the worker.", isError: true };
+      const { result, throttles, billing } = run;
+      const lines = [
+        `• ${mode === "backfill" ? "From 2025-07-22" : "Last 7 days"}: ${result.shipments} shipments, ${result.labels} labels (${result.windows} week(s), ${result.pages} page(s))`,
+        `• Label statuses: ${Object.entries(result.statuses).map(([k, v]) => `${k} ${v}`).join(", ") || "none"}`,
+        `• ${throttles.length === 0 ? "Not throttled" : `Throttled ${throttles.length} time(s), waited ${Math.round(throttles.reduce((t, e) => t + e.waitedMs, 0) / 1000)}s`}`,
+        `• Billing: ${billing.map((b) => `${b.query} ${b.readable ? "readable" : `not readable (code ${b.code ?? "?"})`}`).join(", ")}`,
+      ];
+      return { text: `*ShipHero synced*\n${lines.join("\n")}`, isError: false };
     },
 
     "sync:footage": async (args) => {

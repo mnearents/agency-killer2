@@ -224,6 +224,12 @@ import {
   BUSINESS_LINES,
 } from "@/domain/economics/queries";
 import { computeAmer } from "@/domain/economics/amer";
+import { getOrderPostage, getPostageOverlap, type OrderPostage } from "@/domain/economics/order-postage";
+import type { EconomicsOrder } from "@/domain/economics/queries";
+import { getShipHeroCoverage, getShipHeroRuns } from "@/domain/economics/shiphero-queries";
+import { thresholdBands, summariseOrders, type OrderSummary, type ThresholdOrder } from "@/domain/economics/shipping-threshold";
+import { ordersOverShippingShare } from "@/domain/economics/shipping-share";
+import { INCLUDED_LABEL_STATUSES } from "@/domain/economics/shiphero-transform";
 import {
   computeTargetCpa,
   realisedChurnedLtv,
@@ -2587,6 +2593,8 @@ const shippingCosts: McpTool = {
   description:
     "Postage per shipment against what the customer paid, by shipping method. " +
     "Labels billed to a separate carrier account export at $0.00 and are stored as unknown, never as free — so `postageCoverage` says what share of the postage is actually known and any total is a floor below 1.0. " +
+    "Source: the 3PL's hand-imported shipment export (`threepl_shipments`, ending 2026-09-21), not ShipHero's live labels — for per-order postage since, use `free_shipping_threshold`, `orders_shipping_over_share` and `shiphero_coverage`. " +
+    "`knownShortfallDollars` compares postage with what was charged on the SAME shipments (`knownShortfallShipments` of them), never with shipping charged on all of them. " +
     "Pass productTitle to see what shipping one product costs; note a parcel is per order, so an order holding two products counts its box against both and the per-product figures must not be summed.",
   readOnly: true,
   schema: {
@@ -2636,10 +2644,16 @@ const shippingCosts: McpTool = {
       firstShipment: window.firstShipment,
       lastShipment: window.lastShipment,
       ...coverageOf(window.billed, window.unbilled),
+      source: "3PL shipment export (threepl_shipments, imported by hand)",
       knownPostageDollars: dollars(window.knownCostCents),
       shippingChargedDollars: dollars(window.chargedCents),
-      // Stated rather than left to be computed: the gap is the point.
-      knownShortfallDollars: dollars(window.knownCostCents - window.chargedCents),
+      shippingChargedOnKnownDollars: dollars(window.chargedOnKnownCents),
+      // Stated rather than left to be computed: the gap is the point. Over the
+      // shipments whose postage is known only — subtracting what was charged
+      // on every shipment from postage known on some once reported -$195.21
+      // where the like-for-like shortfall was $6,061.05.
+      knownShortfallDollars: dollars(window.knownCostCents - window.chargedOnKnownCents),
+      knownShortfallShipments: window.knownShipments,
       byMethod: byMethod.map((m) => ({
         shippingMethod: m.shippingMethod,
         shipments: m.shipments,
@@ -2647,6 +2661,8 @@ const shippingCosts: McpTool = {
         knownPostageDollars: dollars(m.knownCostCents),
         avgKnownPostageDollars: m.billed > 0 ? dollars(Math.round(m.knownCostCents / m.billed)) : null,
         shippingChargedDollars: dollars(m.chargedCents),
+        knownShortfallDollars: dollars(m.knownCostCents - m.chargedOnKnownCents),
+        knownShortfallShipments: m.knownShipments,
         avgWeightLb: m.avgWeightLb === null ? null : Number(m.avgWeightLb),
       })),
     };
@@ -3649,7 +3665,8 @@ const marginByOrderValue: McpTool = {
   description:
     "Contribution margin banded by order value, for the question #34 poses: is free shipping over $60 subsidising the worst orders? " +
     "Returns a verdict comparing the $50-60 and $60-70 bands directly, plus every band's margin. " +
-    "Margin is net of product cost, payment fees, fulfilment handling and postage. Postage comes from weekly invoices with no per-order detail, so it is an AVERAGE per shipped order applied to every band — the threshold question really turns on how label cost rises with order size, which an average cannot show; `caveat` says so. " +
+    "Margin is net of product cost, payment fees, fulfilment handling and postage. Postage is each order's own label cost where known — the 3PL shipment export first, else ShipHero — and the average per shipped order from the invoices only where it is not; every band reports how many orders fell back (`postageFallbackOrders`) and `postageSources` totals them. " +
+    "Bands are on the order TOTAL, including shipping and tax, so a $55 cart paying shipping lands in $60-70; `free_shipping_threshold` bands on subtotal and answers the threshold question more directly. " +
     "Physical orders only by default — a threshold on shipping means nothing for a subscription or a printable.",
   readOnly: true,
   schema: {
@@ -3677,9 +3694,18 @@ const marginByOrderValue: McpTool = {
       loadFulfilmentModel(ctx.db, { start: startDate, end: endDate }),
     ]);
     const line = args.businessLine as string;
-    const orders = byLine.find((l) => l.line === line)?.orders ?? [];
+    const postage = await getOrderPostage(ctx.db, startDate, endDate);
+    const orders = withPostage(byLine.find((l) => l.line === line)?.orders ?? [], postage);
     const bands = bandMargins(orders, rates, fulfilment.rates);
     const verdict = thresholdVerdict(bands);
+    const shipped = orders.filter((o) => o.shipped);
+    const postageSources = {
+      invoice: shipped.filter((o) => o.postage?.source === "invoice").length,
+      shiphero: shipped.filter((o) => o.postage?.source === "shiphero").length,
+      average: fulfilment.rates.postage ? shipped.filter((o) => !o.postage).length : 0,
+      none: fulfilment.rates.postage ? 0 : shipped.filter((o) => !o.postage).length,
+    };
+    const onAverage = postageSources.average + postageSources.none;
 
     return {
       window: { startDate, endDate, days: args.days },
@@ -3703,15 +3729,203 @@ const marginByOrderValue: McpTool = {
         fulfilment: dollarsFrom(b.fulfilmentCents),
         margin: dollarsFrom(b.marginCents),
         marginPct: b.marginPct === null ? null : Number((100 * b.marginPct).toFixed(1)),
+        postageKnownOrders: b.postageKnownOrders,
+        postageFallbackOrders: b.postageFallbackOrders,
+        postageUnknownOrders: b.postageUnknownOrders,
       })),
+      postageSources,
       fulfilment: describeFulfilment(fulfilment),
       caveat: [
         fulfilmentCaveat(fulfilment, "every margin here is a ceiling and the threshold verdict is provisional."),
-        // True however complete the invoices are: they carry no per-order labels.
-        fulfilment.rates.postage
-          ? "Postage is an AVERAGE per shipped order, the same in every band. A heavier, pricier order costs more to ship than that, so the bands above the threshold are flattered relative to the ones below it."
+        onAverage > 0
+          ? `${onAverage} of ${shipped.length} shipped orders have no label cost of their own and carry ${postageSources.none > 0 ? "no postage at all" : "the AVERAGE per shipped order"}. A heavier, pricier order costs more to ship than that, so where they cluster the band is flattered — see each band's postageFallbackOrders.`
           : undefined,
+        "Bands are on the order total including shipping and tax; free_shipping_threshold bands on subtotal.",
       ].filter(Boolean).join(" ") || undefined,
+    };
+  },
+};
+
+/** Each order with its own postage where known, absent where not. */
+function withPostage<T extends { id: string }>(orders: T[], postage: Map<string, OrderPostage>): Array<T & { postage: OrderPostage["postage"]; weightLb: number | null }> {
+  return orders.map((o) => {
+    const p = postage.get(o.id);
+    return { ...o, postage: p?.postage ?? null, weightLb: p?.weightLb ?? null };
+  });
+}
+
+/** A date range from tool arguments, defaulting to the last 365 days. */
+function shippingRange(ctx: McpToolContext, args: Record<string, unknown>): { startDate: string; endDate: string } | { error: string } {
+  const now = ctx.now();
+  const endDate = args.endDate instanceof Date ? isoDayString(args.endDate) : isoDayString(now);
+  const startDate = args.startDate instanceof Date ? isoDayString(args.startDate) : isoDayString(new Date(now.getTime() - 365 * 86_400_000));
+  if (endDate < startDate) return { error: `endDate ${endDate} is before startDate ${startDate}, so nothing was read.` };
+  return { startDate, endDate };
+}
+
+function describeSummary(s: OrderSummary) {
+  const pct = (v: number | null) => (v === null ? null : Number(v.toFixed(4)));
+  return {
+    orders: s.orders,
+    freeShippingShare: pct(s.freeShippingShare),
+    avgShippingCharged: s.avgShippingChargedCents === null ? null : dollarsFrom(s.avgShippingChargedCents),
+    avgLabelCost: s.avgLabelCostCents === null ? null : dollarsFrom(s.avgLabelCostCents),
+    labelCostKnownOrders: s.labelCostKnownOrders,
+    labelCostCoverage: pct(s.labelCostCoverage),
+    avgWeightLb: s.avgWeightLb,
+    weightKnownOrders: s.weightKnownOrders,
+    revenue: dollarsFrom(s.revenueCents),
+    contributionMargin: dollarsFrom(s.contributionMarginCents),
+    avgContributionMargin: s.avgContributionMarginCents === null ? null : dollarsFrom(s.avgContributionMarginCents),
+    marginPct: s.marginPct === null ? null : Number((100 * s.marginPct).toFixed(1)),
+    postageKnownOrders: s.postageKnownOrders,
+    postageFallbackOrders: s.postageFallbackOrders,
+    postageUnknownOrders: s.postageUnknownOrders,
+  };
+}
+
+/** Shipped physical orders with postage, shipping charged (Shopify) and weight attached. */
+async function shippedPhysicalOrders(ctx: McpToolContext, startDate: string, endDate: string): Promise<Array<ThresholdOrder & EconomicsOrder>> {
+  const [byLine, postage] = await Promise.all([getOrdersForEconomics(ctx.db, startDate, endDate), getOrderPostage(ctx.db, startDate, endDate)]);
+  return withPostage((byLine.find((l) => l.line === "physical")?.orders ?? []).filter((o) => o.shipped), postage).map((o) => ({
+    ...o,
+    shippingChargedCents: o.subtotalCents === null ? null : o.totalPriceCents - o.subtotalCents - (o.totalTaxCents ?? 0),
+  }));
+}
+
+const freeShippingThreshold: McpTool = {
+  name: "free_shipping_threshold",
+  title: "Is free shipping over $60 paying for itself?",
+  description:
+    "Shipped physical orders banded by SUBTOTAL — merchandise after discounts, before shipping and tax, the figure a free-shipping threshold is set on — in $10 steps to $150, then $150+. " +
+    "Per band: orders, share shipped free, average shipping charged (Shopify), average label cost, average weight, and contribution margin (revenue less tax, product cost, payment fees, handling and postage). " +
+    "`comparison` sets $50-60 against $60-70 and orders that paid for shipping against orders that got it free. " +
+    "Label cost is each order's own where known (the 3PL shipment export first, else ShipHero's label) and is averaged over those orders only — `labelCostKnownOrders` says how many. Margin prices the rest on the invoices' average per shipped order (`postageFallbackOrders`). Read `coverage` before the comparison: a band priced mostly on averages cannot show that heavier orders cost more to ship. " +
+    "Defaults to the last 365 days.",
+  readOnly: true,
+  schema: {
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+  },
+  async run(ctx, args) {
+    const range = shippingRange(ctx, args);
+    if ("error" in range) return range;
+    const rates = await getRateSettings(ctx.db, range.endDate);
+    if (!rates) return { error: "No payment rates are in effect for this date, so nothing was computed. rate_settings should hold payment_pct and payment_fixed_cents — see migration 0031." };
+    const [orders, fulfilment] = await Promise.all([
+      shippedPhysicalOrders(ctx, range.startDate, range.endDate),
+      loadFulfilmentModel(ctx.db, { start: range.startDate, end: range.endDate }),
+    ]);
+    const { bands, unbanded } = thresholdBands(orders, rates, fulfilment.rates);
+    const band = (label: string) => ({ band: label, ...describeSummary(bands.find((b) => b.label === label)!) });
+    const known = orders.filter((o) => o.postage).length;
+    return {
+      window: range,
+      bandBasis: "Subtotal: line items after discounts, before shipping and tax. An order at exactly $60.00 is in $60-70.",
+      freeShippingThresholdDollars: 60,
+      bands: bands.map((b) => ({ band: b.label, ...describeSummary(b) })),
+      comparison: {
+        belowVsAbove: { below: band("$50-60"), above: band("$60-70") },
+        payingVsFree: {
+          paying: describeSummary(summariseOrders(orders.filter((o) => (o.shippingChargedCents ?? 0) > 0), rates, fulfilment.rates)),
+          free: describeSummary(summariseOrders(orders.filter((o) => o.shippingChargedCents === 0), rates, fulfilment.rates)),
+          unknownCharge: orders.filter((o) => o.shippingChargedCents === null).length,
+        },
+      },
+      coverage: {
+        orders: orders.length,
+        ownLabelCost: known,
+        bySource: { invoice: orders.filter((o) => o.postage?.source === "invoice").length, shiphero: orders.filter((o) => o.postage?.source === "shiphero").length },
+        averageFallback: fulfilment.rates.postage ? orders.length - known : 0,
+        noPostage: fulfilment.rates.postage ? 0 : orders.length - known,
+        unbanded,
+      },
+      fulfilment: describeFulfilment(fulfilment),
+      caveat: fulfilmentCaveat(fulfilment, "every margin here is a ceiling."),
+    };
+  },
+};
+
+const ordersShippingOverShare: McpTool = {
+  name: "orders_shipping_over_share",
+  title: "Orders whose label ate their revenue",
+  description:
+    "Shipped physical orders whose own label cost is more than `share` (default 0.3) of the order's net revenue — total less tax, so merchandise after discounts plus any shipping collected — worst first, with the discount codes each used, and totalled by code so a promotion that loses money on shipping is visible. " +
+    "Only orders whose label cost is known can be judged (the 3PL shipment export first, else ShipHero); `unjudged` counts the rest, which are neither flagged nor cleared. Defaults to the last 365 days.",
+  readOnly: true,
+  schema: {
+    startDate: { type: "date" },
+    endDate: { type: "date" },
+    share: { type: "number", min: 0, max: 10, default: 0.3 },
+    limit: { type: "integer", min: 1, max: 200, default: 50 },
+  },
+  async run(ctx, args) {
+    const range = shippingRange(ctx, args);
+    if ("error" in range) return range;
+    const orders = await shippedPhysicalOrders(ctx, range.startDate, range.endDate);
+    const share = args.share as number;
+    const result = ordersOverShippingShare(
+      orders.map((o) => ({
+        orderNumber: o.orderNumber, orderedAt: o.orderedAt, netRevenueCents: o.totalPriceCents - (o.totalTaxCents ?? 0),
+        shippingChargedCents: o.shippingChargedCents, labelCostCents: o.postage?.cents ?? null, labelSource: o.postage?.source ?? null, discountCodes: o.discountCodes,
+      })),
+      share,
+    );
+    const limit = args.limit as number;
+    return {
+      window: range,
+      share,
+      judged: result.judged,
+      unjudged: result.unjudged,
+      matched: result.orders.length,
+      returned: Math.min(limit, result.orders.length),
+      orders: result.orders.slice(0, limit).map((o) => ({
+        orderNumber: o.orderNumber, orderedAt: o.orderedAt, netRevenue: dollarsFrom(o.netRevenueCents),
+        shippingCharged: o.shippingChargedCents === null ? null : dollarsFrom(o.shippingChargedCents),
+        labelCost: dollarsFrom(o.labelCostCents!), labelSource: o.labelSource, labelShare: o.labelShare, discountCodes: o.discountCodes,
+      })),
+      // Over every matching order, not only those returned.
+      byDiscountCode: result.byDiscountCode.map((c) => ({ code: c.code, orders: c.orders, labelCost: dollarsFrom(c.labelCostCents), netRevenue: dollarsFrom(c.netRevenueCents) })),
+    };
+  },
+};
+
+const shipheroCoverage: McpTool = {
+  name: "shiphero_coverage",
+  title: "How much of the postage ShipHero knows",
+  description:
+    "What the ShipHero sync holds and how far to trust it: shipments and labels by month, the share of labels with a known cost by month, by carrier and by both (each carrier with the first and last day its cost was known and unknown), the label statuses seen, shipments that join no Shopify order, and ShipHero's shipping charge checked against Shopify's. " +
+    "`reconciliation` compares, for orders both sources know in full, ShipHero's label cost with the 3PL shipment export's — how we learn whether ShipHero's `cost` is what the 3PL bills or the carrier's rate. `billing` says whether ShipHero's bills and fulfilment invoices are readable yet. " +
+    `A 0.00 label is stored as unknown, never as free. Postage counts labels whose status is ${INCLUDED_LABEL_STATUSES.join(", ")} and that are not refunded; any other status in \`statuses\` is excluded and worth a look.`,
+  readOnly: true,
+  schema: {},
+  async run(ctx) {
+    const [coverage, overlap, runs] = await Promise.all([getShipHeroCoverage(ctx.db), getPostageOverlap(ctx.db), getShipHeroRuns(ctx.db)]);
+    const share = (known: number, of: number) => (of === 0 ? null : Number((known / of).toFixed(4)));
+    return {
+      lastSync: runs.lastSync && { at: runs.lastSync.startedAt, outcome: runs.lastSync.outcome, rowsWritten: runs.lastSync.rowsWritten, error: runs.lastSync.errorMessage },
+      byMonth: coverage.byMonth.map((m) => ({ ...m, knownShare: share(m.knownLabels, m.includedLabels) })),
+      byCarrier: coverage.byCarrier.map((c) => ({ ...c, knownShare: share(c.knownLabels, c.labels) })),
+      byMonthAndCarrier: coverage.byMonthAndCarrier.map((m) => ({ ...m, knownShare: share(m.knownLabels, m.labels) })),
+      statuses: coverage.statuses,
+      includedStatuses: INCLUDED_LABEL_STATUSES,
+      unmatchedShipments: coverage.unmatchedShipments,
+      shippingChargedVsShopify: {
+        ...coverage.shippingCharged,
+        examples: coverage.shippingCharged.examples.map((e) => ({ orderNumber: e.orderNumber, shiphero: dollarsFrom(e.shipheroCents), shopify: dollarsFrom(e.shopifyCents) })),
+      },
+      reconciliation: {
+        orders: overlap.orders,
+        identical: overlap.identical,
+        meanDifference: overlap.meanDifferenceCents === null ? null : dollarsFrom(overlap.meanDifferenceCents),
+        meanAbsoluteDifference: overlap.meanAbsoluteDifferenceCents === null ? null : dollarsFrom(overlap.meanAbsoluteDifferenceCents),
+        overFiftyCents: overlap.overFiftyCents,
+        largest: overlap.largest.map((d) => ({ orderNumber: d.orderNumber, invoice: dollarsFrom(d.invoiceCents), shiphero: dollarsFrom(d.shipheroCents), difference: dollarsFrom(d.differenceCents) })),
+        direction: "difference is ShipHero minus the 3PL shipment export",
+      },
+      billing: runs.lastBillingProbe
+        ? { readable: runs.lastBillingProbe.outcome === "ok", checkedAt: runs.lastBillingProbe.startedAt, detail: runs.lastBillingProbe.errorMessage }
+        : { readable: null, detail: "Never checked — the ShipHero sync has not run." },
     };
   },
 };
@@ -4421,6 +4635,9 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPushHistory,
   unitEconomics,
   marginByOrderValue,
+  freeShippingThreshold,
+  ordersShippingOverShare,
+  shipheroCoverage,
   targetCpa,
   amerTool,
   currentAlerts,

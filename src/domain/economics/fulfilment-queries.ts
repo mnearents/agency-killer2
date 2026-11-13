@@ -82,6 +82,9 @@ export interface PostageByMethod {
   unbilled: number;
   knownCostCents: number;
   chargedCents: number;
+  /** Shipments whose postage is known, and what was charged on those alone — the like-for-like pair. */
+  knownShipments: number;
+  chargedOnKnownCents: number;
   avgWeightLb: number | null;
 }
 
@@ -101,6 +104,8 @@ export async function getPostageByMethod(
       unbilled: sql<number>`count(*) filter (where ${threeplShipments.postageBasis} = 'unbilled')::int`,
       knownCostCents: sql<number>`coalesce(sum(${threeplShipments.labelCostCents}), 0)::int`,
       chargedCents: sql<number>`coalesce(sum(${threeplShipments.shippingChargedCents}), 0)::int`,
+      knownShipments: sql<number>`count(*) filter (where ${threeplShipments.labelCostCents} is not null)::int`,
+      chargedOnKnownCents: sql<number>`coalesce(sum(${threeplShipments.shippingChargedCents}) filter (where ${threeplShipments.labelCostCents} is not null), 0)::int`,
       avgWeightLb: sql<number | null>`round(avg(${threeplShipments.weightLb})::numeric, 2)`,
     })
     .from(threeplShipments)
@@ -115,6 +120,8 @@ export interface ShipmentWindow {
   unbilled: number;
   knownCostCents: number;
   chargedCents: number;
+  knownShipments: number;
+  chargedOnKnownCents: number;
   firstShipment: string | null;
   lastShipment: string | null;
 }
@@ -134,6 +141,8 @@ export async function getShipmentWindow(
       unbilled: sql<number>`count(*) filter (where ${threeplShipments.postageBasis} = 'unbilled')::int`,
       knownCostCents: sql<number>`coalesce(sum(${threeplShipments.labelCostCents}), 0)::int`,
       chargedCents: sql<number>`coalesce(sum(${threeplShipments.shippingChargedCents}), 0)::int`,
+      knownShipments: sql<number>`count(*) filter (where ${threeplShipments.labelCostCents} is not null)::int`,
+      chargedOnKnownCents: sql<number>`coalesce(sum(${threeplShipments.shippingChargedCents}) filter (where ${threeplShipments.labelCostCents} is not null), 0)::int`,
       firstShipment: sql<string | null>`min(${threeplShipments.createdAt})::text`,
       lastShipment: sql<string | null>`max(${threeplShipments.createdAt})::text`,
     })

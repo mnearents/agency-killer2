@@ -23,11 +23,17 @@ vi.mock("@/domain/economics/fulfilment-queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/domain/economics/fulfilment-queries")>()),
   loadFulfilmentModel: vi.fn(),
 }));
+// No order carries its own label here: postage is the invoices' average throughout.
+vi.mock("@/domain/economics/order-postage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/domain/economics/order-postage")>()),
+  getOrderPostage: vi.fn().mockResolvedValue(new Map()),
+}));
 vi.mock("@/domain/subscriptions/queries", () => ({ getSubscriptionFacts: vi.fn().mockResolvedValue([]) }));
 
 const ctx = { db: {} as never, now: () => new Date("2026-10-30T12:00:00Z") } as unknown as McpToolContext;
 
 const shippedOrder = (totalPriceCents: number) => ({
+  id: `gid://shopify/Order/${totalPriceCents}`, orderNumber: null, subtotalCents: totalPriceCents, discountCodes: [], orderedAt: "2026-10-01",
   totalPriceCents, totalTaxCents: 0, productCostCents: 1000, lineRevenueCents: totalPriceCents, costedLineRevenueCents: totalPriceCents, shipped: true,
 });
 

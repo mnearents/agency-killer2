@@ -138,9 +138,25 @@ export function lineOf(r: {
   return classifyBusinessLine(facts);
 }
 
+/** An order as the economics read it, with what identifies it and what bands it. */
+export interface EconomicsOrder extends OrderForEconomics {
+  id: string;
+  orderNumber: string | null;
+  /** Shopify's subtotal: line items after discounts, before shipping and tax. */
+  subtotalCents: number | null;
+  discountCodes: string[];
+  /** UTC day the order was placed. */
+  orderedAt: string;
+}
+
 export interface OrdersByLine {
   line: BusinessLine;
   orders: OrderForEconomics[];
+}
+
+export interface EconomicsOrdersByLine {
+  line: BusinessLine;
+  orders: EconomicsOrder[];
 }
 
 /**
@@ -157,11 +173,15 @@ export async function getOrdersForEconomics(
   db: Db,
   startDate: string,
   endDate: string
-): Promise<OrdersByLine[]> {
+): Promise<EconomicsOrdersByLine[]> {
   const rows = (await db.execute(sql`
     WITH per_order AS (
       SELECT
         o.id,
+        o.order_number,
+        o.subtotal_price_cents,
+        o.discount_codes,
+        to_char(o.order_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS ordered_at,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
         ${LINE_FLAGS},
@@ -185,15 +205,21 @@ export async function getOrdersForEconomics(
         -- vendor stays in, matching isOwnedVendor — every own-brand product
         -- carries one, so a blank is a gap on something almost certainly ours.
         AND (inv.vendor IS NULL OR inv.vendor IN (${sql.raw(OWNED_VENDORS_SQL)}))
-      GROUP BY o.id, o.total_price_cents, o.total_tax_cents
+      GROUP BY o.id, o.order_number, o.subtotal_price_cents, o.discount_codes, o.order_created_at, o.total_price_cents, o.total_tax_cents
     )
     SELECT
+      id, order_number, subtotal_price_cents, discount_codes, ordered_at,
       has_subscription_type, has_untyped_without_inventory,
       has_tracked_inventory, has_known_physical_type,
       total_price_cents, total_tax_cents, product_cost_cents,
       line_revenue_cents, costed_line_revenue_cents, shipped
     FROM per_order
   `)) as unknown as Array<{
+    id: string;
+    order_number: string | null;
+    subtotal_price_cents: number | null;
+    discount_codes: unknown;
+    ordered_at: string;
     has_subscription_type: boolean;
     has_untyped_without_inventory: boolean;
     has_tracked_inventory: boolean;
@@ -206,12 +232,17 @@ export async function getOrdersForEconomics(
     shipped: boolean | null;
   }>;
 
-  const byLine = new Map<BusinessLine, OrderForEconomics[]>(
+  const byLine = new Map<BusinessLine, EconomicsOrder[]>(
     BUSINESS_LINES.map((l) => [l, []])
   );
 
   for (const r of rows) {
     byLine.get(lineOf(r))?.push({
+      id: r.id,
+      orderNumber: r.order_number ?? null,
+      subtotalCents: r.subtotal_price_cents === null || r.subtotal_price_cents === undefined ? null : Number(r.subtotal_price_cents),
+      discountCodes: Array.isArray(r.discount_codes) ? r.discount_codes.filter((c): c is string => typeof c === "string") : [],
+      orderedAt: r.ordered_at,
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),
@@ -329,6 +360,10 @@ export async function getNewCustomerOrders(
     per_order AS (
       SELECT
         o.id,
+        o.order_number,
+        o.subtotal_price_cents,
+        o.discount_codes,
+        to_char(o.order_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS ordered_at,
         o.total_price_cents,
         COALESCE(o.total_tax_cents, 0) AS total_tax_cents,
         ${LINE_FLAGS},
@@ -357,6 +392,11 @@ export async function getNewCustomerOrders(
       whole_history_held
     FROM per_order
   `)) as unknown as Array<{
+    id: string;
+    order_number: string | null;
+    subtotal_price_cents: number | null;
+    discount_codes: unknown;
+    ordered_at: string;
     has_subscription_type: boolean;
     has_untyped_without_inventory: boolean;
     has_tracked_inventory: boolean;
@@ -370,7 +410,7 @@ export async function getNewCustomerOrders(
     whole_history_held: boolean | null;
   }>;
 
-  const byLine = new Map<BusinessLine, OrderForEconomics[]>(
+  const byLine = new Map<BusinessLine, EconomicsOrder[]>(
     BUSINESS_LINES.map((l) => [l, []])
   );
   let undecidableOrders = 0;
@@ -382,6 +422,11 @@ export async function getNewCustomerOrders(
     }
     if (!r.whole_history_held) continue;
     byLine.get(lineOf(r))?.push({
+      id: r.id,
+      orderNumber: r.order_number ?? null,
+      subtotalCents: r.subtotal_price_cents === null || r.subtotal_price_cents === undefined ? null : Number(r.subtotal_price_cents),
+      discountCodes: Array.isArray(r.discount_codes) ? r.discount_codes.filter((c): c is string => typeof c === "string") : [],
+      orderedAt: r.ordered_at,
       totalPriceCents: Number(r.total_price_cents),
       totalTaxCents: Number(r.total_tax_cents),
       productCostCents: Number(r.product_cost_cents),

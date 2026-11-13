@@ -109,6 +109,13 @@ export function getPhase1Tasks(): TaskDefinition[] {
       enabled: true,
     },
     {
+      id: "shiphero-sync",
+      name: "ShipHero Shipments and Label Costs",
+      // After the invoices; re-reads the last 7 days for late labels and voids.
+      schedule: { type: "daily", hour: 15, minute: 45 },
+      enabled: true,
+    },
+    {
       id: "meta-watch",
       name: "Meta Ad Account Watch",
       // Fraud watch. Also runs once at worker startup, so a deploy never
@@ -159,6 +166,7 @@ export function getTaskHandlerMap(): Record<string, string> {
     "social-sync": "sync:social",
     "footage-sync": "sync:footage",
     "invoices-sync": "sync:invoices",
+    "shiphero-sync": "sync:shiphero",
     "products-sync": "sync:products",
     "gsc-sync": "sync:gsc",
     "sessions-sync": "sync:sessions",

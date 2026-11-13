@@ -435,3 +435,44 @@ describe("bandMargins", () => {
     expect(v.reason).toMatch(/fulfilment/i);
   });
 });
+
+describe("bandMargins with each order's own postage", () => {
+  const o = (totalCents: number, over: Partial<OrderForEconomics> = {}) =>
+    order({ totalPriceCents: totalCents, totalTaxCents: 0, productCostCents: 0, lineRevenueCents: totalCents, costedLineRevenueCents: totalCents, shipped: true, ...over });
+  const AVERAGE: FulfilmentRates = { handling: { perShippedOrderCents: 300, basis: "measured" }, postage: { perShippedOrderCents: 700, basis: "measured" } };
+  const band = (bands: ReturnType<typeof bandMargins>, label: string) => bands.find((b) => b.label === label)!;
+
+  it("uses an order's actual label cost where it is known", () => {
+    const b = band(bandMargins([o(6500, { postage: { cents: 1200, source: "shiphero" } })], RATES, AVERAGE), "$60-70");
+    expect(b.fulfilmentCents).toBe(300 + 1200);
+    expect(b).toMatchObject({ postageKnownOrders: 1, postageFallbackOrders: 0 });
+  });
+
+  it("falls back to the average only for orders whose postage is unknown, and counts them", () => {
+    const b = band(bandMargins([o(6500, { postage: { cents: 1200, source: "invoice" } }), o(6600)], RATES, AVERAGE), "$60-70");
+    expect(b.fulfilmentCents).toBe(300 * 2 + 1200 + 700);
+    expect(b).toMatchObject({ postageKnownOrders: 1, postageFallbackOrders: 1 });
+  });
+
+  it("counts an unknown with no average to fall back on as unknown, not as free", () => {
+    const b = band(bandMargins([o(6500)], RATES, { handling: AVERAGE.handling, postage: null }), "$60-70");
+    expect(b).toMatchObject({ postageKnownOrders: 0, postageFallbackOrders: 0, postageUnknownOrders: 1 });
+  });
+
+  it("charges no postage to an order that ships nothing", () => {
+    const b = band(bandMargins([o(6500, { shipped: false })], RATES, AVERAGE), "$60-70");
+    expect(b.fulfilmentCents).toBe(0);
+    expect(b).toMatchObject({ postageKnownOrders: 0, postageFallbackOrders: 0, postageUnknownOrders: 0 });
+  });
+
+  it("drops the provisional warning once both bands' postage is measured order by order", () => {
+    const known = { postage: { cents: 900, source: "shiphero" as const } };
+    const v = thresholdVerdict(bandMargins([o(5500, known), o(6500, known)], RATES, AVERAGE));
+    expect(v.reason).not.toMatch(/PROVISIONAL/);
+  });
+
+  it("stays provisional, with the share on averages, while either band falls back", () => {
+    const v = thresholdVerdict(bandMargins([o(5500, { postage: { cents: 900, source: "shiphero" } }), o(6500)], RATES, AVERAGE));
+    expect(v.reason).toMatch(/PROVISIONAL.*1 of 2 orders.*average/);
+  });
+});

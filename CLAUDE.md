@@ -209,6 +209,44 @@ wins (`superseded` on the other), whatever order they are read in. Returns
 postage counts as handling; a category the model does not place is named in
 its notes rather than dropped.
 
+**Per-label postage now comes from ShipHero** (`sync:shiphero`, 15:45 UTC,
+`!sync shiphero [backfill]`), the system Evobox runs. The Public API is
+GraphQL; `integrations/shiphero-api.ts` is **read-only by construction**:
+fixed query documents, no generic query method, every document checked to be
+a `query`, asserted in tests, and nothing in `src/mcp` imports it. A
+third-party developer user's refresh token (`SHIPHERO_REFRESH_TOKEN`) is
+exchanged for a 28-day access token held in memory. Credits are 2,002 at 30
+a second on this account (the docs say 4,004 at 60); a code-30 error is
+waited out for its `time_remaining`, a 429 backed off, and both logged.
+
+- `shiphero_shipments` / `shiphero_labels`, upserted by ShipHero id. Daily
+  re-reads the last 7 days (late labels, voids); the backfill starts
+  2025-07-22. Windows are 7 days or less, every page read. **No customer
+  field is selected or stored** (asserted).
+- **A 0.00 label is NULL, `cost_basis = 'zero-reported'`**, never free — every
+  DHL eCommerce label reads so. Weights and dimensions arrive as strings with
+  units; an unrecognised unit is NULL.
+- An order's postage counts labels whose status is in
+  `INCLUDED_LABEL_STATUSES` (only `valid` seen) and that are not refunded;
+  other statuses are excluded and listed by `shiphero_coverage`.
+- **Precedence** (`order-postage.ts`): the shipment export where every row
+  of the order is known, else ShipHero where every included label is known,
+  else unknown. Order money is Shopify's: ShipHero's order subtotal disagrees
+  (RH361008: 176.00 vs 132.00).
+- `shiphero_coverage` reconciles the two sources where both know an order.
+  The shipment export is itself ShipHero's CSV, so agreement there says the
+  sync reads what the CSV did, not that `cost` is what Evobox bills; the
+  weekly Shipping invoices are the check on that.
+- `margin_by_order_value` prices each order on its own label where known and
+  counts the fallbacks to the average per band; `free_shipping_threshold`
+  bands on SUBTOTAL (what the threshold is set on — the older tool bands on
+  the total, shipping included); `orders_shipping_over_share` lists orders
+  whose label exceeds a share of net revenue, by discount code.
+- ShipHero's `bills` and `fulfillment_invoices` refuse this token (error 7,
+  "Billing: Read"); each sync records a `probe:shiphero-billing` run. If it
+  is granted, `FulfillmentInvoiceShippingItem` carries shipping rate and fees
+  per label and could replace the hand-imported invoices — not built.
+
 Statlas (CTC) has no API. Its data is imported manually.
 
 ### Subscription data — read this before counting subscribers
@@ -649,6 +687,7 @@ src/
 │   ├── video-frames.ts     # ffmpeg: length, cuts, loudness, frames, contact sheets
 │   ├── media-download.ts   # Fetching Instagram media for analysis
 │   ├── reel-downloader.ts  # RapidAPI reel downloader (reels Instagram withholds)
+│   ├── shiphero-api.ts     # ShipHero Public API, read-only: shipments and label costs
 │   └── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 ├── ai/                     # LLM orchestration layer
 │   ├── guardrails.ts       # Output validation, fail-closed checks

@@ -70,6 +70,11 @@ const THREE_COHORTS: SubscriptionFact[] = [
 ];
 
 const order = (totalPriceCents: number) => ({
+  id: `gid://shopify/Order/${totalPriceCents}`,
+  orderNumber: null,
+  subtotalCents: totalPriceCents,
+  discountCodes: [],
+  orderedAt: "2026-10-01",
   totalPriceCents,
   totalTaxCents: 0,
   productCostCents: 0,

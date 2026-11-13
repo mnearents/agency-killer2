@@ -442,6 +442,13 @@
       "when": 1794508806009,
       "tag": "0062_retry_cut_off_visuals",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794605706751,
+      "tag": "0063_shiphero",
+      "breakpoints": true
     }
   ]
 }

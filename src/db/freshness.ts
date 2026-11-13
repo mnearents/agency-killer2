@@ -25,6 +25,7 @@ import {
   gscDaily,
   webSessions,
   fulfilmentInvoices,
+  shipheroLabels,
 } from "./schema";
 import { isFailure, type SyncOutcome } from "@/domain/meta/outcomes";
 import { SYNC_TASK } from "@/domain/meta/sync";
@@ -180,6 +181,8 @@ export const FRESHNESS_SOURCES = [
     // after the period closes, so three weeks past the last covered day means
     // one was missed — and the margin tools are running on old averages.
     { source: "3PL and carrier invoices", table: fulfilmentInvoices, name: "fulfilment_invoices", column: fulfilmentInvoices.periodEnd, basis: "latest-data" as const, staleAfterHours: 21 * 24, task: "sync:invoices" },
+    // Per-label postage from ShipHero, re-read daily over the last 7 days.
+    { source: "ShipHero shipping labels", table: shipheroLabels, name: "shiphero_labels", column: shipheroLabels.syncedAt, basis: "synced" as const, staleAfterHours: DAILY_SYNC_STALE_HOURS, task: "sync:shiphero" },
     { source: "Pilot notes", table: pilotNotes, name: "pilot_notes", column: pilotNotes.createdAt, basis: "authored" as const, staleAfterHours: 0 },
     // Authored, like pilot notes: an empty experiments table means nobody ran
     // an experiment, not that a feed died.
