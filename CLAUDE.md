@@ -119,9 +119,16 @@ Ground label — 1,726 of 2,508 over thirteen months — exports as `Label Cost 
 0.00`. BPM is not free; those bill to a separate DHL eCommerce account. They
 are stored with `label_cost_cents = NULL` and `postage_basis = 'unbilled'`,
 never as zero, and `postageCoverage` returns the share that is real (31.0%) as
-a value so no caller can quote the cost without it.
+a value so no caller can quote the cost without it. **This is history only:**
+DHL is no longer used, so every label since the switch below carries its cost
+(320 of 321 through 2026-11-15; the one gap a manual fulfilment).
 
-**Fulfilment moved to USPS Media Mail on 2026-09-22.** Media Mail is flat —
+**Fulfilment moved to USPS Media Mail at the end of September 2026** — the
+last uncosted DHL label is 2026-09-23, the first Media Mail labels the same
+day, full volume from 09-28 (ShipHero). Media Mail-eligible orders ship USPS
+Media Mail; **everything else ships as ShipHero's `API` carrier** — rate
+shopping that picks the cheapest service for the package's dimensions and
+weight, so it is standard shipping, not one carrier. Media Mail is flat —
 no zones — and applies no dimensional weight, which retires both inputs that
 were outstanding from DHL. Repricing the 1,726 BPM shipments: $12,005 against a
 DHL band of $12,708-$18,441, with the saving concentrated on wall calendars
@@ -237,8 +244,9 @@ both logged.
   re-reads the last 7 days (late labels, voids); the backfill starts
   2025-07-22. Windows are 7 days or less, every page read. **No customer
   field is selected or stored** (asserted).
-- **A 0.00 label is NULL, `cost_basis = 'zero-reported'`**, never free — every
-  DHL eCommerce label reads so. Weights and dimensions arrive as strings with
+- **A 0.00 label is NULL, `cost_basis = 'zero-reported'`**, never free — DHL
+  eCommerce labels read so from about August 2025 until DHL was dropped in
+  September 2026 (July 2025's mostly carry a cost). Weights and dimensions arrive as strings with
   units; an unrecognised unit is NULL.
 - An order's postage counts labels whose status is in
   `INCLUDED_LABEL_STATUSES` (only `valid` seen) and that are not refunded;
