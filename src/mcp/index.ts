@@ -61,11 +61,12 @@ async function main() {
     console.error("[mcp] OPENAI_API_KEY not set — kb_search will fall back to literal text matching");
   }
 
-  // The RAD portal's email-metrics post. Absent, the tool says the token is
-  // wrong or missing; the token itself is held by the client and never logged.
+  // The RAD portal's email metrics. Absent, both tools say it is not
+  // configured; the token itself is held by the client and never logged.
+  const portalUrl = process.env.RAD_PORTAL_URL;
   const metricsToken = process.env.METRICS_INGEST_TOKEN;
-  if (!metricsToken) {
-    console.error("[mcp] METRICS_INGEST_TOKEN not set — email_metrics_post will be unavailable");
+  if (!portalUrl || !metricsToken) {
+    console.error("[mcp] RAD_PORTAL_URL or METRICS_INGEST_TOKEN not set — the email metrics tools will be unavailable");
   }
 
   const server = createMcpServer({
@@ -74,7 +75,7 @@ async function main() {
     analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
     attentive: attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
     embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
-    portalMetrics: metricsToken ? createPortalMetricsClient({ token: metricsToken }) : undefined,
+    portalMetrics: portalUrl && metricsToken ? createPortalMetricsClient({ baseUrl: portalUrl, token: metricsToken }) : undefined,
   });
 
   await server.connect(new StdioServerTransport());

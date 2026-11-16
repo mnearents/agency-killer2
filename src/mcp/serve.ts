@@ -5,7 +5,8 @@
  * It serves people WorkOS AuthKit has signed in and MCP_ALLOWED_USERS names.
  * Read-only tools only, unless MCP_WRITE_TOOLS is exactly `on` — then every
  * tool, including the segment push when ATTENTIVE_API_KEY is also set and
- * the RAD portal's email-metrics post when METRICS_INGEST_TOKEN is. The
+ * the RAD portal's email-metrics post when RAD_PORTAL_URL and
+ * METRICS_INGEST_TOKEN are (the read, email_metrics_get, needs only those). The
  * worker still holds no Attentive key and imports nothing from here, so no
  * cron can push a segment whatever this service is configured to do.
  */
@@ -47,7 +48,11 @@ function main() {
   const analyticsUrl = process.env.ANALYTICS_DATABASE_URL;
   const openaiKey = process.env.OPENAI_API_KEY;
   const attentiveKey = process.env.ATTENTIVE_API_KEY;
-  // Held by the portal client only: never logged, never in a tool's reach.
+  // The RAD portal: a read tool and a write tool share one client, so it is
+  // built whenever both are set; the write tool is gated by name with the
+  // rest. The token is held by the client only: never logged, never in a
+  // tool's reach.
+  const portalUrl = process.env.RAD_PORTAL_URL;
   const metricsToken = process.env.METRICS_INGEST_TOKEN;
   const allowWrites = process.env.MCP_WRITE_TOOLS === "on";
 
@@ -61,7 +66,7 @@ function main() {
       analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
       embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
       attentive: allowWrites && attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
-      portalMetrics: allowWrites && metricsToken ? createPortalMetricsClient({ token: metricsToken }) : undefined,
+      portalMetrics: portalUrl && metricsToken ? createPortalMetricsClient({ baseUrl: portalUrl, token: metricsToken }) : undefined,
     },
     allowWrites,
     async fetchAuthServerMetadata() {
@@ -114,7 +119,7 @@ function main() {
 
   const port = Number(process.env.PORT ?? 8080);
   server.listen(port, () => {
-    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), ${allowWrites ? `write tools ON${attentiveKey ? "" : " (segment push unavailable: no ATTENTIVE_API_KEY)"}${metricsToken ? "" : " (email metrics post unavailable: no METRICS_INGEST_TOKEN)"}` : "read-only tools only"}`);
+    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), ${allowWrites ? `write tools ON${attentiveKey ? "" : " (segment push unavailable: no ATTENTIVE_API_KEY)"}` : "read-only tools only"}${portalUrl && metricsToken ? "" : ", RAD portal email metrics not configured (RAD_PORTAL_URL and METRICS_INGEST_TOKEN)"}`);
   });
 }
 

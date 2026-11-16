@@ -336,3 +336,23 @@ describe("rows with figures", () => {
     expect((parseArgs({ rows: [row({ revenue: 0.1 + 0.2 })] }, schema).rows as Array<{ revenue: number }>)[0].revenue).toBe(0.3);
   });
 });
+
+describe("months arguments", () => {
+  const schema = { months: { type: "months" as const, maxItems: 3 } };
+
+  it("takes a list of YYYY-MM, or the same as one comma-separated string", () => {
+    expect(parseArgs({ months: ["2026-09", "2026-10"] }, schema).months).toEqual(["2026-09", "2026-10"]);
+    expect(parseArgs({ months: "2026-09, 2026-10" }, schema).months).toEqual(["2026-09", "2026-10"]);
+  });
+
+  it("refuses a month that is not a real YYYY-MM, naming it", () => {
+    expect(() => parseArgs({ months: ["2026-10", "2026-13"] }, schema)).toThrow(/"months\[1\]" must be a month in YYYY-MM format, got: "2026-13"/);
+    expect(() => parseArgs({ months: "October" }, schema)).toThrow(/months\[0\]/);
+  });
+
+  it("refuses an empty list, too many months and anything else", () => {
+    expect(() => parseArgs({ months: [] }, schema)).toThrow(/at least one month/);
+    expect(() => parseArgs({ months: ["2026-01", "2026-02", "2026-03", "2026-04"] }, schema)).toThrow(/at most 3/);
+    expect(() => parseArgs({ months: 202610 }, schema)).toThrow(/list of months/);
+  });
+});

@@ -202,7 +202,7 @@ import {
   type DraftType,
 } from "@/domain/drafts/drafts";
 import type { AttentiveWriteClient } from "@/integrations/attentive-write";
-import { EMAIL_JOURNEYS, type EmailMetricRow, type PortalMetricsClient } from "@/integrations/portal-metrics";
+import { EMAIL_JOURNEYS, type EmailMetricRow, type PortalFailure, type PortalMetricsClient } from "@/integrations/portal-metrics";
 import { computePushPlan, planToken, canPush } from "@/domain/segments/push";
 import {
   getSegmentMembers,
@@ -280,8 +280,9 @@ export interface McpToolContext {
   embeddings?: EmbeddingClient;
   /**
    * The RAD portal's email-metrics client, holding METRICS_INGEST_TOKEN.
-   * Absent when the token is unset, in which case `email_metrics_post` says
-   * the token is wrong or missing rather than pretending to store anything.
+   * Absent unless RAD_PORTAL_URL and the token are both set, in which case
+   * the email-metrics tools say the portal is not configured rather than
+   * pretending to store or read anything.
    */
   portalMetrics?: PortalMetricsClient;
   /**
@@ -3510,20 +3511,50 @@ const segmentPush: McpTool = {
 };
 
 /**
- * The second tool that reaches outside this system (after `segment_push`):
- * it writes to the RAD portal, a separate app, because Claude's own workspace
- * cannot reach it. The ingest token stays in the client on this server; the
- * tool never sees it, so no argument, result or log line can carry it.
+ * The second and third tools that reach outside this system (after
+ * `segment_push`): the RAD portal, a separate app, because Claude's own
+ * workspace cannot reach it. The ingest token stays in the client on this
+ * server; the tools never see it, so no argument, result or log line can
+ * carry it. The portal's validation is the authority; the checks here only
+ * stop a bad row from being sent at all.
  */
+const PORTAL_NOT_CONFIGURED =
+  "The RAD portal is not configured on this server: RAD_PORTAL_URL and METRICS_INGEST_TOKEN must both be set on the mcp service. Nothing was sent.";
+
+function portalFailure(result: PortalFailure, action: "store" | "read"): string {
+  switch (result.kind) {
+    case "token":
+      return `The portal ingest token is wrong or missing (the portal answered ${result.status}${result.status === 503 ? ": it has no token configured" : ": it refused this server's"}). ` +
+        `${action === "store" ? "Nothing was stored. " : ""}Not retried. METRICS_INGEST_TOKEN on the mcp service must match the portal's.`;
+    case "rejected":
+      return action === "store" ? `The RAD portal refused the rows and stored nothing: ${result.message}` : `The RAD portal refused the request: ${result.message}`;
+    case "network":
+      return action === "store"
+        ? `Could not reach the RAD portal: ${result.message}. It may or may not have stored the rows; not retried. Check with email_metrics_get before sending again (a resend replaces, so it is safe).`
+        : `Could not reach the RAD portal: ${result.message}. Not retried.`;
+    case "unexpected":
+      return `The RAD portal answered ${result.status}: ${result.message}. ${action === "store" ? "Nothing is known to be stored; not" : "Not"} retried.`;
+  }
+}
+
+/** The `count` months ending with `now`'s, as YYYY-MM, oldest first. */
+function recentMonths(now: Date, count: number): string[] {
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (count - 1 - i), 1));
+    return d.toISOString().slice(0, 7);
+  });
+}
+
 const emailMetricsPost: McpTool = {
   name: "email_metrics_post",
   title: "Store monthly email-journey figures in the RAD portal",
   description:
-    "WRITES to the RAD portal (notify.radandhappy.com): stores monthly Attentive email-journey figures, which the portal's Analytics page shows. " +
+    "WRITES to the RAD portal: stores monthly Attentive email-journey figures, which the portal's Analytics page shows. " +
     "Each row is one month and journey: `month` YYYY-MM, `journey` (failed_payment, pages_dropped, rad_welcome, yearly_upcoming_renewal), `delivered`, `opened`, `clicked` (whole numbers) and `attributed_revenue` (dollars, at most 2 decimal places). " +
     "Re-sending a month + journey REPLACES the row the portal holds, so a corrected figure is sent again rather than adjusted. " +
     "Every row is checked before anything is sent; one bad row sends nothing and the error names it. The portal checks them again and stores all or none. " +
-    "Record the figures Attentive reports; never estimate one. There is no read-back here: the portal has no read this server can use, so confirm on its Analytics page.",
+    "Returns `stored` and `rows`, the posted rows as the portal read them back (`rows` is null, with `readBack` saying why, if that read failed — the store still happened). " +
+    "Record the figures Attentive reports; never estimate one.",
   readOnly: false,
   schema: {
     rows: {
@@ -3549,23 +3580,34 @@ const emailMetricsPost: McpTool = {
       if (seen.has(key)) return { error: `rows[${i}]: a second ${r.journey} row for ${r.month}. Send one row per month and journey. Nothing was sent.` };
       seen.add(key);
     }
+    if (!ctx.portalMetrics) return { error: PORTAL_NOT_CONFIGURED };
 
-    const tokenError = (why: string) =>
-      `The portal ingest token is wrong or missing on the MCP server (${why}). Nothing was stored, and nothing was retried. Matt needs to set METRICS_INGEST_TOKEN on the mcp service to the portal's value.`;
-    if (!ctx.portalMetrics) return { error: tokenError("METRICS_INGEST_TOKEN is not set") };
+    const posted = await ctx.portalMetrics.postEmailMetrics(rows);
+    if (!posted.ok) return { error: portalFailure(posted, "store") };
 
-    const result = await ctx.portalMetrics.postEmailMetrics(rows);
-    if (result.ok) return { ...result.body, rows };
-    switch (result.kind) {
-      case "token":
-        return { error: tokenError(result.status === 503 ? "the portal answered 503: it has no token configured" : "the portal answered 401: it refused this one") };
-      case "rejected":
-        return { error: `The RAD portal refused the rows and stored nothing: ${result.message}` };
-      case "network":
-        return { error: `Could not reach the RAD portal: ${result.message}. It may or may not have stored the rows; not retried. Check its Analytics page before sending again (a resend replaces, so it is safe).` };
-      case "unexpected":
-        return { error: `The RAD portal answered ${result.status}: ${result.message}. Nothing is known to be stored; not retried.` };
-    }
+    const back = await ctx.portalMetrics.getEmailMetrics([...new Set(rows.map((r) => r.month))].sort());
+    if (!back.ok) return { stored: posted.stored, rows: null, readBack: `Stored, but the rows could not be read back: ${portalFailure(back, "read")}` };
+    return { stored: posted.stored, rows: back.rows.filter((r) => seen.has(`${r.month}|${r.journey}`)) };
+  },
+};
+
+const emailMetricsGet: McpTool = {
+  name: "email_metrics_get",
+  title: "Read monthly email-journey figures from the RAD portal",
+  description:
+    "Reads the monthly Attentive email-journey figures stored in the RAD portal — to check what `email_metrics_post` stored, or what is there before sending. " +
+    "`months` is a list of YYYY-MM; the default is this calendar month and the one before. " +
+    "Each row has `month`, `journey`, `delivered`, `opened`, `clicked`, `attributedRevenue` (dollars) and `updatedAt` (when it was last written). A month + journey with no row was never stored.",
+  readOnly: true,
+  schema: {
+    months: { type: "months", maxItems: 60 },
+  },
+  async run(ctx, args) {
+    if (!ctx.portalMetrics) return { error: PORTAL_NOT_CONFIGURED };
+    const months = (args.months as string[] | undefined) ?? recentMonths(ctx.now(), 2);
+    const result = await ctx.portalMetrics.getEmailMetrics(months);
+    if (!result.ok) return { error: portalFailure(result, "read") };
+    return { months, rows: result.rows };
   },
 };
 
@@ -4710,6 +4752,7 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPush,
   segmentPushHistory,
   emailMetricsPost,
+  emailMetricsGet,
   unitEconomics,
   marginByOrderValue,
   freeShippingThreshold,
@@ -4762,6 +4805,13 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
         break;
       case "enum":
         properties[key] = { type: "string", enum: [...spec.values] };
+        break;
+      case "months":
+        properties[key] = {
+          type: "array",
+          maxItems: spec.maxItems,
+          items: { type: "string", pattern: "^\\d{4}-(0[1-9]|1[0-2])$", description: "YYYY-MM" },
+        };
         break;
       case "rows":
         properties[key] = {

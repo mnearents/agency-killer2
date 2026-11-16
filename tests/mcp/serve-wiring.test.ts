@@ -37,16 +37,22 @@ describe("hosted MCP entry point", () => {
     expect(source).toMatch(/attentive: allowWrites && attentiveKey \? createAttentiveWriteClient/);
   });
 
-  // The portal post leaves this system too: a client only when writes are on.
-  it("builds the RAD portal client only when writes are on", () => {
-    expect(source).toMatch(/portalMetrics: allowWrites && metricsToken \? createPortalMetricsClient\(\{ token: metricsToken \}\)/);
+  // One client serves the read and the write; email_metrics_post is gated by
+  // name with every other writer (hosted.test.ts), so it needs both settings
+  // and MCP_WRITE_TOOLS.
+  it("builds the RAD portal client from RAD_PORTAL_URL and the ingest token, only when both are set", () => {
+    expect(source).toMatch(/portalMetrics: portalUrl && metricsToken \? createPortalMetricsClient\(\{ baseUrl: portalUrl, token: metricsToken \}\) : undefined/);
   });
 
   // The token may be read, tested for presence and handed to the client —
   // nothing else, so no log line or response can be built from it.
   it("uses the ingest token only to build the portal client", () => {
     const uses = source.split("\n").filter((l) => /metricsToken|METRICS_INGEST_TOKEN/.test(l) && !/^\s*(\/\/|\*)/.test(l));
-    const allowed = [/const metricsToken = process\.env\.METRICS_INGEST_TOKEN;/, /allowWrites && metricsToken \? createPortalMetricsClient\(\{ token: metricsToken \}\)/, /\$\{metricsToken \? "" : " \(email metrics post unavailable: no METRICS_INGEST_TOKEN\)"\}/];
+    const allowed = [
+      /const metricsToken = process\.env\.METRICS_INGEST_TOKEN;/,
+      /portalUrl && metricsToken \? createPortalMetricsClient\(\{ baseUrl: portalUrl, token: metricsToken \}\)/,
+      /\$\{portalUrl && metricsToken \? "" : ", RAD portal email metrics not configured \(RAD_PORTAL_URL and METRICS_INGEST_TOKEN\)"\}/,
+    ];
     expect(uses.length).toBeGreaterThan(0);
     for (const line of uses) expect(allowed.some((re) => re.test(line)), line.trim()).toBe(true);
   });

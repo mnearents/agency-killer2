@@ -555,17 +555,19 @@ Rules for tools in `src/mcp/`:
   needs `correction:true` and a reason, which is recorded. Without that path,
   protecting history would have made a data-entry error permanent — and with
   it, the way back to editing content is two deliberate steps, not one flag.
-- **Two tools reach an external service.** `segment_push` (Attentive) and
-  `email_metrics_post`, which POSTs monthly Attentive email-journey figures
-  (delivered, opened, clicked, attributed revenue per journey) to the RAD
-  portal's `/api/metrics/email` at notify.radandhappy.com, the rad-portal
-  repo, because Claude's own workspace cannot reach it. The portal validates
-  again, stores all or none, and replaces a month + journey it holds.
-  `METRICS_INGEST_TOKEN` lives on the `mcp` service, held by
-  `integrations/portal-metrics.ts` and scrubbed from every result; the tool
-  never sees it. Without it, or on the portal's 401/503, the tool says the
-  token is wrong or missing. Nothing is retried. There is no read-back: the
-  portal's only read is behind its dashboard login.
+- **Three tools reach an external service.** `segment_push` (Attentive),
+  and `email_metrics_post` / `email_metrics_get`, which store and read
+  monthly Attentive email-journey figures (delivered, opened, clicked,
+  attributed revenue per journey) in the RAD portal — the rad-portal repo,
+  its own service and database — over its `/api/metrics/email`, because
+  Claude's own workspace cannot reach it. The portal validates every row,
+  stores all or none and replaces a month + journey it holds; its 400 names
+  the row and is passed through. A post is read back and returned as stored
+  (`rows: null` with `readBack` if that read fails — the store still
+  happened). `RAD_PORTAL_URL` and `METRICS_INGEST_TOKEN` are on the `mcp`
+  service; without both, both tools say the portal is not configured. The
+  token is held by `integrations/portal-metrics.ts` and scrubbed from every
+  result; the tools never see it. Nothing is retried.
 
 Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -720,7 +722,7 @@ src/
 │   ├── media-download.ts   # Fetching Instagram media for analysis
 │   ├── reel-downloader.ts  # RapidAPI reel downloader (reels Instagram withholds)
 │   ├── shiphero-api.ts     # ShipHero Public API, read-only: shipments and label costs
-│   ├── portal-metrics.ts   # RAD portal: posts monthly email-journey figures
+│   ├── portal-metrics.ts   # RAD portal: stores and reads monthly email-journey figures
 │   └── attentive-write.ts  # Attentive REST API (segment push, eligibility)
 ├── ai/                     # LLM orchestration layer
 │   ├── guardrails.ts       # Output validation, fail-closed checks

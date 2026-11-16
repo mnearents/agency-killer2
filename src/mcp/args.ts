@@ -36,7 +36,12 @@ export type ArgSpec =
    * is held to the same rules as the arguments themselves: an undeclared
    * field is an error, a required one may not be missing or blank.
    */
-  | { type: "rows"; fields: Record<string, RowFieldSpec>; maxRows: number; required?: boolean };
+  | { type: "rows"; fields: Record<string, RowFieldSpec>; maxRows: number; required?: boolean }
+  /**
+   * A list of YYYY-MM months. A comma-separated string is taken too, because
+   * models emit one often enough that refusing it would be noise.
+   */
+  | { type: "months"; maxItems: number; required?: boolean };
 
 export type RowFieldSpec =
   | { type: "string"; required?: boolean; maxLength?: number }
@@ -57,7 +62,7 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export type ArgSchema = Record<string, ArgSpec>;
 
-export type ParsedArgs = Record<string, string | number | boolean | Date | Row[]>;
+export type ParsedArgs = Record<string, string | number | boolean | Date | Row[] | string[]>;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -168,7 +173,19 @@ function parseRows(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "ro
   });
 }
 
-function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date | Row[] {
+function parseMonths(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "months" }>): string[] {
+  const items = typeof raw === "string" ? raw.split(",") : raw;
+  if (!Array.isArray(items)) throw new McpArgumentError(`"${key}" must be a list of months in YYYY-MM format, got: ${JSON.stringify(raw)}`);
+  if (items.length === 0) throw new McpArgumentError(`"${key}" needs at least one month`);
+  if (items.length > spec.maxItems) throw new McpArgumentError(`"${key}" may have at most ${spec.maxItems} months, got ${items.length}`);
+  return items.map((item, i) => {
+    const text = typeof item === "string" ? item.trim() : "";
+    if (!MONTH_PATTERN.test(text)) throw new McpArgumentError(`"${key}[${i}]" must be a month in YYYY-MM format, got: ${JSON.stringify(item)}`);
+    return text;
+  });
+}
+
+function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date | Row[] | string[] {
   switch (spec.type) {
     case "string":
       if (typeof raw !== "string") {
@@ -195,6 +212,8 @@ function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | b
       return parseDate(key, raw);
     case "rows":
       return parseRows(key, raw, spec);
+    case "months":
+      return parseMonths(key, raw, spec);
   }
 }
 
