@@ -10,7 +10,7 @@ import type { DropboxFileEntry } from "@/integrations/dropbox";
 
 const file = (over: Partial<DropboxFileEntry> = {}): DropboxFileEntry => ({
   id: "id:clip", path: "/rad/footage/clip.mp4", name: "clip.mp4", rev: "r1", contentHash: "h1",
-  size: 1000, isFolder: false, ...over,
+  displayPath: "/RAD/Footage/clip.mp4", size: 1000, modified: null, isFolder: false, ...over,
 });
 
 const stored = (over: Partial<StoredFootage> = {}): StoredFootage => ({

@@ -178,6 +178,8 @@ When the user asks a question:
               "• `!sync inventory` — Pull the latest stock levels from Shopify",
               "• `!sync footage` — Transcribe new videos in Dropbox /RAD/Footage and tidy up moved or deleted ones",
               "• `!sync footage retry` — Same, and try again any videos that failed to transcribe three times",
+              "• `!sync photos` — Index new or changed photos in Dropbox /RAD/Footage",
+              "• `!sync photos describe [N]` — Same, and describe photos not yet described (at most N; costs about a cent each)",
               "• `!sync invoices` — Import new Evobox and postage invoices from the Drive folder",
               "• `!sync shiphero [backfill]` — Read ShipHero's shipments and label costs (last 7 days; `backfill` reads from 2025-07-22)",
               "• `!help` — Show this message",

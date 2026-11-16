@@ -21,9 +21,11 @@ import {
   index,
   vector,
   customType,
+  serial,
+  boolean,
 } from "drizzle-orm/pg-core";
 
-/** Raw bytes — a reel's contact sheet. */
+/** Raw bytes — a reel's contact sheet, a photo's thumbnail. */
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 // ─── Meta Ads ──────────────────────────────────────────────────────────
@@ -1565,6 +1567,116 @@ export const footage = pgTable(
 
 export type FootageRow = typeof footage.$inferSelect;
 export type NewFootageRow = typeof footage.$inferInsert;
+
+// ─── Photos ──────────────────────────────────────────────────────────
+
+/**
+ * Photos in Dropbox `/RAD/Footage` (.jpg, .jpeg, .png, .webp), one row per
+ * file, so Claude can pick pictures for emails and ads.
+ *
+ * Identified by Dropbox file ID, like footage: a move or rename updates the
+ * row, and only a changed content hash is read again. `id` is the short
+ * number the MCP tools and contact-sheet labels use.
+ *
+ * The same picture often exists at several sizes ("X Large.jpeg" beside
+ * "too big/X.jpg"), so files fall into version groups and the largest is the
+ * master. Only a master of kind `source` is described, and its description
+ * stands for the group.
+ *
+ * **Corrections are separate columns and the sync never writes them.**
+ * `corrected_*` and `do_not_use` come from `photo_tag_set`; what a photo is
+ * taken to show is the correction where there is one, else the model's.
+ */
+export const photos = pgTable(
+  "photos",
+  {
+    id: serial("id").primaryKey(),
+    dropboxId: text("dropbox_id").notNull().unique("photos_dropbox_id_unique"),
+    /** As Dropbox displays it, capitals kept. */
+    path: text("path").notNull(),
+    /** The folder under the footage root, e.g. "Planners/2027 planner pictures/8x10 dated". */
+    folder: text("folder").notNull(),
+    name: text("name").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    modifiedAt: timestamp("modified_at", { withTimezone: true }),
+    /** source | screenshot | old-graphic, from the path and name. */
+    kind: text("kind").notNull(),
+    /** The path has a folder named "used". */
+    used: boolean("used").notNull(),
+
+    /** Version group: files of one picture at different sizes. */
+    groupKey: text("group_key").notNull(),
+    isMaster: boolean("is_master").notNull().default(false),
+    /** Any file in the group is under a "used" folder. */
+    groupUsed: boolean("group_used").notNull().default(false),
+
+    /** As displayed, EXIF rotation applied. Null until the file has been read. */
+    width: integer("width"),
+    height: integer("height"),
+    megapixels: real("megapixels"),
+    /** portrait | landscape | square */
+    orientation: text("orientation"),
+    /** EXIF DateTimeOriginal: the camera's clock, no time zone. */
+    takenAt: timestamp("taken_at", { withTimezone: false, mode: "string" }),
+    camera: text("camera"),
+    /** A small JPEG (longest side 384) for contact sheets, so a sheet never downloads 24 originals. */
+    thumbnail: bytea("thumbnail"),
+    /** The content hash the dimensions, EXIF and thumbnail were read from. */
+    inspectedHash: text("inspected_hash"),
+    /** ok | error */
+    inspectStatus: text("inspect_status"),
+    inspectAttempts: integer("inspect_attempts").notNull().default(0),
+    inspectError: text("inspect_error"),
+
+    /** What the vision model saw. Set on group masters of kind `source` only. */
+    description: text("description"),
+    products: jsonb("products").$type<string[]>(),
+    shotType: text("shot_type"),
+    people: jsonb("people").$type<string[]>(),
+    background: text("background"),
+    visibleText: text("visible_text"),
+    subjectPosition: text("subject_position"),
+    /** Side with clear empty space for a headline, or null for none. */
+    headlineSpace: text("headline_space"),
+    qualityFlags: jsonb("quality_flags").$type<string[]>(),
+    suggestedUses: jsonb("suggested_uses").$type<string[]>(),
+    visionModel: text("vision_model"),
+    describedAt: timestamp("described_at", { withTimezone: true }),
+    /** The content hash described. A description of other bytes is stale. */
+    describedHash: text("described_hash"),
+    /** Copied from another file of the same picture rather than looked at. */
+    describedFrom: integer("described_from"),
+    visionInputTokens: integer("vision_input_tokens"),
+    visionOutputTokens: integer("vision_output_tokens"),
+    /** ok | error */
+    visionStatus: text("vision_status"),
+    visionAttempts: integer("vision_attempts").notNull().default(0),
+    /** The content hash the attempts count against; a new file starts at zero. */
+    visionAttemptHash: text("vision_attempt_hash"),
+    visionError: text("vision_error"),
+
+    /** Corrections by photo_tag_set. Never written by the sync. */
+    correctedDescription: text("corrected_description"),
+    correctedProducts: jsonb("corrected_products").$type<string[]>(),
+    correctedShotType: text("corrected_shot_type"),
+    doNotUse: boolean("do_not_use").notNull().default(false),
+    correctionNote: text("correction_note"),
+    correctedBy: text("corrected_by"),
+    correctedAt: timestamp("corrected_at", { withTimezone: true }),
+
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("photos_group_idx").on(table.groupKey),
+    index("photos_content_hash_idx").on(table.contentHash),
+    index("photos_kind_idx").on(table.kind),
+  ]
+);
+
+export type PhotoRow = typeof photos.$inferSelect;
+export type NewPhotoRow = typeof photos.$inferInsert;
 
 // ─── Marketing Calendar ──────────────────────────────────────────────
 

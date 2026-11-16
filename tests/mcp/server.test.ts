@@ -30,7 +30,7 @@ describe("runToolCall", () => {
     expect(result.isError).toBeFalsy();
     // Deep equality on purpose: a field added to this response without a
     // thought about it should fail here rather than appear unannounced.
-    expect(JSON.parse(result.content[0].text)).toEqual({
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({
       sources: [],
       anyStale: false,
       quality: [],
@@ -45,19 +45,19 @@ describe("runToolCall", () => {
   it("reports a failing query as an error result instead of throwing", async () => {
     const result = await runToolCall(ctx, "ads_performance", {});
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("connection refused");
+    expect((result.content[0] as { text: string }).text).toContain("connection refused");
   });
 
   it("reports an unknown tool as an error result", async () => {
     const result = await runToolCall(ctx, "nonexistent", {});
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("nonexistent");
+    expect((result.content[0] as { text: string }).text).toContain("nonexistent");
   });
 
   it("reports a bad argument as an error result naming the argument", async () => {
     const result = await runToolCall(ctx, "ads_performance", { days: -5 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("days");
+    expect((result.content[0] as { text: string }).text).toContain("days");
   });
 
   // Half a result read as a whole result is exactly the silent failure this
@@ -65,6 +65,6 @@ describe("runToolCall", () => {
   it("never returns partial data alongside an error", async () => {
     const result = await runToolCall(ctx, "ads_performance", {});
     expect(result.content).toHaveLength(1);
-    expect(() => JSON.parse(result.content[0].text)).toThrow();
+    expect(() => JSON.parse((result.content[0] as { text: string }).text)).toThrow();
   });
 });

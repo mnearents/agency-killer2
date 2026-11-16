@@ -1,8 +1,12 @@
 /**
  * Dropbox API client — the seam.
  *
- * Reads knowledge base markdown and issues temporary links for footage, which
- * a transcriber fetches directly. Nothing downloads video through here.
+ * Reads knowledge base markdown, downloads photos, and issues temporary links
+ * for footage, which a transcriber fetches directly. Nothing downloads video
+ * through here.
+ *
+ * Read-only by construction: listing, downloading and linking are the only
+ * calls it makes. Nothing here can move, rename, change or delete a file.
  *
  * Uses the Dropbox HTTP API with refresh token auth (long-lived).
  */
@@ -14,11 +18,15 @@ export interface DropboxFileEntry {
    */
   id: string;
   path: string;
+  /** The path as Dropbox shows it, with its capitals. `path` is lowercased. */
+  displayPath: string;
   name: string;
   rev: string;
   /** Dropbox's hash of the bytes. Null for folders. Unchanged by a move. */
   contentHash: string | null;
   size: number;
+  /** When Dropbox last saw the file change (ISO). Null for folders. */
+  modified: string | null;
   isFolder: boolean;
 }
 
@@ -32,16 +40,19 @@ interface RawDropboxEntry {
   rev?: string;
   content_hash?: string;
   size?: number;
+  server_modified?: string;
 }
 
 function toEntry(entry: RawDropboxEntry): DropboxFileEntry {
   return {
     id: entry.id,
     path: entry.path_lower ?? entry.path_display,
+    displayPath: entry.path_display,
     name: entry.name,
     rev: entry.rev ?? "",
     contentHash: entry.content_hash ?? null,
     size: entry.size ?? 0,
+    modified: entry.server_modified ?? null,
     isFolder: entry[".tag"] === "folder",
   };
 }
@@ -58,6 +69,11 @@ export interface DropboxClient {
    * so the link is fetched per attempt and never stored.
    */
   getTemporaryLink(path: string): Promise<string>;
+  /**
+   * A file's bytes. For photos, which are at most tens of megabytes and must
+   * be read here to be measured and resized. Never used for video.
+   */
+  downloadFile(path: string): Promise<Buffer>;
 }
 
 interface DropboxTokenState {
@@ -188,6 +204,22 @@ export function createDropboxClient(
         throw new Error(`Dropbox returned no link for ${path}`);
       }
       return data.link;
+    },
+
+    async downloadFile(path) {
+      const token = await getAccessToken();
+      const response = await fetch("https://content.dropboxapi.com/2/files/download", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // Dropbox-API-Arg must be ASCII; a name with an accent is escaped.
+          "Dropbox-API-Arg": JSON.stringify({ path }).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Dropbox download failed for ${path}: ${response.status}`);
+      }
+      return Buffer.from(await response.arrayBuffer());
     },
 
     async downloadText(path) {

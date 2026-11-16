@@ -10,12 +10,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { ALL_TOOLS, dispatchTool, toJsonSchema, type McpToolContext } from "./tools";
+import { ALL_TOOLS, dispatchTool, toJsonSchema, ToolContent, type McpToolContext, type ToolContentBlock } from "./tools";
 
 // A type alias rather than an interface: the SDK's result union is indexed by
 // an implicit signature that interfaces do not satisfy.
 export type ToolCallResult = {
-  content: { type: "text"; text: string }[];
+  content: ToolContentBlock[];
   isError?: boolean;
 };
 
@@ -34,6 +34,8 @@ export async function runToolCall(
 ): Promise<ToolCallResult> {
   try {
     const result = await dispatchTool(ctx, name, args);
+    // An image is shown, not described: it goes out as content as it is.
+    if (result instanceof ToolContent) return { content: result.blocks };
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -41,7 +41,15 @@ export type ArgSpec =
    * A list of YYYY-MM months. A comma-separated string is taken too, because
    * models emit one often enough that refusing it would be noise.
    */
-  | { type: "months"; maxItems: number; required?: boolean };
+  | { type: "months"; maxItems: number; required?: boolean }
+  /** A list of whole numbers — ids. A comma-separated string is taken too. */
+  | { type: "integers"; maxItems: number; min?: number; max?: number; required?: boolean }
+  /**
+   * A list of strings. A lone string is a list of one; a comma-separated one
+   * is NOT split, because the values (product titles) can contain commas.
+   * An empty list is a value: "none".
+   */
+  | { type: "strings"; maxItems: number; maxLength?: number; required?: boolean };
 
 export type RowFieldSpec =
   | { type: "string"; required?: boolean; maxLength?: number }
@@ -62,7 +70,7 @@ const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export type ArgSchema = Record<string, ArgSpec>;
 
-export type ParsedArgs = Record<string, string | number | boolean | Date | Row[] | string[]>;
+export type ParsedArgs = Record<string, string | number | boolean | Date | Row[] | string[] | number[]>;
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -185,7 +193,26 @@ function parseMonths(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "
   });
 }
 
-function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date | Row[] | string[] {
+function parseIntegers(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "integers" }>): number[] {
+  const items = typeof raw === "string" ? raw.split(",") : typeof raw === "number" ? [raw] : raw;
+  if (!Array.isArray(items)) throw new McpArgumentError(`"${key}" must be a list of whole numbers, got: ${JSON.stringify(raw)}`);
+  if (items.length === 0) throw new McpArgumentError(`"${key}" needs at least one value`);
+  if (items.length > spec.maxItems) throw new McpArgumentError(`"${key}" may have at most ${spec.maxItems} values, got ${items.length}`);
+  return items.map((item, i) => parseInteger(`${key}[${i}]`, typeof item === "string" ? item.trim() : item, spec));
+}
+
+function parseStrings(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "strings" }>): string[] {
+  const items = typeof raw === "string" ? [raw] : raw;
+  if (!Array.isArray(items)) throw new McpArgumentError(`"${key}" must be a list of strings, got: ${JSON.stringify(raw)}`);
+  if (items.length > spec.maxItems) throw new McpArgumentError(`"${key}" may have at most ${spec.maxItems} values, got ${items.length}`);
+  return items.map((item, i) => {
+    if (typeof item !== "string" || item.trim() === "") throw new McpArgumentError(`"${key}[${i}]" must be a non-blank string, got: ${JSON.stringify(item)}`);
+    if (spec.maxLength !== undefined && item.length > spec.maxLength) throw new McpArgumentError(`"${key}[${i}]" is over ${spec.maxLength} characters`);
+    return item.trim();
+  });
+}
+
+function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | boolean | Date | Row[] | string[] | number[] {
   switch (spec.type) {
     case "string":
       if (typeof raw !== "string") {
@@ -214,6 +241,10 @@ function parseOne(key: string, raw: unknown, spec: ArgSpec): string | number | b
       return parseRows(key, raw, spec);
     case "months":
       return parseMonths(key, raw, spec);
+    case "integers":
+      return parseIntegers(key, raw, spec);
+    case "strings":
+      return parseStrings(key, raw, spec);
   }
 }
 

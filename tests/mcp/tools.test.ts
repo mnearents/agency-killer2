@@ -169,6 +169,7 @@ describe("the tool catalogue", () => {
         "experiment_record_result",
         "experiment_start",
         "goals_set",
+        "photo_tag_set",
         "pilot_notes_add",
         "product_strategy_set",
         "segment_push",

@@ -94,6 +94,7 @@ import {
   getFootageTags,
   getFinishedAdUsage,
   listFinishedAds,
+  nextPageOffset,
 } from "@/domain/footage/queries";
 import { findTranscriptClips, footageTranscriptResult } from "@/domain/footage/transcript";
 import {
@@ -136,6 +137,20 @@ import {
   judgeRelevance,
 } from "@/domain/knowledge/queries";
 import type { EmbeddingClient } from "@/integrations/openai";
+import type { DropboxClient } from "@/integrations/dropbox";
+import { contactSheet, resizeToJpegWithin } from "@/integrations/images";
+import {
+  buildLibrary,
+  filterGroups,
+  summariseLibrary,
+  PHOTO_KINDS,
+  ORIENTATIONS,
+  type PhotoGroup,
+  type PhotoRecord,
+} from "@/domain/photos/photos";
+import { SHOT_TYPES, PEOPLE, BACKGROUNDS, UNKNOWN_PRODUCT } from "@/domain/photos/vision";
+import { loadPhotoRecords, loadThumbnails, getProductTitles, saveCorrection } from "@/domain/photos/queries";
+import { refreshPhotoDocuments, PHOTOS_CATEGORY } from "@/domain/photos/documents";
 import {
   GSC_DIMENSIONS,
   SESSION_DIMENSIONS,
@@ -291,6 +306,23 @@ export interface McpToolContext {
    * record it as who asked; the author is still Claude.
    */
   actor?: string;
+  /**
+   * Reads photo files from Dropbox, for photo_view at full size. Absent when
+   * the Dropbox credentials are not set here, in which case photo_view still
+   * serves contact sheets (from stored thumbnails) and says single photos are
+   * unavailable. Read-only: the client cannot change a file.
+   */
+  photoFiles?: Pick<DropboxClient, "downloadFile">;
+}
+
+export type ToolContentBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/**
+ * A result for the model to SEE — an image — rather than data to read. The
+ * server passes these blocks through instead of serialising the result.
+ */
+export class ToolContent {
+  constructor(readonly blocks: ToolContentBlock[]) {}
 }
 
 export interface McpTool {
@@ -1321,6 +1353,292 @@ const footageTranscriptTool: McpTool = {
     }
     const clips = await findTranscriptClips(ctx.db, id ? { id } : { path });
     return footageTranscriptResult(clips, { withWords: args.words === true });
+  },
+};
+
+// ─── Photos ──────────────────────────────────────────────────────────
+
+const sizeMb = (bytes: number) => Math.round((bytes / 1_048_576) * 10) / 10;
+
+function photoRow(g: PhotoGroup) {
+  const m = g.master;
+  return {
+    id: m.id,
+    name: m.name,
+    folder: m.folder,
+    path: m.path,
+    kind: m.kind,
+    width: m.width,
+    height: m.height,
+    megapixels: m.megapixels,
+    orientation: m.orientation,
+    sizeMb: sizeMb(m.sizeBytes),
+    takenAt: m.takenAt,
+    camera: m.camera,
+    used: g.used,
+    doNotUse: g.doNotUse,
+    descriptionState: g.state,
+    description: g.description,
+    products: g.products,
+    shotType: g.shotType,
+    people: m.people,
+    background: m.background,
+    visibleText: m.visibleText,
+    subjectPosition: m.subjectPosition,
+    headlineSpace: m.headlineSpace,
+    qualityFlags: m.qualityFlags,
+    suggestedUses: m.suggestedUses,
+    describedBy: g.state === "described" ? { model: m.visionModel, at: m.describedAt?.toISOString() ?? null } : null,
+    corrected: g.corrected ? { ...g.corrected, at: g.corrected.at?.toISOString() ?? null } : null,
+    unreadable: m.inspectStatus === "ok" ? undefined : (m.inspectError ?? "not read yet"),
+    versions: g.versions.map((v) => ({
+      id: v.id,
+      name: v.name,
+      folder: v.folder,
+      width: v.width,
+      height: v.height,
+      sizeMb: sizeMb(v.sizeBytes),
+      used: v.used,
+      master: v.isMaster,
+    })),
+  };
+}
+
+const NO_PHOTOS_NOTE =
+  "No photos recorded. That is a sync that has not run since photos were added — check data_freshness for sync:photos before reading it as an empty folder.";
+
+const photosTool: McpTool = {
+  name: "photos",
+  title: "Photos in Dropbox",
+  description:
+    "Photos (.jpg, .jpeg, .png, .webp) in Dropbox /RAD/Footage, for picking pictures for emails and ads. Call with NO arguments for totals: files and pictures by kind, by folder and by product, and how many are described.\n" +
+    "With any argument it lists pictures, one row per picture: the same picture kept at several sizes (\"X Large.jpeg\" beside \"too big/X.jpg\", or identical copies) is one row, its largest file as `id`, the rest under `versions`. Filters: `product` (part of a Shopify title), `shotType`, `people`, `orientation`, `background`, `kind` (default \"source\"; \"any\" for all), `used` (a version is under a \"used\" folder — it has been sent before), `folder` (part of the path), `minWidth` (pixels), `text` (every word must appear in the description, text in the photo, products, folder or name). Pictures marked do-not-use are left out unless `includeDoNotUse`.\n" +
+    "Kinds: `source` is a real photo; `screenshot` a file named Screenshot…; `old-graphic` anything under \"Old ad stuff to organize\" or \"Finished Ads\" — finished graphics, not described.\n" +
+    "Descriptions come from a vision model looking at the picture (`describedBy`) unless someone corrected them (`corrected`, which wins). `products: [\"unknown\"]` means a product is visible but which one was unclear; `[]` means none is. `descriptionState` `awaiting` is a picture not yet looked at — NOT one with nothing in it.\n" +
+    "To SEE pictures, pass ids to photo_view: one at a time, or a labelled contact sheet of up to 24. To correct one, photo_tag_set. Descriptions are also in kb_search, category `photos`. Pages hold at most 100; when `nextOffset` is not null, call again with `offset` set to it.",
+  readOnly: true,
+  schema: {
+    product: { type: "string" },
+    shotType: { type: "enum", values: SHOT_TYPES },
+    people: { type: "enum", values: PEOPLE },
+    orientation: { type: "enum", values: ORIENTATIONS },
+    background: { type: "enum", values: BACKGROUNDS },
+    kind: { type: "enum", values: [...PHOTO_KINDS, "any"] },
+    used: { type: "boolean" },
+    folder: { type: "string" },
+    minWidth: { type: "integer", min: 1 },
+    text: { type: "string" },
+    includeDoNotUse: { type: "boolean" },
+    limit: { type: "integer", min: 1, max: 100 },
+    offset: { type: "integer", min: 0 },
+  },
+  async run(ctx, args) {
+    const records = await loadPhotoRecords(ctx.db);
+    const groups = buildLibrary(records);
+    if (records.length === 0) return { totals: summariseLibrary(records, groups), note: NO_PHOTOS_NOTE };
+    if (Object.keys(args).length === 0) {
+      return {
+        totals: summariseLibrary(records, groups),
+        note: "Totals count every file in the folder; `groups` counts pictures (versions of one picture are one). List pictures by passing any filter, e.g. kind: \"source\".",
+      };
+    }
+    const limit = (args.limit as number | undefined) ?? 25;
+    const offset = (args.offset as number | undefined) ?? 0;
+    const matched = filterGroups(groups, {
+      product: args.product as string | undefined,
+      shotType: args.shotType as string | undefined,
+      people: args.people as string | undefined,
+      orientation: args.orientation as string | undefined,
+      background: args.background as string | undefined,
+      kind: args.kind as string | undefined,
+      used: args.used as boolean | undefined,
+      folder: args.folder as string | undefined,
+      minWidth: args.minWidth as number | undefined,
+      text: args.text as string | undefined,
+      includeDoNotUse: args.includeDoNotUse === true,
+    });
+    const page = matched.slice(offset, offset + limit);
+    const awaiting = matched.filter((g) => g.state === "awaiting").length;
+    return {
+      filter: { ...args, limit: undefined, offset: undefined },
+      matched: matched.length,
+      returned: page.length,
+      offset,
+      nextOffset: nextPageOffset(offset, page.length, matched.length),
+      note: awaiting > 0
+        ? `${awaiting} matching picture(s) are not described yet, so filters on products, shot, people, background or text cannot match them: they are absent from such results, not shown to lack those things.`
+        : undefined,
+      photos: page.map(photoRow),
+    };
+  },
+};
+
+/** What a client is sent at most for one image: under the 5MB an API accepts once base64-encoded. */
+const MAX_IMAGE_BYTES = 3_500_000;
+
+const photoViewTool: McpTool = {
+  name: "photo_view",
+  title: "Look at photos",
+  description:
+    "Shows photos as images you can SEE (not links). Pass `id` for one photo, resized so its longest side is `maxDimension` (default 1024, up to 2400; never enlarged), as JPEG. Or pass `ids` (up to 24) for one contact sheet, each thumbnail labelled with its id underneath, to compare and shortlist.\n" +
+    "Ids come from photos. By default the picture's master — its largest version — is shown whichever version's id was given; `version: \"exact\"` shows the file that id names.",
+  readOnly: true,
+  schema: {
+    id: { type: "integer", min: 1 },
+    ids: { type: "integers", maxItems: 24, min: 1 },
+    maxDimension: { type: "integer", min: 64, max: 2400, default: 1024 },
+    version: { type: "enum", values: ["master", "exact"], default: "master" },
+  },
+  async run(ctx, args) {
+    const single = args.id as number | undefined;
+    const many = args.ids as number[] | undefined;
+    if ((single === undefined) === (many === undefined)) throw new McpArgumentError("Pass exactly one of `id` (one photo) or `ids` (a contact sheet).");
+    const asked = single !== undefined ? [single] : many!;
+
+    const records = await loadPhotoRecords(ctx.db);
+    const byId = new Map(records.map((r) => [r.id, r]));
+    const unknown = asked.filter((id) => !byId.has(id));
+    if (unknown.length > 0) throw new McpArgumentError(`No photo with id ${unknown.join(", ")}. Ids come from photos.`);
+    const masterOf = new Map(records.filter((r) => r.isMaster).map((r) => [r.groupKey, r]));
+    const serve = (id: number): PhotoRecord => {
+      const r = byId.get(id)!;
+      return args.version === "exact" ? r : (masterOf.get(r.groupKey) ?? r);
+    };
+
+    if (single !== undefined) {
+      const photo = serve(single);
+      if (!ctx.photoFiles) {
+        return { error: "Single photos are unavailable here: this server has no Dropbox credentials (DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REFRESH_TOKEN). Contact sheets (`ids`) still work." };
+      }
+      let jpeg;
+      try {
+        jpeg = await resizeToJpegWithin(await ctx.photoFiles.downloadFile(photo.path), args.maxDimension as number, MAX_IMAGE_BYTES);
+      } catch (err) {
+        return { error: `Photo ${photo.id} could not be shown: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const info = {
+        id: photo.id,
+        askedFor: single,
+        path: photo.path,
+        servedWidth: jpeg.width,
+        servedHeight: jpeg.height,
+        originalWidth: photo.width,
+        originalHeight: photo.height,
+        note: Math.max(jpeg.width, jpeg.height) < (args.maxDimension as number)
+          ? `The original is smaller than ${args.maxDimension}px on its longest side, so it is shown at its own size.`
+          : undefined,
+      };
+      return new ToolContent([
+        { type: "image", data: jpeg.data.toString("base64"), mimeType: "image/jpeg" },
+        { type: "text", text: JSON.stringify(info, null, 2) },
+      ]);
+    }
+
+    const served = asked.map(serve);
+    const thumbs = await loadThumbnails(ctx.db, served.map((p) => p.id));
+    const missing = served.filter((p) => !thumbs.get(p.id));
+    if (missing.length > 0) {
+      return { error: `No thumbnail for photo ${missing.map((p) => p.id).join(", ")} — the sync could not read ${missing.length === 1 ? "that file" : "those files"}. Leave them out, or view one by \`id\`.` };
+    }
+    let sheet;
+    try {
+      sheet = await contactSheet(served.map((p) => ({ label: `#${p.id}`, image: thumbs.get(p.id)! })));
+    } catch (err) {
+      return { error: `The contact sheet could not be made: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    const info = {
+      count: served.length,
+      width: sheet.width,
+      height: sheet.height,
+      order: "left to right, top to bottom; each label is the id shown",
+      shown: served.map((p, i) => ({ label: `#${p.id}`, askedFor: asked[i], name: p.name })),
+    };
+    return new ToolContent([
+      { type: "image", data: sheet.data.toString("base64"), mimeType: "image/jpeg" },
+      { type: "text", text: JSON.stringify(info, null, 2) },
+    ]);
+  },
+};
+
+const photoTagSet: McpTool = {
+  name: "photo_tag_set",
+  title: "Correct a photo's tags",
+  description:
+    "WRITES a correction to a photo: its `description`, `products` (exact Shopify titles; [] for none visible; [\"unknown\"]), `shotType`, or `doNotUse: true` to keep it out of photos and kb_search (false to allow it again). `note` says why. `revert: true` drops every correction, back to what the vision model saw.\n" +
+    "Applies to every version of the picture. Corrections are kept apart from the model's description and are never overwritten by a later sync or re-description; fields not passed keep their current correction. Records who asked.",
+  readOnly: false,
+  schema: {
+    id: { type: "integer", min: 1, required: true },
+    description: { type: "string" },
+    products: { type: "strings", maxItems: 20, maxLength: 200 },
+    shotType: { type: "enum", values: SHOT_TYPES },
+    doNotUse: { type: "boolean" },
+    note: { type: "string" },
+    revert: { type: "boolean" },
+  },
+  async run(ctx, args) {
+    const changes = ["description", "products", "shotType", "doNotUse"].filter((k) => args[k] !== undefined);
+    if (args.revert === true && changes.length > 0) throw new McpArgumentError("`revert` drops every correction; it cannot be combined with new values.");
+    if (args.revert !== true && changes.length === 0) throw new McpArgumentError("Nothing to correct: pass description, products, shotType or doNotUse (or revert: true).");
+    const description = typeof args.description === "string" ? args.description.trim() : undefined;
+    if (description === "") throw new McpArgumentError("`description` is blank.");
+
+    let products = args.products as string[] | undefined;
+    if (products !== undefined) {
+      const titles = await getProductTitles(ctx.db);
+      const byLower = new Map(titles.map((t) => [t.toLowerCase(), t]));
+      const isUnknown = products.length === 1 && products[0].toLowerCase() === UNKNOWN_PRODUCT;
+      const unmatched = isUnknown ? [] : products.filter((p) => !byLower.has(p.toLowerCase()));
+      if (unmatched.length > 0) {
+        const words = unmatched.flatMap((u) => u.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
+        const near = titles.filter((t) => words.some((w) => t.toLowerCase().includes(w))).slice(0, 15);
+        throw new McpArgumentError(
+          `Not a Shopify product title: ${unmatched.map((u) => `"${u}"`).join(", ")}. Use exact titles of active products${near.length > 0 ? `, e.g. ${near.map((t) => `"${t}"`).join(", ")}` : ""}; [] for none visible; ["unknown"].`,
+        );
+      }
+      products = isUnknown ? [UNKNOWN_PRODUCT] : products.map((p) => byLower.get(p.toLowerCase())!);
+    }
+
+    const records = await loadPhotoRecords(ctx.db);
+    const photo = records.find((r) => r.id === args.id);
+    if (!photo) throw new McpArgumentError(`No photo with id ${args.id}. Ids come from photos.`);
+    const before = buildLibrary(records).find((g) => g.versions.some((v) => v.id === photo.id))!;
+    const current = before.versions
+      .filter((v) => v.correctedAt !== null)
+      .sort((a, b) => b.correctedAt!.getTime() - a.correctedAt!.getTime())[0] ?? null;
+
+    await saveCorrection(ctx.db, {
+      ids: before.versions.map((v) => v.id),
+      current,
+      correction: {
+        description,
+        products,
+        shotType: args.shotType as string | undefined,
+        doNotUse: args.doNotUse as boolean | undefined,
+        note: typeof args.note === "string" ? args.note.trim() || undefined : undefined,
+        revert: args.revert === true,
+      },
+      by: ctx.actor ? `claude for ${ctx.actor}` : "claude",
+      at: ctx.now(),
+    });
+
+    const library = buildLibrary(await loadPhotoRecords(ctx.db));
+    const after = library.find((g) => g.versions.some((v) => v.id === photo.id))!;
+    let searchIndex: string;
+    try {
+      const refresh = await refreshPhotoDocuments(ctx.db, library, ctx.embeddings);
+      searchIndex = refresh.unembedded > 0
+        ? `updated; ${refresh.unembedded} photo document(s) await an embedding, which the next sync adds`
+        : "updated";
+    } catch (err) {
+      searchIndex = `not updated (${err instanceof Error ? err.message : String(err)}); the next sync updates it`;
+    }
+    return {
+      saved: true,
+      versionsUpdated: before.versions.length,
+      photo: photoRow(after),
+      kbSearch: `category ${PHOTOS_CATEGORY} ${searchIndex}`,
+    };
   },
 };
 
@@ -4722,6 +5040,9 @@ export const ALL_TOOLS: McpTool[] = [
   footageTool,
   finishedAdsTool,
   footageTranscriptTool,
+  photosTool,
+  photoViewTool,
+  photoTagSet,
   productStrategyTool,
   productStrategySet,
   goalsTool,
@@ -4819,6 +5140,24 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
           type: "array",
           maxItems: spec.maxItems,
           items: { type: "string", pattern: "^\\d{4}-(0[1-9]|1[0-2])$", description: "YYYY-MM" },
+        };
+        break;
+      case "integers":
+        properties[key] = {
+          type: "array",
+          maxItems: spec.maxItems,
+          items: {
+            type: "integer",
+            ...(spec.min !== undefined ? { minimum: spec.min } : {}),
+            ...(spec.max !== undefined ? { maximum: spec.max } : {}),
+          },
+        };
+        break;
+      case "strings":
+        properties[key] = {
+          type: "array",
+          maxItems: spec.maxItems,
+          items: { type: "string", ...(spec.maxLength !== undefined ? { maxLength: spec.maxLength } : {}) },
         };
         break;
       case "rows":

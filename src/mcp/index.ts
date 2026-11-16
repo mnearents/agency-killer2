@@ -16,6 +16,7 @@ import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 import { createAttentiveWriteClient } from "@/integrations/attentive-write";
 import { createPortalMetricsClient } from "@/integrations/portal-metrics";
+import { createDropboxClient } from "@/integrations/dropbox";
 import { createEmbeddingClient } from "@/integrations/openai";
 import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 
@@ -69,6 +70,14 @@ async function main() {
     console.error("[mcp] RAD_PORTAL_URL or METRICS_INGEST_TOKEN not set — the email metrics tools will be unavailable");
   }
 
+  // Dropbox, read-only, for photo_view to show one photo at full size.
+  // Without it contact sheets still work, from stored thumbnails.
+  const dropboxKey = process.env.DROPBOX_APP_KEY;
+  const dropboxSecret = process.env.DROPBOX_APP_SECRET;
+  const dropboxRefresh = process.env.DROPBOX_REFRESH_TOKEN;
+  const dropbox = dropboxKey && dropboxSecret && dropboxRefresh ? createDropboxClient(dropboxKey, dropboxSecret, dropboxRefresh) : undefined;
+  if (!dropbox) console.error("[mcp] Dropbox credentials not set — photo_view will show contact sheets only");
+
   const server = createMcpServer({
     db: createDb(databaseUrl),
     now: () => new Date(),
@@ -76,6 +85,7 @@ async function main() {
     attentive: attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
     embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
     portalMetrics: portalUrl && metricsToken ? createPortalMetricsClient({ baseUrl: portalUrl, token: metricsToken }) : undefined,
+    photoFiles: dropbox,
   });
 
   await server.connect(new StdioServerTransport());

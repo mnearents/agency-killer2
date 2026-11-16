@@ -39,6 +39,7 @@
   },
   "type": "module",
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "@types/node": "^26.1.1",
     "@types/node-cron": "^3.0.11",
     "@types/react": "^19.2.17",
@@ -54,6 +55,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@slack/bolt": "^4.7.3",
     "drizzle-orm": "^0.45.2",
+    "exif-reader": "^2.0.3",
     "jose": "^6.2.10",
     "next": "^15.5.20",
     "node-cron": "^4.6.0",
@@ -62,6 +64,7 @@
     "playwright": "^1.62.1",
     "postgres": "^3.4.9",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "sharp": "^0.34.5"
   }
 }

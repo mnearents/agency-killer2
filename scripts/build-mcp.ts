@@ -129,7 +129,12 @@ export async function buildMcpBundle({ outDir = OUT_DIR, clean = true } = {}) {
       metafile: true,
       // postgres reaches for this lazily behind feature detection; it is a
       // Cloudflare Workers built-in and is not needed for TCP + TLS.
-      external: ["cloudflare:sockets"],
+      //
+      // sharp is native, so it cannot travel in a bundle that runs on any
+      // platform. It is imported only when a photo is processed; without it
+      // photo_view says image processing is unavailable and nothing else
+      // changes.
+      external: ["cloudflare:sockets", "sharp"],
       banner: {
         // drizzle-orm and postgres ship CJS interop that expects `require`.
         js: [

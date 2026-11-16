@@ -327,6 +327,45 @@ themselves (`dispatchTool`) rather than re-querying, so each section has the
 same shape and caveats as its tool; a section that fails carries `{ error }`
 and the rest still answer.
 
+### Photos in Dropbox — for picking pictures for emails and ads
+
+The footage cron (14:10 UTC) also runs `sync:photos` (`domain/photos/`,
+`!sync photos [describe [N]]`): every .jpg, .jpeg, .png and .webp under
+/RAD/Footage, one `photos` row per file, keyed by Dropbox file ID. Read-only in
+Dropbox — the client lists and downloads, nothing else. Only new or changed
+content hashes are downloaded; a move updates the row.
+
+- **Kind** from the path: `old-graphic` under "Old ad stuff to organize" or
+  "Finished Ads" (finished graphics, never described), `screenshot` for a name
+  starting "Screenshot", else `source`. `used` = a folder named "used".
+- **Version groups.** One picture kept at several sizes ("X Large.jpeg" beside
+  "too big/X.jpg", "used/" copies) is one group: same base name minus " Large",
+  parent folder minus trailing "too big"/"used". Identical bytes join too
+  ("photo (1).jpg"). The largest file is the master; tools show the master.
+- **Described by Claude** (`claude-sonnet-4-6`, a 1024px copy): description,
+  products held to active Shopify titles (`["unknown"]` when unsure — a name
+  not on the list is never kept), shot type, people, background, visible text,
+  subject position and headline space, quality flags, suggested uses — fixed
+  vocabularies, fail-closed parser, three tries per content hash, tokens kept
+  per row. Only masters of kind `source` are described, and a description is
+  copied to another file of the same picture rather than paid for twice.
+  **The cron describes only with `PHOTO_VISION=on`**; `!sync photos describe`
+  does on request. About a cent a picture.
+- **Corrections (`photo_tag_set`) are separate columns the sync never
+  writes**, applied to every version, carried to a version that joins later,
+  and they win over the model's reading. `doNotUse` hides a picture from
+  `photos` and kb_search.
+- A small thumbnail (384px) is stored per file so `photo_view` contact sheets
+  never download originals; a single photo is downloaded and resized on the
+  `mcp` service (sharp). The labels are drawn from a built-in pixel font, not
+  system fonts. `photo_view` returns MCP image content (`ToolContent`), never a
+  link — Claude's workspace cannot download from Dropbox.
+- Described pictures are kb documents in category `photos`, rebuilt by
+  comparing text, so only a changed one is embedded again.
+- sharp is native, so the portable bundle leaves it external and imports it
+  when a photo is processed; there, photo_view says image processing is
+  unavailable.
+
 ### Ad asset registry
 
 `ad_assets` records what each ad IS — source (footage_cut, arcads,
@@ -540,10 +579,10 @@ Rules for tools in `src/mcp/`:
 - **Unknown arguments are errors**, not ignored — a silently dropped filter
   leaves the caller believing it narrowed a result set it read whole.
 - **Errors are returned, not thrown**, and never alongside partial data.
-- **Most tools are read-only; sixteen are not.** The writers are
+- **Most tools are read-only; seventeen are not.** The writers are
   `ad_asset_set`, `calendar_add`, `calendar_update`, `calendar_remove`,
   `draft_save`, `draft_record_decision`, `email_metrics_post`, `experiment_start`,
-  `experiment_record_result`, `goals_set`, `pilot_notes_add`,
+  `experiment_record_result`, `goals_set`, `photo_tag_set`, `pilot_notes_add`,
   `product_strategy_set`, `segment_push`, `social_peer_set`,
   `social_review_save` and `social_target_set`. That list is asserted in `tests/mcp/tools.test.ts`, so a new
   write tool cannot appear without someone declaring it there.
@@ -555,7 +594,9 @@ Rules for tools in `src/mcp/`:
   needs `correction:true` and a reason, which is recorded. Without that path,
   protecting history would have made a data-entry error permanent — and with
   it, the way back to editing content is two deliberate steps, not one flag.
-- **Three tools reach an external service.** `segment_push` (Attentive),
+- **Four tools reach an external service.** `photo_view` reads a photo
+  from Dropbox (read-only; the `DROPBOX_*` credentials on the `mcp` service),
+  `segment_push` (Attentive),
   and `email_metrics_post` / `email_metrics_get`, which store and read
   monthly Attentive email-journey figures (delivered, opened, clicked,
   attributed revenue per journey) in the RAD portal — the rad-portal repo,
@@ -617,6 +658,9 @@ app and the phone reach it as a custom connector with nothing installed.
 - **A valid login is not permission.** The token's WorkOS user ID must be in
   `MCP_ALLOWED_USERS`. Empty admits no one; every refusal is logged with the
   ID, so adding a person is reading one log line.
+- **`photo_view` needs the worker's three `DROPBOX_*` credentials on this
+  service** to show a single photo; without them it still makes contact sheets
+  from stored thumbnails.
 - **Write tools need `MCP_WRITE_TOOLS=on`.** Locally they were protected
   partly by nothing being able to reach them. Hosted, that is gone, so serving
   them is a setting someone made, and without it they are neither listed nor
@@ -692,6 +736,7 @@ src/
 │   ├── blog/               # SEO/GEO article generation
 │   ├── seo/                # Search Console and web sessions sync + queries
 │   ├── footage/            # Dropbox video: transcribe, tag, index
+│   ├── photos/             # Dropbox photos: index, version groups, vision descriptions
 │   ├── knowledge/          # RAG retrieval, document ingestion, chunking, queries
 │   ├── voice/              # Brand voice prompt assembly, validation
 │   ├── inventory/          # Stock monitoring, alerts, bundling
@@ -719,6 +764,7 @@ src/
 │   ├── google-auth.ts      # Service account sign-in shared by Search Console and Drive
 │   ├── google-drive.ts     # Drive, read-only: the Evobox invoice folder
 │   ├── video-frames.ts     # ffmpeg: length, cuts, loudness, frames, contact sheets
+│   ├── images.ts           # sharp: photo size and EXIF, resizing, labelled contact sheets
 │   ├── media-download.ts   # Fetching Instagram media for analysis
 │   ├── reel-downloader.ts  # RapidAPI reel downloader (reels Instagram withholds)
 │   ├── shiphero-api.ts     # ShipHero Public API, read-only: shipments and label costs

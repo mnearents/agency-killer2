@@ -12,16 +12,18 @@ function makeFile(path: string, rev = "rev1"): DropboxFileEntry {
   return {
     id: `id:${path}`,
     path,
+    displayPath: path,
     name: path.split("/").pop() || "",
     rev,
     contentHash: `hash:${rev}`,
     size: 1024,
+    modified: null,
     isFolder: false,
   };
 }
 
 function makeFolder(path: string): DropboxFileEntry {
-  return { id: `id:${path}`, path, name: path.split("/").pop() || "", rev: "", contentHash: null, size: 0, isFolder: true };
+  return { id: `id:${path}`, path, displayPath: path, name: path.split("/").pop() || "", rev: "", contentHash: null, size: 0, modified: null, isFolder: true };
 }
 
 // ─── Category mapping ─────────────────────────────────────────────────

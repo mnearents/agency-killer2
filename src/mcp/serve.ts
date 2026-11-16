@@ -18,6 +18,7 @@ import { createAnalyticsDb } from "./analytics-db";
 import { createEmbeddingClient } from "@/integrations/openai";
 import { createAttentiveWriteClient } from "@/integrations/attentive-write";
 import { createPortalMetricsClient } from "@/integrations/portal-metrics";
+import { createDropboxClient } from "@/integrations/dropbox";
 import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 import { createHostedHandler } from "./hosted";
 import { createTokenVerifier, parseHostedAuthConfig } from "./hosted-auth";
@@ -54,6 +55,12 @@ function main() {
   // tool's reach.
   const portalUrl = process.env.RAD_PORTAL_URL;
   const metricsToken = process.env.METRICS_INGEST_TOKEN;
+  // Dropbox, read-only, for photo_view to show one photo at full size.
+  // Without it contact sheets still work, from stored thumbnails.
+  const dropboxKey = process.env.DROPBOX_APP_KEY;
+  const dropboxSecret = process.env.DROPBOX_APP_SECRET;
+  const dropboxRefresh = process.env.DROPBOX_REFRESH_TOKEN;
+  const dropbox = dropboxKey && dropboxSecret && dropboxRefresh ? createDropboxClient(dropboxKey, dropboxSecret, dropboxRefresh) : undefined;
   const allowWrites = process.env.MCP_WRITE_TOOLS === "on";
 
   let metadata: { at: number; body: unknown } | null = null;
@@ -67,6 +74,7 @@ function main() {
       embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
       attentive: allowWrites && attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
       portalMetrics: portalUrl && metricsToken ? createPortalMetricsClient({ baseUrl: portalUrl, token: metricsToken }) : undefined,
+      photoFiles: dropbox,
     },
     allowWrites,
     async fetchAuthServerMetadata() {
@@ -119,7 +127,7 @@ function main() {
 
   const port = Number(process.env.PORT ?? 8080);
   server.listen(port, () => {
-    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), ${allowWrites ? `write tools ON${attentiveKey ? "" : " (segment push unavailable: no ATTENTIVE_API_KEY)"}` : "read-only tools only"}${portalUrl && metricsToken ? "" : ", RAD portal email metrics not configured (RAD_PORTAL_URL and METRICS_INGEST_TOKEN)"}`);
+    console.log(`[mcp-hosted] listening on ${port} — ${auth.resource}, sign-in by ${auth.authServer}, ${auth.allowedUsers.size} allowed user(s), ${allowWrites ? `write tools ON${attentiveKey ? "" : " (segment push unavailable: no ATTENTIVE_API_KEY)"}` : "read-only tools only"}${portalUrl && metricsToken ? "" : ", RAD portal email metrics not configured (RAD_PORTAL_URL and METRICS_INGEST_TOKEN)"}${dropbox ? "" : ", photo_view contact sheets only (no Dropbox credentials)"}`);
   });
 }
 

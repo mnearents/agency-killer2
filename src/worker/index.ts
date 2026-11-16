@@ -55,6 +55,7 @@ import { runInventoryChecks } from "@/domain/inventory/checks";
 import { formatInventoryOverview } from "@/domain/inventory/format";
 import { syncKnowledgeBase } from "@/domain/knowledge/sync";
 import { syncFootage, type SyncFootageResult } from "@/domain/footage/sync";
+import { syncPhotos, type SyncPhotosResult } from "@/domain/photos/sync";
 import { runMetaWatch, type MetaWatchResult } from "@/domain/meta/run-watch";
 import { createWatchStore, META_WATCH_TASK } from "@/domain/meta/watch-store";
 import { createHeartbeat } from "@/integrations/healthchecks";
@@ -592,6 +593,49 @@ async function main() {
     return outcome;
   };
 
+  /**
+   * The photo index, run after the footage sync by the same 14:10 cron and by
+   * `!sync photos`. Describing is paid, so the cron only describes with
+   * PHOTO_VISION=on; `!sync photos describe [N]` describes on request.
+   */
+  const photoVisionOn = getEnvOptional("PHOTO_VISION") === "on";
+  const runPhotoSync = async (
+    options: { describe?: { enabled: boolean; limit?: number } } = {},
+  ): Promise<SyncPhotosResult | null> => {
+    let outcome: SyncPhotosResult | null = null;
+    await recorded("sync:photos", async () => {
+      if (!dropboxClient) {
+        console.log("[sync:photos] Skipped — DROPBOX credentials not set");
+        return { configured: false, rowsWritten: 0 };
+      }
+      const result = await syncPhotos({
+        dropbox: dropboxClient,
+        db,
+        rootPath: dropboxFootageRoot,
+        anthropic: anthropicClient ?? undefined,
+        embeddingClient: embeddingClient ?? undefined,
+        describe: options.describe ?? { enabled: photoVisionOn },
+      });
+      outcome = result;
+      console.log(
+        `[sync:photos] ${result.files} photo file(s) (${result.filesByKind.source} source, ${result.filesByKind.screenshot} screenshot, ` +
+          `${result.filesByKind["old-graphic"]} old graphic) in ${result.groups} picture(s): ${result.inspected} read, ` +
+          `${result.unchanged} unchanged, ${result.moved} moved, ${result.removed} removed, ${result.inspectFailed} unreadable; ` +
+          `${result.described} described ($${result.visionCost.toFixed(2)}), ${result.descriptionsCopied} copied, ${result.describeFailed} failed, ` +
+          `${result.awaitingDescription} awaiting` +
+          (result.describeHeldBack ? ` (${result.describeHeldBack})` : "") +
+          `; kb documents ${result.documents.written} written, ${result.documents.removed} removed`,
+      );
+      if (result.errors.length > 0) console.error("[sync:photos] Errors:", result.errors);
+      return {
+        configured: true,
+        rowsWritten: result.inspected + result.moved + result.removed + result.described + result.descriptionsCopied + result.documents.written,
+        errorMessage: result.errors.length > 0 ? result.errors.join("; ") : null,
+      };
+    });
+    return outcome;
+  };
+
   const handlerFns: Record<string, () => Promise<void>> = {
     "sync:meta": async () => {
       if (!metaClient || !metaAccountId) {
@@ -891,7 +935,12 @@ async function main() {
       }),
 
     "sync:footage": async () => {
-      await runFootageSync();
+      // Photos live in the same folder and run after it, whatever footage did.
+      try {
+        await runFootageSync();
+      } finally {
+        await runPhotoSync();
+      }
     },
 
     "sync:invoices": async () => {
@@ -1708,6 +1757,45 @@ async function main() {
       }
       return {
         text: `*Footage sync complete${result.errors.length > 0 ? ", with problems" : ""}*\n${lines.join("\n")}`,
+        isError: result.errors.length > 0,
+      };
+    },
+    "sync:photos": async (args) => {
+      const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      let describe: { enabled: boolean; limit?: number } | undefined;
+      if (words[0] === "describe") {
+        const n = words[1] === undefined ? undefined : Number(words[1]);
+        if (n !== undefined && (!Number.isInteger(n) || n < 1)) {
+          return { text: "Usage: `!sync photos`, `!sync photos describe` or `!sync photos describe 10`", isError: true };
+        }
+        describe = { enabled: true, limit: n };
+      } else if (words.length > 0) {
+        return { text: "Usage: `!sync photos`, `!sync photos describe` or `!sync photos describe 10`", isError: true };
+      }
+      let result: SyncPhotosResult | null;
+      try {
+        result = await runPhotoSync({ describe });
+      } catch (err) {
+        return { text: `Photo sync failed before it finished: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+      if (!result) return { text: "Photo sync unavailable — Dropbox credentials not set.", isError: true };
+      const k = result.filesByKind;
+      const lines = [
+        `• ${result.files} photo files: ${k.source} photos, ${k.screenshot} screenshots, ${k["old-graphic"]} old graphics — ${result.groups} pictures once sizes of the same picture are counted once`,
+        `• ${result.inspected} read, ${result.unchanged} unchanged, ${result.moved} moved, ${result.removed} removed`,
+        `• ${result.described} described ($${result.visionCost.toFixed(2)}), ${result.descriptionsCopied} copied from another size of the same picture`,
+      ];
+      if (result.awaitingDescription > 0) {
+        lines.push(
+          `• ${result.awaitingDescription} photos not described yet` +
+            (result.describeHeldBack === "off" ? " — describing is off; send `!sync photos describe` to describe them" : "") +
+            (result.describeHeldBack === "limit" ? " — the rest wait for the next run" : "") +
+            (result.describeHeldBack === "no-anthropic" ? " — ANTHROPIC_API_KEY is not set" : ""),
+        );
+      }
+      if (result.errors.length > 0) lines.push(`• Problems:`, ...result.errors.slice(0, 10).map((e) => `  – ${e}`));
+      return {
+        text: `*Photo sync complete${result.errors.length > 0 ? ", with problems" : ""}*\n${lines.join("\n")}`,
         isError: result.errors.length > 0,
       };
     },

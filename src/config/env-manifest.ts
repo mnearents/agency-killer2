@@ -225,21 +225,29 @@ export const ENV_MANIFEST: EnvVariable[] = [
   },
   {
     name: "DROPBOX_APP_KEY",
-    surfaces: ["worker"],
+    surfaces: ["worker", "mcp", "mcp-hosted"],
     severity: "degraded",
-    impact: "Knowledge-base document sync stops, so the brand bible stops picking up new documents.",
+    impact:
+      "On the worker: knowledge-base, footage and photo syncs stop. On an MCP server: photo_view cannot show a single photo at full size (contact sheets still work).",
   },
   {
     name: "DROPBOX_APP_SECRET",
-    surfaces: ["worker"],
+    surfaces: ["worker", "mcp", "mcp-hosted"],
     severity: "degraded",
     impact: "Same as the app key: Dropbox needs all three credentials.",
   },
   {
     name: "DROPBOX_REFRESH_TOKEN",
-    surfaces: ["worker"],
+    surfaces: ["worker", "mcp", "mcp-hosted"],
     severity: "degraded",
     impact: "Same as the app key. Dropbox access tokens are short-lived, so this is the one that actually expires.",
+  },
+  {
+    name: "PHOTO_VISION",
+    surfaces: ["worker"],
+    severity: "degraded",
+    impact:
+      "Unset or anything but `on`: the daily sync indexes photos but describes none, so new photos have no description, products or shot type until `!sync photos describe`. Describing costs about a cent a photo.",
   },
   {
     name: "DROPBOX_KB_ROOT",

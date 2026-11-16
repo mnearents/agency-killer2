@@ -57,6 +57,13 @@ describe("hosted MCP entry point", () => {
     for (const line of uses) expect(allowed.some((re) => re.test(line)), line.trim()).toBe(true);
   });
 
+  // photo_view reads full-size photos from Dropbox. Without all three
+  // credentials it has no client and says so; contact sheets need none.
+  it("gives photo_view a Dropbox client only when all three Dropbox credentials are set", () => {
+    expect(source).toMatch(/const dropbox = dropboxKey && dropboxSecret && dropboxRefresh \? createDropboxClient\(dropboxKey, dropboxSecret, dropboxRefresh\) : undefined;/);
+    expect(source).toMatch(/photoFiles: dropbox,/);
+  });
+
   it("builds requests on the configured public URL, not the Host header", () => {
     expect(source).toMatch(/new URL\(nodeReq\.url \?\? "\/", auth\.publicUrl\)/);
   });
