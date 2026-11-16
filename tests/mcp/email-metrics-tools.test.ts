@@ -72,6 +72,19 @@ describe("email_metrics_post", () => {
     expect(portal.stored.size).toBe(1);
   });
 
+  // What Claude sent the first time: seven rows over two months. The read-back
+  // is well over 500 characters, which a truncation before parsing broke.
+  it("posts seven rows over two months and returns all seven as read back", async () => {
+    const portal = fakePortal();
+    const journeys = ["failed_payment", "pages_dropped", "rad_welcome", "yearly_upcoming_renewal"];
+    const sent = [...journeys.map((journey) => row({ journey })), ...journeys.slice(0, 3).map((journey) => row({ month: "2026-11", journey }))];
+    const r = await post(ctxWith(portal.client), sent);
+    expect(r).toMatchObject({ stored: 7 });
+    expect(r.rows).toHaveLength(7);
+    expect(JSON.stringify(r.rows).length).toBeGreaterThan(1000);
+    expect((await get(ctxWith(portal.client), { months: ["2026-10", "2026-11"] })).rows).toHaveLength(7);
+  });
+
   it("refuses an unknown journey or an impossible month before calling the portal, naming the row", async () => {
     const portal = fakePortal();
     await expect(post(ctxWith(portal.client), [row(), row({ journey: "welcome" })])).rejects.toThrow(/rows\[1\]\.journey/);
@@ -120,6 +133,18 @@ describe("email_metrics_post", () => {
     const portal = fakePortal({ get: [500, { error: "db down" }] });
     const r = await post(ctxWith(portal.client), [row()]);
     expect(r).toMatchObject({ stored: 1, rows: null, readBack: expect.stringMatching(/could not be read back.*500/) });
+    expect(r).not.toHaveProperty("error");
+  });
+
+  // The first live post was stored and reported as an error, because the
+  // read-back threw. Whatever the read does, a store is reported as one.
+  it("still reports stored when the read-back throws", async () => {
+    const portal: PortalMetricsClient = {
+      postEmailMetrics: vi.fn().mockResolvedValue({ ok: true, stored: 1 }),
+      getEmailMetrics: vi.fn().mockRejectedValue(new SyntaxError("Unterminated string in JSON at position 500")),
+    };
+    const r = await post(ctxWith(portal), [row()]);
+    expect(r).toMatchObject({ stored: 1, rows: null, readBack: expect.stringMatching(/could not be read back.*Unterminated string/) });
     expect(r).not.toHaveProperty("error");
   });
 

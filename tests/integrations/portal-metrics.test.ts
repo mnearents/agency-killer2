@@ -67,6 +67,17 @@ describe("getEmailMetrics", () => {
     expect(init.headers).toMatchObject({ authorization: `Bearer ${TOKEN}` });
   });
 
+  // A reply was once cut to 500 characters before parsing (the cap meant for
+  // error text), so any read-back over 500 failed with "Unterminated string".
+  it("reads a reply far longer than 500 characters whole", async () => {
+    const rows = ["2026-10", "2026-11"].flatMap((month) =>
+      ["failed_payment", "pages_dropped", "rad_welcome", "yearly_upcoming_renewal"].map((journey) => ({ ...stored, month, journey })),
+    );
+    const fetchImpl = reply(200, { rows });
+    expect(JSON.stringify({ rows }).length).toBeGreaterThan(1000);
+    expect(await client(fetchImpl).getEmailMetrics(["2026-10", "2026-11"])).toEqual({ ok: true, rows });
+  });
+
   it("asks for every month when none are named", async () => {
     const fetchImpl = reply(200, { rows: [] });
     await client(fetchImpl).getEmailMetrics();

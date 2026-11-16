@@ -73,7 +73,10 @@ export function createPortalMetricsClient(config: PortalMetricsConfig): PortalMe
   const endpoint = `${config.baseUrl.replace(/\/+$/, "")}${EMAIL_METRICS_PATH}`;
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const scrub = (text: string) => (config.token ? text.split(config.token).join("[token]") : text).slice(0, 500);
+  // Removing the token applies to everything; shortening, to error text only.
+  // Shortening a body before parsing it cut every reply over 500 characters.
+  const scrub = (text: string) => (config.token ? text.split(config.token).join("[token]") : text);
+  const short = (text: string) => scrub(text).slice(0, 500);
 
   /** The answer's body when it is a 200 object; otherwise the failure, scrubbed. */
   async function call(url: string, init: RequestInit): Promise<{ ok: true; body: Record<string, unknown> } | PortalFailure> {
@@ -89,7 +92,7 @@ export function createPortalMetricsClient(config: PortalMetricsConfig): PortalMe
       return {
         ok: false,
         kind: "network",
-        message: timedOut ? `the portal did not answer; timed out after ${timeoutMs / 1000}s` : scrub(err instanceof Error ? err.message : String(err)),
+        message: timedOut ? `the portal did not answer; timed out after ${timeoutMs / 1000}s` : short(err instanceof Error ? err.message : String(err)),
       };
     }
 
@@ -100,7 +103,7 @@ export function createPortalMetricsClient(config: PortalMetricsConfig): PortalMe
     } catch {
       // Not JSON; the status decides below.
     }
-    const message = scrub(
+    const message = short(
       body && typeof body === "object" && typeof (body as { error?: unknown }).error === "string" ? (body as { error: string }).error : text,
     );
 
@@ -116,7 +119,7 @@ export function createPortalMetricsClient(config: PortalMetricsConfig): PortalMe
     async postEmailMetrics(rows) {
       const r = await call(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rows }) });
       if (!r.ok) return r;
-      if (typeof r.body.stored !== "number") return { ok: false, kind: "unexpected", status: 200, message: `the portal's reply has no "stored" count: ${scrub(JSON.stringify(r.body))}` };
+      if (typeof r.body.stored !== "number") return { ok: false, kind: "unexpected", status: 200, message: `the portal's reply has no "stored" count: ${short(JSON.stringify(r.body))}` };
       return { ok: true, stored: r.body.stored };
     },
     async getEmailMetrics(months) {

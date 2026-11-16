@@ -3585,8 +3585,16 @@ const emailMetricsPost: McpTool = {
     const posted = await ctx.portalMetrics.postEmailMetrics(rows);
     if (!posted.ok) return { error: portalFailure(posted, "store") };
 
-    const back = await ctx.portalMetrics.getEmailMetrics([...new Set(rows.map((r) => r.month))].sort());
-    if (!back.ok) return { stored: posted.stored, rows: null, readBack: `Stored, but the rows could not be read back: ${portalFailure(back, "read")}` };
+    // The store has happened. Nothing the read-back does may report it as a
+    // failure: a thrown read once turned a stored post into an error.
+    const unread = (why: string) => ({ stored: posted.stored, rows: null, readBack: `Stored, but the rows could not be read back: ${why}` });
+    let back: Awaited<ReturnType<PortalMetricsClient["getEmailMetrics"]>>;
+    try {
+      back = await ctx.portalMetrics.getEmailMetrics([...new Set(rows.map((r) => r.month))].sort());
+    } catch (err) {
+      return unread(err instanceof Error ? err.message : String(err));
+    }
+    if (!back.ok) return unread(portalFailure(back, "read"));
     return { stored: posted.stored, rows: back.rows.filter((r) => seen.has(`${r.month}|${r.journey}`)) };
   },
 };
