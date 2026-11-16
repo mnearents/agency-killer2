@@ -133,7 +133,12 @@ describe("the tool catalogue", () => {
    * changes who a future campaign would reach — but it is a different category
    * from the rest and should be read as one.
    *
-   * Its guardrails live elsewhere and are tested in segment-push.test.ts: it
+   * `email_metrics_post` is the second to reach outside: it writes monthly
+   * email figures to the RAD portal, a separate app. It sends no message and
+   * the portal's own validation stores all or none; its token is held by the
+   * server, never by the tool (email-metrics-tools.test.ts).
+   *
+   * The segment push's guardrails live elsewhere and are tested in segment-push.test.ts: it
    * recomputes the diff rather than accepting a list, requires the token from
    * a dry run the human read, requires a named person, and is unreachable from
    * the worker process that runs every cron.
@@ -160,6 +165,7 @@ describe("the tool catalogue", () => {
         "calendar_update",
         "draft_record_decision",
         "draft_save",
+        "email_metrics_post",
         "experiment_record_result",
         "experiment_start",
         "goals_set",

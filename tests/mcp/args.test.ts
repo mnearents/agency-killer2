@@ -296,3 +296,43 @@ describe("rows arguments", () => {
     expect(() => parseArgs({ plan: [{ day: "  ", format: "reel" }] }, schema)).toThrow(/plan\[0\]\.day/);
   });
 });
+
+describe("rows with figures", () => {
+  const schema = {
+    rows: {
+      type: "rows" as const,
+      maxRows: 10,
+      fields: {
+        month: { type: "month" as const, required: true },
+        delivered: { type: "integer" as const, required: true, min: 0 },
+        revenue: { type: "number" as const, required: true, min: 0, decimals: 2 },
+      },
+    },
+  };
+  const row = (over: Record<string, unknown> = {}) => ({ month: "2026-10", delivered: 120, revenue: 45.5, ...over });
+
+  it("keeps numbers as numbers and the month as text", () => {
+    expect(parseArgs({ rows: [row()] }, schema).rows).toEqual([{ month: "2026-10", delivered: 120, revenue: 45.5 }]);
+  });
+
+  // A month that is not a month must not become a plausible row.
+  it("refuses a month that is not YYYY-MM or not a real month, naming the row", () => {
+    expect(() => parseArgs({ rows: [row(), row({ month: "2026-13" })] }, schema)).toThrow(/rows\[1\]\.month.*YYYY-MM/);
+    expect(() => parseArgs({ rows: [row({ month: "2026-1" })] }, schema)).toThrow(/rows\[0\]\.month/);
+    expect(() => parseArgs({ rows: [row({ month: "October 2026" })] }, schema)).toThrow(/rows\[0\]\.month/);
+  });
+
+  it("refuses a count that is fractional, negative or missing", () => {
+    expect(() => parseArgs({ rows: [row({ delivered: 1.5 })] }, schema)).toThrow(/rows\[0\]\.delivered.*whole number/);
+    expect(() => parseArgs({ rows: [row({ delivered: -1 })] }, schema)).toThrow(/rows\[0\]\.delivered.*at least 0/);
+    expect(() => parseArgs({ rows: [{ month: "2026-10", revenue: 1 }] }, schema)).toThrow(/rows\[0\]: missing "delivered"/);
+  });
+
+  // 12.345 dollars is a misread figure, not one to round quietly.
+  it("refuses money with more places than allowed, and anything not a number", () => {
+    expect(() => parseArgs({ rows: [row({ revenue: 12.345 })] }, schema)).toThrow(/rows\[0\]\.revenue.*2 decimal places/);
+    expect(() => parseArgs({ rows: [row({ revenue: "lots" })] }, schema)).toThrow(/rows\[0\]\.revenue.*number/);
+    // Float noise is not an extra place: 0.1 + 0.2 is kept as 0.3.
+    expect((parseArgs({ rows: [row({ revenue: 0.1 + 0.2 })] }, schema).rows as Array<{ revenue: number }>)[0].revenue).toBe(0.3);
+  });
+});

@@ -40,9 +40,20 @@ export type ArgSpec =
 
 export type RowFieldSpec =
   | { type: "string"; required?: boolean; maxLength?: number }
-  | { type: "enum"; values: readonly string[]; required?: boolean };
+  | { type: "enum"; values: readonly string[]; required?: boolean }
+  /** YYYY-MM and a real month: 2026-13 is refused. */
+  | { type: "month"; required?: boolean }
+  | { type: "integer"; required?: boolean; min?: number; max?: number }
+  /**
+   * `decimals` caps the places: 12.345 dollars is refused as a misread
+   * figure, never rounded into a plausible one. Float noise (0.1 + 0.2) is
+   * not a place, and the value is kept at that many places.
+   */
+  | { type: "number"; required?: boolean; min?: number; max?: number; decimals?: number };
 
-export type Row = Record<string, string | null>;
+export type Row = Record<string, string | number | null>;
+
+const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export type ArgSchema = Record<string, ArgSpec>;
 
@@ -121,8 +132,30 @@ function parseRows(key: string, raw: unknown, spec: Extract<ArgSpec, { type: "ro
         row[field] = null;
         continue;
       }
+      if (fs.type === "integer") {
+        row[field] = parseInteger(`${where}.${field}`, value, fs);
+        continue;
+      }
+      if (fs.type === "number") {
+        const n = parseNumber(`${where}.${field}`, value, fs);
+        if (fs.decimals === undefined) {
+          row[field] = n;
+          continue;
+        }
+        const scaled = n * 10 ** fs.decimals;
+        if (Math.abs(scaled - Math.round(scaled)) > 1e-6) {
+          throw new McpArgumentError(`${where}.${field} may have at most ${fs.decimals} decimal places, got ${n}`);
+        }
+        row[field] = Math.round(scaled) / 10 ** fs.decimals;
+        continue;
+      }
       if (typeof value !== "string") throw new McpArgumentError(`${where}.${field} must be a string, got: ${JSON.stringify(value)}`);
       const text = value.trim();
+      if (fs.type === "month") {
+        if (!MONTH_PATTERN.test(text)) throw new McpArgumentError(`${where}.${field} must be a month in YYYY-MM format, got: ${JSON.stringify(value)}`);
+        row[field] = text;
+        continue;
+      }
       if (fs.type === "enum") {
         if (!fs.values.includes(text)) throw new McpArgumentError(`${where}.${field} must be one of: ${fs.values.join(", ")}. Got: ${JSON.stringify(value)}`);
       } else {

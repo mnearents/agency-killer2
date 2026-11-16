@@ -15,6 +15,7 @@ import { createDb } from "@/db/client";
 import { createAnalyticsDb } from "./analytics-db";
 import { createMcpServer } from "./server";
 import { createAttentiveWriteClient } from "@/integrations/attentive-write";
+import { createPortalMetricsClient } from "@/integrations/portal-metrics";
 import { createEmbeddingClient } from "@/integrations/openai";
 import { checkEnv, formatEnvCheck } from "@/config/env-manifest";
 
@@ -60,12 +61,20 @@ async function main() {
     console.error("[mcp] OPENAI_API_KEY not set — kb_search will fall back to literal text matching");
   }
 
+  // The RAD portal's email-metrics post. Absent, the tool says the token is
+  // wrong or missing; the token itself is held by the client and never logged.
+  const metricsToken = process.env.METRICS_INGEST_TOKEN;
+  if (!metricsToken) {
+    console.error("[mcp] METRICS_INGEST_TOKEN not set — email_metrics_post will be unavailable");
+  }
+
   const server = createMcpServer({
     db: createDb(databaseUrl),
     now: () => new Date(),
     analytics: analyticsUrl ? createAnalyticsDb(analyticsUrl) : undefined,
     attentive: attentiveKey ? createAttentiveWriteClient({ apiKey: attentiveKey }) : undefined,
     embeddings: openaiKey ? createEmbeddingClient(openaiKey) : undefined,
+    portalMetrics: metricsToken ? createPortalMetricsClient({ token: metricsToken }) : undefined,
   });
 
   await server.connect(new StdioServerTransport());

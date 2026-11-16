@@ -157,6 +157,12 @@ export const ENV_MANIFEST: EnvVariable[] = [
     impact: "The segment push tools are unavailable, so no audience can be sent to Attentive.",
   },
   {
+    name: "METRICS_INGEST_TOKEN",
+    surfaces: ["mcp", "mcp-hosted"],
+    severity: "degraded",
+    impact: "email_metrics_post cannot store email-journey figures in the RAD portal; it says the token is wrong or missing.",
+  },
+  {
     name: "SHIPHERO_TOKEN_KEY",
     surfaces: ["worker"],
     severity: "degraded",

@@ -29,6 +29,7 @@ import {
   type ArgSchema,
   type ParsedArgs,
   type Row,
+  type RowFieldSpec,
 } from "./args";
 
 import { getDataFreshness } from "@/db/freshness";
@@ -201,6 +202,7 @@ import {
   type DraftType,
 } from "@/domain/drafts/drafts";
 import type { AttentiveWriteClient } from "@/integrations/attentive-write";
+import { EMAIL_JOURNEYS, type EmailMetricRow, type PortalMetricsClient } from "@/integrations/portal-metrics";
 import { computePushPlan, planToken, canPush } from "@/domain/segments/push";
 import {
   getSegmentMembers,
@@ -276,6 +278,12 @@ export interface McpToolContext {
    * same name as the good one is the failure that field exists to prevent.
    */
   embeddings?: EmbeddingClient;
+  /**
+   * The RAD portal's email-metrics client, holding METRICS_INGEST_TOKEN.
+   * Absent when the token is unset, in which case `email_metrics_post` says
+   * the token is wrong or missing rather than pretending to store anything.
+   */
+  portalMetrics?: PortalMetricsClient;
   /**
    * The signed-in person a request is for, on the hosted server: their name
    * from MCP_ALLOWED_USERS, else their WorkOS ID. Absent locally. Write tools
@@ -2134,8 +2142,10 @@ const socialReviewSave: McpTool = {
       sections[key] = v;
     }
     const fromPeers = typeof args.fromPeers === "string" && args.fromPeers.trim() !== "" ? args.fromPeers.trim().slice(0, 8000) : null;
-    const ideasTried = (args.ideasTried as Row[] | undefined)?.map((r) => ({ idea: r.idea!, tried: r.tried!, result: r.result })) ?? null;
-    const plan = (args.plan as Row[] | undefined)?.map((r) => ({ day: r.day!, format: r.format!, idea: r.idea!, keyword: r.keyword })) ?? null;
+    // Every field of these rows is declared text, so every value is a string.
+    const text = (v: Row[string]) => v as string | null;
+    const ideasTried = (args.ideasTried as Row[] | undefined)?.map((r) => ({ idea: text(r.idea)!, tried: text(r.tried)!, result: text(r.result) })) ?? null;
+    const plan = (args.plan as Row[] | undefined)?.map((r) => ({ day: text(r.day)!, format: text(r.format)!, idea: text(r.idea)!, keyword: text(r.keyword) })) ?? null;
     const saved = await saveReview(ctx.db, { weekStart, weekEnd, headline, ...sections, fromPeers, ideasTried, plan, author: "claude", requestedBy: ctx.actor ?? null });
     return { written: true, id: saved.id, weekStart, weekEnd, path: `/social/review/${saved.id}` };
   },
@@ -3499,6 +3509,66 @@ const segmentPush: McpTool = {
   },
 };
 
+/**
+ * The second tool that reaches outside this system (after `segment_push`):
+ * it writes to the RAD portal, a separate app, because Claude's own workspace
+ * cannot reach it. The ingest token stays in the client on this server; the
+ * tool never sees it, so no argument, result or log line can carry it.
+ */
+const emailMetricsPost: McpTool = {
+  name: "email_metrics_post",
+  title: "Store monthly email-journey figures in the RAD portal",
+  description:
+    "WRITES to the RAD portal (notify.radandhappy.com): stores monthly Attentive email-journey figures, which the portal's Analytics page shows. " +
+    "Each row is one month and journey: `month` YYYY-MM, `journey` (failed_payment, pages_dropped, rad_welcome, yearly_upcoming_renewal), `delivered`, `opened`, `clicked` (whole numbers) and `attributed_revenue` (dollars, at most 2 decimal places). " +
+    "Re-sending a month + journey REPLACES the row the portal holds, so a corrected figure is sent again rather than adjusted. " +
+    "Every row is checked before anything is sent; one bad row sends nothing and the error names it. The portal checks them again and stores all or none. " +
+    "Record the figures Attentive reports; never estimate one. There is no read-back here: the portal has no read this server can use, so confirm on its Analytics page.",
+  readOnly: false,
+  schema: {
+    rows: {
+      type: "rows",
+      required: true,
+      maxRows: 200,
+      fields: {
+        month: { type: "month", required: true },
+        journey: { type: "enum", values: EMAIL_JOURNEYS, required: true },
+        delivered: { type: "integer", required: true, min: 0 },
+        opened: { type: "integer", required: true, min: 0 },
+        clicked: { type: "integer", required: true, min: 0 },
+        attributed_revenue: { type: "number", required: true, min: 0, decimals: 2 },
+      },
+    },
+  },
+  async run(ctx, args) {
+    const rows = args.rows as unknown as EmailMetricRow[];
+    if (rows.length === 0) return { error: "No rows to send. Nothing was sent." };
+    const seen = new Set<string>();
+    for (const [i, r] of rows.entries()) {
+      const key = `${r.month}|${r.journey}`;
+      if (seen.has(key)) return { error: `rows[${i}]: a second ${r.journey} row for ${r.month}. Send one row per month and journey. Nothing was sent.` };
+      seen.add(key);
+    }
+
+    const tokenError = (why: string) =>
+      `The portal ingest token is wrong or missing on the MCP server (${why}). Nothing was stored, and nothing was retried. Matt needs to set METRICS_INGEST_TOKEN on the mcp service to the portal's value.`;
+    if (!ctx.portalMetrics) return { error: tokenError("METRICS_INGEST_TOKEN is not set") };
+
+    const result = await ctx.portalMetrics.postEmailMetrics(rows);
+    if (result.ok) return { ...result.body, rows };
+    switch (result.kind) {
+      case "token":
+        return { error: tokenError(result.status === 503 ? "the portal answered 503: it has no token configured" : "the portal answered 401: it refused this one") };
+      case "rejected":
+        return { error: `The RAD portal refused the rows and stored nothing: ${result.message}` };
+      case "network":
+        return { error: `Could not reach the RAD portal: ${result.message}. It may or may not have stored the rows; not retried. Check its Analytics page before sending again (a resend replaces, so it is safe).` };
+      case "unexpected":
+        return { error: `The RAD portal answered ${result.status}: ${result.message}. Nothing is known to be stored; not retried.` };
+    }
+  },
+};
+
 const segmentPushHistory: McpTool = {
   name: "segment_push_history",
   title: "Segment push history",
@@ -4639,6 +4709,7 @@ export const ALL_TOOLS: McpTool[] = [
   segmentPushDryRun,
   segmentPush,
   segmentPushHistory,
+  emailMetricsPost,
   unitEconomics,
   marginByOrderValue,
   freeShippingThreshold,
@@ -4661,6 +4732,25 @@ export interface JsonSchema {
   required: string[];
 }
 
+function rowFieldJsonSchema(fs: RowFieldSpec): Record<string, unknown> {
+  const bounds = (s: { min?: number; max?: number }) => ({
+    ...(s.min !== undefined ? { minimum: s.min } : {}),
+    ...(s.max !== undefined ? { maximum: s.max } : {}),
+  });
+  switch (fs.type) {
+    case "enum":
+      return { type: "string", enum: [...fs.values] };
+    case "month":
+      return { type: "string", pattern: "^\\d{4}-(0[1-9]|1[0-2])$", description: "YYYY-MM" };
+    case "integer":
+      return { type: "integer", ...bounds(fs) };
+    case "number":
+      return { type: "number", ...bounds(fs), ...(fs.decimals !== undefined ? { description: `at most ${fs.decimals} decimal places` } : {}) };
+    case "string":
+      return { type: "string" };
+  }
+}
+
 export function toJsonSchema(schema: ArgSchema): JsonSchema {
   const properties: Record<string, Record<string, unknown>> = {};
   const required: string[] = [];
@@ -4681,7 +4771,7 @@ export function toJsonSchema(schema: ArgSchema): JsonSchema {
             type: "object",
             additionalProperties: false,
             properties: Object.fromEntries(
-              Object.entries(spec.fields).map(([f, fs]) => [f, fs.type === "enum" ? { type: "string", enum: [...fs.values] } : { type: "string" }]),
+              Object.entries(spec.fields).map(([f, fs]) => [f, rowFieldJsonSchema(fs)]),
             ),
             required: Object.entries(spec.fields).filter(([, fs]) => fs.required).map(([f]) => f),
           },
