@@ -49,7 +49,13 @@ describe("resolve", () => {
 
   it("returns the best video link and the quota left", async () => {
     const r = await createReelDownloader({ apiKey: KEY, fetchImpl: respond(SUCCESS) }).resolve("https://www.instagram.com/reel/x/");
-    expect(r).toEqual({ ok: true, videoUrl: "https://cdn/video-720.mp4", quality: "720x1280p", rate: { limit: 3, remaining: 2, resetSeconds: 2590961 } });
+    expect(r).toEqual({ ok: true, videoUrl: "https://cdn/video-720.mp4", quality: "720x1280p", caption: "happy thanksgiving", rate: { limit: 3, remaining: 2, resetSeconds: 2590961 } });
+  });
+
+  // Observed 2026-11-16: `title` is the post's caption. There is no creator or date.
+  it("keeps the caption the reply carries as `title`", async () => {
+    const r = await createReelDownloader({ apiKey: KEY, fetchImpl: respond({ ...SUCCESS, title: "  Comment WINDOW below for the free stencils!  " }) }).resolve("https://www.instagram.com/reel/x/");
+    expect(r).toMatchObject({ ok: true, caption: "Comment WINDOW below for the free stencils!" });
   });
 
   it("calls a 429 the rate limit", async () => {

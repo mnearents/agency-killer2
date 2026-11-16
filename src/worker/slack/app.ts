@@ -27,6 +27,7 @@ export interface SlackAppDeps {
 /** Acknowledgment messages for slow commands so the user knows we heard them. */
 const ACK_MESSAGES: Record<string, string> = {
   "notes:add": "Saving notes...",
+  "teacher:learn": "Got it — downloading that video, transcribing it and reading what it teaches. This takes a minute or two...",
   "sync:meta": "Syncing Meta ads data...",
   "sync:shopify": "Syncing Shopify orders...",
   // ~88 pages at 50 per page — the ack matters more here than anywhere else.
@@ -172,7 +173,8 @@ When the user asks a question:
               "• `!calendar` — View upcoming week's calendar",
               "• `!calendar add <date> <channel> <title>` — Add entry",
               "• `!sync social` — Pull Instagram posts and insights",
-              "• `!sync reels [tara|teachers|peers] [N]` — Download reels Instagram withholds and analyse them",
+              "• `!sync reels [tara|peers] [N]` — Download reels Instagram withholds (Tara's licensed-music reels, competitors' recent reels), transcribe and analyse them",
+              "• Paste an Instagram link (or `!learn <link> [@creator] [why]`) — Save a video you found insightful: it's downloaded, transcribed and read for lessons",
               "• `!inventory` — What's in stock, what's running out",
               "• `!inventory alerts` — Only the stock problems worth acting on",
               "• `!sync inventory` — Pull the latest stock levels from Shopify",

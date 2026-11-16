@@ -11,6 +11,8 @@
  * more: POST /download.php with the reel link as the multipart field `url`;
  * a JSON body whose `message` is "success" and whose `formats` list holds
  * mp4 entries (`quality` like "720x1280p", `vcodec`) and an audio-only one.
+ * `title` is the post's caption (seen 2026-11-16); there is no creator or
+ * posting date in the reply.
  * `filesize` ("—") and `duration` (0) carry nothing and are not read. The
  * quota left is in the `x-ratelimit-requests-*` headers. A 429 is taken as
  * the rate limit; the console showed no error response to confirm its shape.
@@ -31,7 +33,7 @@ export interface RateLimitState {
 }
 
 export type ResolveResult =
-  | { ok: true; videoUrl: string; quality: string | null; rate: RateLimitState }
+  | { ok: true; videoUrl: string; quality: string | null; caption: string | null; rate: RateLimitState }
   | { ok: false; reason: "rate-limited" | "api-error" | "no-video"; detail: string; rate: RateLimitState };
 
 export interface DownloadedFile {
@@ -114,7 +116,8 @@ export function createReelDownloader(config: ReelDownloaderConfig): ReelDownload
       if (json.message !== "success") return { ok: false, reason: "no-video", detail: scrub(`message: ${String(json.message ?? "(none)")}`), rate };
       const best = pickBestVideo(json.formats);
       if (!best) return { ok: false, reason: "no-video", detail: "No mp4 with video in the reply", rate };
-      return { ok: true, videoUrl: best.url, quality: best.quality, rate };
+      const caption = typeof json.title === "string" && json.title.trim() !== "" ? json.title.trim() : null;
+      return { ok: true, videoUrl: best.url, quality: best.quality, caption, rate };
     },
 
     async download(url, maxBytes) {

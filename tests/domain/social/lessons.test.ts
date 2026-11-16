@@ -3,7 +3,6 @@ import {
   buildLessonPrompt,
   parseLessons,
   shouldExtractLessons,
-  lessonsReady,
   groupLessons,
   MAX_LESSONS_PER_POST,
   type LessonRow,
@@ -17,7 +16,7 @@ describe("buildLessonPrompt", () => {
       transcript: "Here's the thing about hooks.",
     })!;
     expect(r.basis).toBe("caption+slides+transcript");
-    expect(r.prompt).toContain("@lana.k.social");
+    expect(r.prompt).toContain("by @lana.k.social");
     expect(r.prompt).toContain("Slide 2: Open with the result");
     expect(r.prompt).toContain("Here's the thing about hooks.");
   });
@@ -35,6 +34,15 @@ describe("buildLessonPrompt", () => {
     const { prompt } = buildLessonPrompt({ username: "a", format: "Reel", caption: "c", slideText: null, transcript: "t" })!;
     expect(prompt).toMatch(/exact words/);
     expect(prompt).toMatch(/Never add advice it did not give/);
+  });
+
+  // A shared link does not say who made it; the prompt must not invent a handle.
+  it("says the creator is unknown rather than naming one, and passes on why it was saved", () => {
+    const { prompt } = buildLessonPrompt({ username: null, note: "great hook structure", format: "Reel", caption: "c", slideText: null, transcript: null })!;
+    expect(prompt).toContain("by a creator whose handle was not given");
+    expect(prompt).not.toMatch(/@\w/);
+    expect(prompt).toContain('Why it was saved: "great hook structure"');
+    expect(prompt).toMatch(/list what the video itself teaches/);
   });
 
   it("has nothing to read when there is no caption, slide text or transcript", () => {
@@ -93,24 +101,9 @@ describe("shouldExtractLessons", () => {
   });
 });
 
-describe("lessonsReady", () => {
-  // A carousel's lessons are on its slides: wait until they have been read.
-  it("waits for the visual reading to finish, one way or the other", () => {
-    expect(lessonsReady({ visualStatus: null, visualAttempts: null }, true)).toBe(false);
-    expect(lessonsReady({ visualStatus: "error", visualAttempts: 1 }, true)).toBe(false);
-    expect(lessonsReady({ visualStatus: "ok", visualAttempts: 1 }, true)).toBe(true);
-    expect(lessonsReady({ visualStatus: "unavailable", visualAttempts: 1 }, true)).toBe(true);
-    expect(lessonsReady({ visualStatus: "error", visualAttempts: 3 }, true)).toBe(true);
-  });
-
-  it("does not wait for a reading that will never happen", () => {
-    expect(lessonsReady({ visualStatus: null, visualAttempts: null }, false)).toBe(true);
-  });
-});
-
 describe("groupLessons", () => {
   const row = (o: Partial<LessonRow>): LessonRow => ({
-    postId: "p1", username: "lana.k.social", permalink: "https://instagram.com/p/1", postedAt: new Date("2026-11-01T00:00:00Z"), basis: "caption",
+    postId: "p1", username: "lana.k.social", permalink: "https://instagram.com/p/1", savedAt: new Date("2026-11-01T00:00:00Z"), basis: "caption",
     area: "hook", principle: "Open with the result.", howToApply: "Show the after first.", kind: "practice", quote: null, ...o,
   });
 

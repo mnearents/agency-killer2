@@ -1,14 +1,17 @@
 /**
  * Which reels the downloader (RapidAPI) fetches this run — pure.
  *
- * Tara's withheld reels come first and are never capped. Teachers' and
- * peers' each have a monthly cap; past it their reels stay queued for next
- * month (they are simply still eligible then), never dropped. Over all of it
+ * Tara's withheld reels come first and are never capped. Peers' have a
+ * monthly cap; past it their reels stay queued for next month (they are
+ * simply still eligible then), never dropped. Teacher videos are not queued:
+ * each is sent to the Slack bot and fetched then (`teacher-videos.ts`), and
+ * counts against the plan with everything else. Over all of it
  * sits the plan's monthly limit, and the quota the API itself last reported
  * — which counts calls made anywhere, the RapidAPI console included, so it
  * wins over this system's own count.
  */
 
+/** teacher: a video sent to the Slack bot — counted, never queued. */
 export type DownloadAccount = "own" | "teacher" | "peer";
 
 export interface DownloadCandidate {
@@ -23,7 +26,6 @@ export interface DownloadCandidate {
 export interface DownloadLimits {
   /** Calls a month the RapidAPI plan allows — everything included. */
   plan: number;
-  teacher: number;
   peer: number;
 }
 
@@ -38,14 +40,14 @@ export interface QuotaState {
 /** A reel that failed this often is left for a manual upload. */
 export const MAX_DOWNLOAD_ATTEMPTS = 3;
 
-const DEFAULTS: DownloadLimits = { plan: 3, teacher: 60, peer: 40 };
+/** Peers: every reel of every tracked account, which a few accounts keep well under. */
+const DEFAULTS: DownloadLimits = { plan: 3, peer: 300 };
 
 /** The settings, from the worker's environment. The plan default is the free tier's. */
 export function readDownloadLimits(env: Record<string, string | undefined>): DownloadLimits {
   const whole = (v: string | undefined, fallback: number) => (v !== undefined && /^\d+$/.test(v.trim()) ? Number(v.trim()) : fallback);
   return {
     plan: whole(env.RAPIDAPI_MONTHLY_LIMIT, DEFAULTS.plan),
-    teacher: whole(env.TEACHER_MONTHLY_CAP, DEFAULTS.teacher),
     peer: whole(env.PEER_MONTHLY_CAP, DEFAULTS.peer),
   };
 }
@@ -56,7 +58,6 @@ export function eligibleAfterFailures<T extends { postId: string }>(candidates: 
 
 export function planDownloads(input: {
   own: DownloadCandidate[];
-  teachers: DownloadCandidate[];
   peers: DownloadCandidate[];
   usage: DownloadUsage;
   limits: DownloadLimits;
@@ -64,7 +65,7 @@ export function planDownloads(input: {
   now: Date;
   max?: number;
 }): { planned: DownloadCandidate[]; deferred: DownloadUsage; blocked: "plan-limit" | "quota-exhausted" | null } {
-  const all = { own: input.own.length, teacher: input.teachers.length, peer: input.peers.length };
+  const all = { own: input.own.length, teacher: 0, peer: input.peers.length };
   const quotaLive = input.quota.remaining !== null && (input.quota.resetAt === null || input.quota.resetAt > input.now);
   if (quotaLive && input.quota.remaining! <= 0) return { planned: [], deferred: all, blocked: "quota-exhausted" };
 
@@ -80,11 +81,10 @@ export function planDownloads(input: {
     return list.slice(0, n);
   };
   const own = take(input.own, Infinity);
-  const teachers = take(input.teachers, input.limits.teacher - input.usage.teacher);
   const peers = take(input.peers, input.limits.peer - input.usage.peer);
   return {
-    planned: [...own, ...teachers, ...peers],
-    deferred: { own: all.own - own.length, teacher: all.teacher - teachers.length, peer: all.peer - peers.length },
+    planned: [...own, ...peers],
+    deferred: { own: all.own - own.length, teacher: 0, peer: all.peer - peers.length },
     blocked: null,
   };
 }

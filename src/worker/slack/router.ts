@@ -7,7 +7,9 @@
  *
  * Commands are prefixed with "!" to distinguish from natural conversation.
  * Everything without "!" is treated as a natural language query routed
- * to the orchestrator.
+ * to the orchestrator — except a message that STARTS with an Instagram link,
+ * which is a teacher video to learn from (the same as `!learn <link>`). A
+ * question that mentions a link further in is still a question.
  */
 
 export type CommandCategory =
@@ -24,6 +26,7 @@ export type CommandCategory =
   | "import"
   | "notes"
   | "help"
+  | "learn"
   | "unknown";
 
 export interface ParsedCommand {
@@ -61,11 +64,19 @@ const VALID_CATEGORIES = new Set<CommandCategory>([
   "import",
   "notes",
   "help",
+  "learn",
 ]);
+
+/** An Instagram post or reel link at the very start, bare or as Slack wraps it (`<url|label>`). */
+const STARTS_WITH_INSTAGRAM_LINK = /^<?https?:\/\/(?:www\.|m\.)?instagram\.com\/(?:[A-Za-z0-9._]+\/)?(?:reels?|p|tv)\//i;
 
 export function parseMessage(text: string): ParsedMessage {
   const raw = text;
   const trimmed = text.trim();
+
+  if (STARTS_WITH_INSTAGRAM_LINK.test(trimmed)) {
+    return { type: "command", category: "learn", action: "", args: trimmed, raw };
+  }
 
   if (!trimmed.startsWith("!")) {
     return { type: "natural", text: trimmed, raw };
@@ -83,6 +94,12 @@ export function parseMessage(text: string): ParsedMessage {
   )
     ? (rawCategory as CommandCategory)
     : "unknown";
+
+  // A link's shortcode is case-sensitive, so `!learn` keeps everything after
+  // the word exactly as typed rather than splitting off a lowercased action.
+  if (category === "learn") {
+    return { type: "command", category, action: "", args: withoutBang.slice(parts[0].length).trim(), raw };
+  }
 
   return { type: "command", category, action, args, raw };
 }
@@ -155,6 +172,9 @@ const COMMAND_ROUTES: Record<string, Record<string, string>> = {
   },
   help: {
     "": "help",
+  },
+  learn: {
+    "": "teacher:learn",
   },
 };
 

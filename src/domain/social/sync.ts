@@ -182,7 +182,7 @@ export interface SyncSocialResult {
   visuals: { configured: boolean; analysed: number; failed: number; unavailable: number; failures: Array<{ postId: string; detail: string }> };
   /** Reels fetched through the downloader. `configured: false` when automatic downloads are off. */
   downloads: { configured: boolean } & Pick<ReelDownloadRun, "calls" | "ok" | "failed" | "stopped" | "deferred">;
-  /** What teacher accounts' posts teach. `configured: false` without Anthropic. */
+  /** Saved teacher videos whose lessons were retried. `configured: false` without Anthropic. */
   lessons: LessonSyncResult & { configured: boolean };
   errors: string[];
 }
@@ -437,8 +437,8 @@ export async function syncSocialPosts(
     ? { configured: true, ...(await syncVisuals({ db, client, anthropic: deps.anthropic, now: () => syncedAt, ...deps.visuals }, errors)) }
     : { configured: false, analysed: 0, failed: 0, unavailable: 0, failures: [] };
 
-  // Step 8b: the reels Instagram withholds, fetched through the downloader —
-  // before step 9, so a teacher reel's words are read for lessons this run.
+  // Step 8b: the reels Instagram withholds — Tara's licensed-music reels and
+  // every recent peer reel — fetched, transcribed and read through the downloader.
   let downloads: SyncSocialResult["downloads"] = { configured: false, calls: 0, ok: 0, failed: 0, stopped: null, deferred: { own: 0, teacher: 0, peer: 0 } };
   if (deps.anthropic && deps.visuals && deps.downloads) {
     const run = await runReelDownloads({
@@ -451,10 +451,10 @@ export async function syncSocialPosts(
     }
   }
 
-  // Step 9: what the teacher accounts' posts teach — after step 8 has read
-  // their slides, whose text is most of what a carousel teaches.
+  // Step 9: saved teacher videos whose lessons failed or went stale, read
+  // again. A video sent to the Slack bot is read when it is sent.
   const lessons = deps.anthropic
-    ? { configured: true, ...(await extractLessons({ db, anthropic: deps.anthropic, now: () => syncedAt }, { waitForVisuals: deps.visuals !== undefined }, errors)) }
+    ? { configured: true, ...(await extractLessons({ db, anthropic: deps.anthropic, now: () => syncedAt }, errors)) }
     : { configured: false, extracted: 0, none: 0, failed: 0, lessons: 0 };
 
   return {

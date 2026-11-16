@@ -8,7 +8,7 @@ import { shopifyProducts } from "@/db/schema";
 import { drawLabel, readLabel, sheetLayout, sheetCell, SHEET_CELL, SHEET_LABEL_SCALE } from "@/integrations/images";
 import type { DropboxClient, DropboxFileEntry } from "@/integrations/dropbox";
 import type { Db } from "@/db/client";
-import { createPhotoDb } from "../helpers/photo-db";
+import { createTestDb } from "../helpers/test-db";
 
 const ROOT = "/RAD/Footage";
 const NOW = new Date("2026-11-16T16:00:00Z");
@@ -49,9 +49,9 @@ let db: Db;
 let dropbox: Awaited<ReturnType<typeof fakeDropbox>>;
 let reset: () => Promise<unknown>;
 beforeAll(async () => {
-  const created = await createPhotoDb();
+  const created = await createTestDb();
   db = created.db;
-  reset = () => created.client.exec(`TRUNCATE photos, kb_documents, shopify_products RESTART IDENTITY`);
+  reset = () => created.truncate("photos", "kb_documents", "shopify_products");
   dropbox = await fakeDropbox(FILES);
 });
 

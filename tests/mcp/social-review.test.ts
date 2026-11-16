@@ -17,7 +17,7 @@ vi.mock("@/domain/social/review-queries", async (importOriginal) => ({
   getTargets: vi.fn(),
   recordTarget: vi.fn(),
   getLessons: vi.fn(),
-  getLessonCoverage: vi.fn(),
+  getTeacherVideoCoverage: vi.fn(),
   getTeacherAdvice: vi.fn(),
 }));
 vi.mock("@/domain/social/download-queries", async (importOriginal) => ({
@@ -275,68 +275,67 @@ describe("reels Instagram withholds the video of", () => {
   });
 });
 
-describe("teacher accounts", () => {
-  const teacher = { username: "lana.k.social", purpose: "teacher" as const, notes: "IG growth advice", active: true };
+describe("watched accounts and saved teacher videos", () => {
+  const oldTeacher = { username: "lana.k.social", purpose: "teacher" as const, notes: "IG growth advice", active: true };
   const lessonRow = (o: Record<string, unknown> = {}) => ({
-    postId: "t1", username: "lana.k.social", permalink: "https://instagram.com/p/t1", postedAt: daysAgo(3), basis: "caption+slides",
+    postId: "ig:t1", username: null, permalink: "https://www.instagram.com/reel/t1/", savedAt: daysAgo(3), basis: "caption+transcript",
     area: "hook" as const, principle: "Open with the result.", howToApply: "Show the finished page at 0s.", kind: "practice" as const, quote: null, ...o,
   });
+  const coverage = {
+    saved: 3, read: 2, withLessons: 1, teachingNothing: 1, lessonsPending: 0,
+    failed: [{ id: "ig:bad", url: "https://www.instagram.com/reel/bad/", username: null, detail: "no-video: message: Media not found", savedAt: daysAgo(1) }],
+    byCreator: [{ username: null, videos: 2 }, { username: "lana.k.social", videos: 1 }],
+  };
 
   beforeEach(() => {
-    vi.mocked(reviewQueries.getPeers).mockResolvedValue([{ username: "pippipost.shop", purpose: "peer", notes: "bookish merch", active: true }, teacher]);
-    vi.mocked(reviewQueries.getLessons).mockResolvedValue([lessonRow(), lessonRow({ postId: "t2", area: "engagement", principle: "Reply to every comment in the first hour.", kind: "claim" })]);
-    vi.mocked(reviewQueries.getLessonCoverage).mockResolvedValue([{ username: "lana.k.social", posts: 50, read: 20, withLessons: 14 }]);
-    vi.mocked(reviewQueries.getPeerPosts).mockResolvedValue([
-      { id: "tr1", username: "lana.k.social", purpose: "teacher", caption: "My hook formula", format: "reel", permalink: "https://instagram.com/reel/tr1", thumbnailUrl: null, postedAt: daysAgo(2), likeCount: 1, commentsCount: 1, viewCount: 5000, analysis: null },
-      { id: "pp1", username: "pippipost.shop", purpose: "peer", caption: "c", format: "reel", permalink: null, thumbnailUrl: null, postedAt: daysAgo(2), likeCount: 1, commentsCount: 1, viewCount: 9000, analysis: null },
-    ]);
+    vi.mocked(reviewQueries.getLessons).mockResolvedValue([lessonRow(), lessonRow({ postId: "ig:t2", username: "lana.k.social", area: "engagement", principle: "Reply to every comment in the first hour.", kind: "claim" })]);
+    vi.mocked(reviewQueries.getTeacherVideoCoverage).mockResolvedValue(coverage);
   });
 
-  it("starts following an account as a teacher", async () => {
-    vi.mocked(reviewQueries.setPeer).mockResolvedValue(teacher);
-    const r = (await dispatchTool(ctx, "social_peer_set", { username: "@lana.k.social", role: "teacher" })) as Record<string, any>;
-    expect(vi.mocked(reviewQueries.setPeer).mock.calls[0][1]).toMatchObject({ username: "lana.k.social", purpose: "teacher" });
-    expect(r.note).toMatch(/lessons/);
-    expect(r.role).toBe("teacher");
+  // No account is followed for advice; a watched account is a competitor.
+  it("watches an account as a peer and takes no teacher role", async () => {
+    vi.mocked(reviewQueries.setPeer).mockResolvedValue({ username: "lana.k.social", purpose: "peer", notes: null, active: true });
+    const r = (await dispatchTool(ctx, "social_peer_set", { username: "@lana.k.social" })) as Record<string, any>;
+    expect(vi.mocked(reviewQueries.setPeer).mock.calls[0][1]).toEqual({ username: "lana.k.social", active: true, notes: undefined, addedBy: "Matt" });
+    expect(r.role).toBe("peer");
+    await expect(dispatchTool(ctx, "social_peer_set", { username: "lana.k.social", role: "teacher" })).rejects.toThrow(/Unknown argument "role"/);
   });
 
-  it("lists every tracked account with its role", async () => {
-    const r = (await dispatchTool(ctx, "social_peers", {})) as Record<string, any>;
-    expect(r.accounts).toEqual([
-      { username: "pippipost.shop", role: "peer", notes: "bookish merch" },
-      { username: "lana.k.social", role: "teacher", notes: "IG growth advice" },
-    ]);
-  });
-
-  it("refuses a purpose that is neither peer nor teacher", async () => {
-    await expect(dispatchTool(ctx, "social_peer_set", { username: "lana.k.social", role: "mentor" })).rejects.toBeInstanceOf(McpArgumentError);
-  });
-
-  // A teacher is not a benchmark: it stays out of the peer comparisons.
-  it("keeps teachers out of the peer sections", async () => {
+  it("keeps an account that was once a teacher out of the peer sections", async () => {
+    vi.mocked(reviewQueries.getPeers).mockResolvedValue([{ username: "pippipost.shop", purpose: "peer", notes: "bookish merch", active: true }, oldTeacher]);
     const peers = (await dispatchTool(ctx, "social_peers", {})) as Record<string, any>;
     expect(peers.peers.map((p: any) => p.username)).toEqual(["pippipost.shop"]);
     const review = (await dispatchTool(ctx, "social_review", {})) as Record<string, any>;
     expect(review.peers.map((p: any) => p.username)).toEqual(["pippipost.shop"]);
-    expect(review.teachers).toEqual({ accounts: ["lana.k.social"], tool: "social_playbook" });
+    expect(review.teachers).toMatchObject({ tool: "social_playbook", source: expect.stringMatching(/Slack/) });
   });
 
-  it("gives the lessons by area, with their sources and kinds", async () => {
+  it("gives the lessons by area, with their videos and kinds", async () => {
     const r = (await dispatchTool(ctx, "social_playbook", {})) as Record<string, any>;
     expect(r.areas.map((a: any) => a.area)).toEqual(["hook", "engagement"]);
-    expect(r.areas[0].lessons[0]).toMatchObject({ principle: "Open with the result.", kind: "practice", sources: [{ permalink: "https://instagram.com/p/t1", basis: "caption+slides" }] });
+    expect(r.areas[0].lessons[0]).toMatchObject({
+      principle: "Open with the result.", kind: "practice",
+      sources: [{ postId: "ig:t1", username: null, permalink: "https://www.instagram.com/reel/t1/", savedAt: daysAgo(3).toISOString(), basis: "caption+transcript" }],
+    });
     expect(r.areas[1].lessons[0].kind).toBe("claim");
     expect(r.lessonsMatched).toBe(2);
     expect(r.caveat).toMatch(/claim/);
   });
 
-  it("says how much of each teacher has been read, and which reels need uploading", async () => {
+  it("says how many videos were saved, read and failed, and how to add one", async () => {
     const r = (await dispatchTool(ctx, "social_playbook", {})) as Record<string, any>;
-    expect(r.teachers).toEqual([expect.objectContaining({
-      username: "lana.k.social", notes: "IG growth advice", posts: 50, read: 20, withLessons: 14,
-      reelsAwaitingUpload: [expect.objectContaining({ id: "tr1", permalink: "https://instagram.com/reel/tr1" })],
-    })]);
-    expect(r.uploadPage).toBe("/social/uploads");
+    expect(r.videos).toMatchObject({ saved: 3, read: 2, withLessons: 1, teachingNothing: 1, byCreator: coverage.byCreator });
+    expect(r.videos.failed).toEqual([expect.objectContaining({ id: "ig:bad", savedAt: daysAgo(1).toISOString() })]);
+    expect(r.videos.howToAdd).toMatch(/Slack/);
+    expect(r.note).toBeUndefined();
+  });
+
+  it("says plainly when no video has been saved yet", async () => {
+    vi.mocked(reviewQueries.getLessons).mockResolvedValue([]);
+    vi.mocked(reviewQueries.getTeacherVideoCoverage).mockResolvedValue({ ...coverage, saved: 0, read: 0, withLessons: 0, teachingNothing: 0, failed: [], byCreator: [] });
+    const r = (await dispatchTool(ctx, "social_playbook", {})) as Record<string, any>;
+    expect(r.areas).toEqual([]);
+    expect(r.note).toMatch(/No teacher videos saved yet/);
   });
 
   // Advice is checked against her own numbers before it is recommended.
@@ -346,14 +345,9 @@ describe("teacher accounts", () => {
     expect(r.taraEvidence.usual).toBeDefined();
   });
 
-  it("narrows to one teacher and one area", async () => {
+  it("narrows to one creator and one area", async () => {
     await dispatchTool(ctx, "social_playbook", { username: "@Lana.K.Social", area: "hook" });
     expect(vi.mocked(reviewQueries.getLessons).mock.calls[0][1]).toMatchObject({ username: "lana.k.social", area: "hook" });
-  });
-
-  it("refuses an account that is not a teacher", async () => {
-    const r = (await dispatchTool(ctx, "social_playbook", { username: "pippipost.shop" })) as Record<string, any>;
-    expect(r.error).toMatch(/not a teacher.*social_peer_set/);
   });
 });
 
@@ -371,7 +365,7 @@ describe("social_review — reel sources and downloads", () => {
 
 describe("teacher_advice", () => {
   const row = (o: Record<string, unknown> = {}) => ({
-    postId: "t1", username: "lana.k.social", permalink: "https://instagram.com/reel/t1/", postedAt: daysAgo(3), format: "reel",
+    postId: "ig:t1", username: "lana.k.social", permalink: "https://www.instagram.com/reel/t1/", savedAt: daysAgo(3), note: "great hook breakdown", format: "reel",
     transcript: "Stop opening with hi. Lead with the payoff.", openingWords: "Stop opening with hi.",
     faceInFirst2s: 1, cutsPerMinute: 18, audio: "speech", source: "api_backfill",
     area: "hook", principle: "Open with the payoff.", howToApply: "Show the finished page first.", kind: "practice", quote: "Lead with the payoff", ...o,
@@ -381,10 +375,11 @@ describe("teacher_advice", () => {
     vi.mocked(reviewQueries.getTeacherAdvice).mockResolvedValue([row(), row({ principle: "Reply to comments in the first hour.", area: "engagement", kind: "claim", quote: null })]);
   });
 
-  it("gives each reel's advice with what the reel was and said", async () => {
+  it("gives each saved video's advice with what it was and said, and why it was saved", async () => {
     const r = (await dispatchTool(ctx, "teacher_advice", {})) as Record<string, any>;
     expect(r.reels).toEqual([expect.objectContaining({
-      postId: "t1", username: "lana.k.social", permalink: "https://instagram.com/reel/t1/", source: "api_backfill",
+      postId: "ig:t1", username: "lana.k.social", permalink: "https://www.instagram.com/reel/t1/", source: "api_backfill",
+      savedAt: daysAgo(3).toISOString(), note: "great hook breakdown",
       faceInFirst2s: true, cutsPerMinute: 18, audio: "speech", openingWords: "Stop opening with hi.", transcript: "Stop opening with hi. Lead with the payoff.",
       advice: [
         { tip: "Open with the payoff.", quote: "Lead with the payoff", area: "hook", kind: "practice", howToApply: "Show the finished page first." },

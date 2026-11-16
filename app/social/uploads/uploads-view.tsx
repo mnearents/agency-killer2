@@ -9,10 +9,6 @@ export interface PeerUploads {
   waiting: PeerReel[];
   uploaded: PeerReel[];
 }
-export interface TeacherUploads {
-  waiting: PeerPost[];
-  uploaded: PeerPost[];
-}
 
 export interface DownloadOverview {
   usage: DownloadUsage;
@@ -31,12 +27,13 @@ const fmtTime = (d: Date) => d.toLocaleString("en-US", { month: "short", day: "n
 function DownloadPanel({ d }: { d: DownloadOverview }) {
   const total = d.usage.own + d.usage.teacher + d.usage.peer;
   const lastOk = d.last?.outcome === "ok";
-  const whose = (l: LastDownload) => (l.account === "own" ? "Tara's reel" : `@${l.username}'s reel`);
+  const whose = (l: LastDownload) =>
+    l.account === "own" ? "Tara's reel" : l.account === "teacher" ? `a teacher video sent in Slack${l.username ? ` (@${l.username})` : ""}` : `@${l.username}'s reel`;
   return (
     <section style={{ background: "#fff", border: "1px solid #ece6df", borderRadius: 16, padding: "14px 16px", margin: "0 0 24px", fontSize: 14, color: "#5f5750", lineHeight: 1.6 }}>
       <div style={{ fontWeight: 700, color: "#2b2622", marginBottom: 4 }}>Automatic downloads</div>
       <div>
-        This month: <strong style={{ color: "#2b2622" }}>{total} call{total === 1 ? "" : "s"}</strong> — Tara {d.usage.own} · teachers {d.usage.teacher} · peers {d.usage.peer}
+        This month: <strong style={{ color: "#2b2622" }}>{total} call{total === 1 ? "" : "s"}</strong> — Tara {d.usage.own} · peers {d.usage.peer} · teacher videos sent in Slack {d.usage.teacher}
         {d.quota.remaining !== null ? (
           <> · RapidAPI says <strong style={{ color: d.quota.remaining === 0 ? "#b3372f" : "#2b2622" }}>{d.quota.remaining}{d.quota.limit !== null ? ` of ${d.quota.limit}` : ""} left</strong>
             {d.quota.resetAt ? `, resets ${fmtDate(d.quota.resetAt)}` : ""}</>
@@ -147,7 +144,7 @@ function vsUsualText(r: PeerReel): string {
   return "not enough history to judge";
 }
 
-/** A peer or teacher reel seen by its cover only: what it did for them, and the upload controls. */
+/** A peer reel seen by its cover only: what it did for them, and the upload controls. */
 function WaitingPeerReel({ reel, label, standout, failure }: { reel: PeerPost; label: string | null; standout: boolean; failure?: { failures: number; lastDetail: string | null } }) {
   return (
     <article style={{ display: "flex", gap: 16, background: "#fff", border: "1px solid #ece6df", borderRadius: 16, padding: 14, flexWrap: "wrap" }}>
@@ -180,7 +177,7 @@ function WaitingPeerReel({ reel, label, standout, failure }: { reel: PeerPost; l
   );
 }
 
-/** A peer or teacher reel already uploaded: one line. */
+/** A peer reel already uploaded: one line. */
 function UploadedPeerReel({ reel, label }: { reel: PeerPost; label: string | null }) {
   return (
     <li style={{ padding: "12px 0", borderTop: "1px solid #ece6df", display: "grid", gap: 4 }}>
@@ -241,49 +238,11 @@ function PeerSection({ peers, failures }: { peers: PeerUploads; failures: Downlo
   );
 }
 
-/** Teacher accounts' reels: uploaded for what they say, so they can be read for lessons. */
-function TeacherSection({ teachers, failures }: { teachers: TeacherUploads; failures: DownloadFailures }) {
-  if (teachers.waiting.length === 0 && teachers.uploaded.length === 0) return null;
-  const shown = teachers.waiting.slice(0, PEER_SHOWN);
-  const rest = teachers.waiting.slice(PEER_SHOWN);
-  return (
-    <section style={{ marginTop: 40 }}>
-      <h2 style={{ fontFamily: SERIF, fontSize: 24, margin: "0 0 8px" }}>Teacher reels</h2>
-      <p style={{ fontSize: 16, lineHeight: 1.6, color: "#5f5750", margin: "0 0 8px" }}>
-        Accounts followed for their advice. Their carousels and captions are read for lessons on their own, but a talking-head reel teaches in what
-        is said — upload it and it is transcribed, its frames are looked at, and its lessons are read from the words. Newest first.
-      </p>
-      <p style={{ fontSize: 14, color: "#8a8178", margin: "0 0 20px" }}>Optional. Lessons appear in Claude's playbook after the next Instagram sync.</p>
-      <div style={{ display: "grid", gap: 14 }}>
-        {shown.map((r) => <WaitingPeerReel key={r.id} reel={r} label={null} standout={false} failure={failures.get(r.id)} />)}
-      </div>
-      {rest.length > 0 ? (
-        <details style={{ marginTop: 14 }}>
-          <summary style={{ cursor: "pointer", fontSize: 15, color: "#6b3fb8", fontWeight: 700 }}>Show {rest.length} more</summary>
-          <div style={{ display: "grid", gap: 14, marginTop: 14 }}>
-            {rest.map((r) => <WaitingPeerReel key={r.id} reel={r} label={null} standout={false} failure={failures.get(r.id)} />)}
-          </div>
-        </details>
-      ) : null}
-      {teachers.uploaded.length > 0 ? (
-        <div style={{ marginTop: 24 }}>
-          <h3 style={{ fontFamily: SERIF, fontSize: 18, margin: "0 0 4px" }}>Teacher reels already uploaded ({teachers.uploaded.length})</h3>
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {teachers.uploaded.map((r) => <UploadedPeerReel key={r.id} reel={r} label={null} />)}
-          </ul>
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-/** The upload page's layout, apart from its data so it can be rendered on its own. */
-export function UploadsView({ reels, covers, days, peers, teachers, downloads, failures = new Map() }: {
+export function UploadsView({ reels, covers, days, peers, downloads, failures = new Map() }: {
   reels: UploadableReel[];
   covers: Map<string, string>;
   days: number;
   peers?: PeerUploads;
-  teachers?: TeacherUploads;
   downloads?: DownloadOverview;
   failures?: DownloadFailures;
 }) {
@@ -322,7 +281,6 @@ export function UploadsView({ reels, covers, days, peers, teachers, downloads, f
         </section>
       ) : null}
 
-      {teachers ? <TeacherSection teachers={teachers} failures={failures} /> : null}
       {peers ? <PeerSection peers={peers} failures={failures} /> : null}
     </div>
   );

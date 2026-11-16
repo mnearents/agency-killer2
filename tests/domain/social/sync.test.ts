@@ -457,13 +457,13 @@ describe("syncSocialPosts — peer accounts", () => {
   });
 });
 
-describe("syncSocialPosts — teacher accounts", () => {
-  // The step that turns a teacher's posts into lessons has to run in the sync.
-  it("reads teacher posts for what they teach, and counts it", async () => {
+describe("syncSocialPosts — saved teacher videos", () => {
+  // A video sent in Slack is read at once; the sync retries any whose lessons failed.
+  it("reads a saved video still owed its lessons, and counts it", async () => {
     const generate = vi.fn().mockResolvedValue({ text: JSON.stringify({ lessons: [{ principle: "Open with the result.", howToApply: null, area: "hook", kind: "practice", quote: null }] }) });
-    const { db, inserts } = fakeDb({ social_peer_posts: [{ id: "t1", username: "lana.k.social", caption: "Hooks 101", mediaType: "IMAGE", mediaProductType: "FEED", transcript: null, onScreenText: null, visualStatus: null, visualAttempts: null, runStatus: null, runAttempts: null, analysisStatus: "ok", analysisAttempts: 1 }] });
+    const { db, inserts } = fakeDb({ teacher_videos: [{ id: "ig:abc", username: null, caption: "Hooks 101", note: null, transcript: "Lead with the payoff.", onScreenText: null, status: "ok", visualStatus: "ok", visualAttempts: 1, runStatus: "error", runAttempts: 1 }] });
     const r = await syncSocialPosts({ client: client(), db, igUserId: "ig1", anthropic: createMockAnthropicClient({ generate }), now: () => NOW, sleep: noSleep });
-    expect(inserts.find((w) => w.table === "social_lessons")).toBeDefined();
+    expect(inserts.find((w) => w.table === "social_lessons")!.values).toEqual([expect.objectContaining({ postId: "ig:abc", username: "unknown", principle: "Open with the result." })]);
     expect(r.lessons).toEqual({ configured: true, extracted: 1, none: 0, failed: 0, lessons: 1 });
   });
 

@@ -182,7 +182,7 @@ async function analyseUploadedPeerReel(
   }
   const facts = looked.facts!;
 
-  const words = post.transcript ? { transcribed: false, transcript: post.transcript, openingWords: post.openingWords, error: null } : await transcribePeerUpload(deps, input.filePath, facts);
+  const words = post.transcript ? { transcribed: false, transcript: post.transcript, openingWords: post.openingWords, error: null } : await transcribeVideoFile(deps, input.filePath, facts);
   if (words.transcribed) {
     await deps.db
       .update(socialPeerPosts)
@@ -215,8 +215,8 @@ async function analyseUploadedPeerReel(
   };
 }
 
-/** Speech in a peer's upload, as text — nothing stored here. */
-async function transcribePeerUpload(
+/** Speech in a video file that is not one of Tara's posts, as text — nothing stored here. */
+export async function transcribeVideoFile(
   deps: UploadDeps,
   path: string,
   facts: VideoFacts,

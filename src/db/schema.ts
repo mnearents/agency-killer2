@@ -900,14 +900,12 @@ export const socialPeers = pgTable("social_peers", {
   username: text("username").primaryKey(),
   /**
    * peer: an account in the niche, benchmarked against its own usual for
-   * ideas. teacher: an account followed for its advice, read for lessons.
+   * ideas. teacher: an account once followed for its advice — no longer:
+   * teacher videos are sent one at a time (`teacher_videos`), and the
+   * accounts were stopped on 2026-11-16 with their history kept.
    */
   purpose: text("purpose").notNull().default("peer"),
-  /**
-   * Teachers only: when the account first became one. Its reels are
-   * auto-downloaded from 30 days before this date on — fixed, so the cutoff
-   * never moves with later syncs and older history is never reached for.
-   */
+  /** Teachers only, historical: when the account first became one. */
   firstFillAt: timestamp("first_fill_at", { withTimezone: true }),
   active: integer("active").notNull().default(1),
   notes: text("notes"),
@@ -997,9 +995,46 @@ export const socialDownloads = pgTable(
 );
 
 /**
- * What a teacher account's post teaches (`lessons.ts`): a principle in our own
+ * Videos Matt found insightful and sent to the Slack bot as an Instagram link
+ * — the teachers now. No account is followed for advice; each video is chosen.
+ *
+ * The link is resolved and downloaded through the reel downloader (RapidAPI,
+ * a `social_downloads` row with account `teacher`), the file transcribed and
+ * its frames read (`social_post_visuals`, same id), and its lessons listed in
+ * `social_lessons` / `social_lesson_runs` under the same id. The file itself
+ * is deleted. `id` is `ig:<shortcode>`, so one video is saved once however
+ * its link was shared.
+ *
+ * The downloader gives the caption but not the creator or the posting date,
+ * so `username` is what the link or the Slack message said, else null.
+ */
+export const teacherVideos = pgTable("teacher_videos", {
+  id: text("id").primaryKey(),
+  shortcode: text("shortcode").notNull().unique("teacher_videos_shortcode_unique"),
+  /** https://www.instagram.com/reel/<shortcode>/ */
+  url: text("url").notNull(),
+  username: text("username"),
+  caption: text("caption"),
+  /** Why it was saved, as written in Slack. */
+  note: text("note"),
+  savedBy: text("saved_by"),
+  savedAt: timestamp("saved_at", { withTimezone: true }).notNull(),
+  /** ok (downloaded and read) | failed (retried when sent again) */
+  status: text("status").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  detail: text("detail"),
+  transcript: text("transcript"),
+  openingWords: text("opening_words"),
+  durationMs: integer("duration_ms"),
+  readAt: timestamp("read_at", { withTimezone: true }),
+});
+
+/**
+ * What a saved teacher video teaches (`lessons.ts`): a principle in our own
  * words, how Tara could apply it, its area, and whether it is a practice or
- * an unverified claim. Rewritten whole when the post is read again.
+ * an unverified claim. Rewritten whole when the video is read again.
+ * Rows from followed teacher accounts (before 2026-11-16) are kept but no
+ * longer served: `post_id` there is a media ID, not a `teacher_videos` id.
  */
 export const socialLessons = pgTable(
   "social_lessons",
@@ -1021,7 +1056,7 @@ export const socialLessons = pgTable(
 );
 
 /**
- * Whether each teacher post has been read for lessons. status: ok (lessons
+ * Whether each saved teacher video has been read for lessons. status: ok (lessons
  * found) | none (it teaches nothing — an answer) | error (retried three
  * times) | stale (an upload brought its words; read again).
  */

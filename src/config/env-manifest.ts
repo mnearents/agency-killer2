@@ -178,7 +178,7 @@ export const ENV_MANIFEST: EnvVariable[] = [
     name: "RAPIDAPI_KEY",
     surfaces: ["worker"],
     severity: "degraded",
-    impact: "Reels Instagram withholds (Tara's licensed-music reels, teachers' and peers') are not downloaded; they wait for a manual upload at /social/uploads.",
+    impact: "Reels Instagram withholds (Tara's licensed-music reels, competitors') are not downloaded and wait for a manual upload at /social/uploads; teacher video links sent to the Slack bot cannot be saved.",
   },
   {
     name: "REEL_AUTO_DOWNLOAD",
@@ -193,16 +193,10 @@ export const ENV_MANIFEST: EnvVariable[] = [
     impact: "Unset, reel downloads stop at 3 calls a month (the free plan) — Tara's included.",
   },
   {
-    name: "TEACHER_MONTHLY_CAP",
-    surfaces: ["worker"],
-    severity: "degraded",
-    impact: "Unset, teachers' reel downloads are capped at 60 a month; the rest queue for next month.",
-  },
-  {
     name: "PEER_MONTHLY_CAP",
     surfaces: ["worker"],
     severity: "degraded",
-    impact: "Unset, peers' reel downloads are capped at 40 a month; the rest queue for next month.",
+    impact: "Unset, peers' reel downloads are capped at 300 a month — every recent reel of a few accounts; the rest queue for next month.",
   },
   {
     name: "SLACK_BOT_TOKEN",

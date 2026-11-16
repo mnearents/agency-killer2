@@ -11,8 +11,7 @@
  *   cover, and "licensed music, likely" for its sound;
  * - a carousel: every slide; an image: itself;
  * - a peer's post: the image, slides or reel cover Business Discovery gave —
- *   never a peer's video, so never its sound. A teacher account's posts are
- *   read whatever their age: their slides are what the lessons come from.
+ *   never a peer's video, so never its sound.
  * A post with nothing at all is `unavailable` and not asked about again.
  */
 
@@ -303,9 +302,8 @@ export async function syncVisuals(deps: VisualSyncDeps, errors: string[]): Promi
     })
     .from(socialPeerPosts)
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
-    .leftJoin(socialPeers, eq(socialPeers.username, socialPeerPosts.username))
     .where(and(
-      or(gte(socialPeerPosts.postedAt, new Date(now.getTime() - PEER_VISUAL_DAYS * 86_400_000)), eq(socialPeers.purpose, "teacher")),
+      gte(socialPeerPosts.postedAt, new Date(now.getTime() - PEER_VISUAL_DAYS * 86_400_000)),
       sql`(${socialPostVisuals.status} IS NULL OR (${socialPostVisuals.status} = 'error' AND ${socialPostVisuals.attempts} < ${MAX_VISUAL_ATTEMPTS}))`,
     ))
     .orderBy(desc(socialPeerPosts.postedAt))

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isGiveaway, buildPeerBaselines, scorePeerPost, summarisePeer, peerReelsForUpload, teacherReelsForUpload, type PeerPost } from "@/domain/social/peers";
+import { isGiveaway, buildPeerBaselines, scorePeerPost, summarisePeer, peerReelsForUpload, type PeerPost } from "@/domain/social/peers";
 
 const NOW = new Date("2026-11-09T12:00:00Z");
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000);
@@ -135,21 +135,15 @@ describe("peerReelsForUpload", () => {
   });
 });
 
-describe("teacher reels", () => {
+describe("accounts once followed as teachers", () => {
   const visualDone = { basis: "frames", visualType: null, visualHook: null, faceInFirst2s: null, productVisible: null, handDrawn: null, audio: null, cutsPerMinute: null, source: "manual_upload" };
 
-  // A teacher's reel is worth uploading for what it says, not for how it did.
+  // Teachers are no longer followed; an old teacher account's reels are not competitors' and are never queued.
   it("keeps teachers' reels out of the peer list", () => {
     const r = peerReelsForUpload([reel(50_000, { id: "t", username: "lana.k.social", purpose: "teacher" }), reel(50_000, { id: "p" })], NOW);
     expect(r.waiting.map((p) => p.id)).toEqual(["p"]);
   });
 
-  it("lists a teacher's reels newest first, whatever their age, and the ones already uploaded apart", () => {
-    const t = (id: string, days: number, o: Partial<PeerPost> = {}) => reel(1000, { id, username: "lana.k.social", purpose: "teacher", postedAt: daysAgo(days), ...o });
-    const r = teacherReelsForUpload([t("old", 200), t("new", 2), t("done", 5, { visual: visualDone }), post({ id: "img", username: "lana.k.social", purpose: "teacher" }), reel(1, { id: "peer" })]);
-    expect(r.waiting.map((p) => p.id)).toEqual(["new", "old"]);
-    expect(r.uploaded.map((p) => p.id)).toEqual(["done"]);
-  });
 });
 
 describe("peerReelsForUpload — downloaded reels", () => {

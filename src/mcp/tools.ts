@@ -52,10 +52,9 @@ import {
 } from "@/domain/subscriptions/analytics";
 import { summarisePricing } from "@/domain/subscriptions/pricing";
 import { getPostSummary, getPostsByDateRange } from "@/domain/social/queries";
-import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget, getLessons, getLessonCoverage, getTeacherAdvice, type Peer, type PeerPurpose } from "@/domain/social/review-queries";
+import { getReviewPosts, getAccountDayRows, getLatestReview, saveReview, getPeers, getPeerPosts, getPeerDays, setPeer, getTargets, recordTarget, getLessons, getTeacherVideoCoverage, getTeacherAdvice, type Peer, type PeerPurpose } from "@/domain/social/review-queries";
 import { getDownloadSummary } from "@/domain/social/download-queries";
 import { groupAdviceByPost, groupLessons, LESSON_AREAS, type LessonArea } from "@/domain/social/lessons";
-import { teacherReelsForUpload } from "@/domain/social/peers";
 import { summarisePeer } from "@/domain/social/peers";
 import { IG_USERNAME } from "@/integrations/instagram-api";
 import { buildBaselines, measuresOf, scorePost, findPatterns, summariseAccountDays, isSettled, buildScorecard, BASELINE_DAYS, type ReviewPostVisual } from "@/domain/social/review";
@@ -2184,9 +2183,7 @@ const socialReview: McpTool = {
       targets,
       peers,
       peerCaveat: PEER_CAVEAT,
-      teachers: "error" in tracked
-        ? tracked
-        : { accounts: (tracked as Peer[]).filter((p) => p.purpose === "teacher").map((p) => p.username), tool: "social_playbook" },
+      teachers: { source: "Videos Matt sent to the Slack bot as Instagram links — no account is followed for advice", tool: "social_playbook" },
       coverage: {
         postsInWeek: described.length,
         postsWithViews: withViews,
@@ -2231,57 +2228,52 @@ const socialPeersTool: McpTool = {
 
 const socialPeerSet: McpTool = {
   name: "social_peer_set",
-  title: "Track a peer or teacher Instagram account",
+  title: "Track a peer Instagram account",
   description:
-    "Start watching another Instagram account (`username`, with or without @), add `notes` on why, or stop with `active: false` — its history is kept. " +
-    "`role`: `peer` (the default for a new account) is an account in the niche, benchmarked against its own usual for ideas (social_peers); `teacher` is an account followed for its advice, whose posts are read for lessons (social_playbook, teacher_advice). Leave it out to keep an existing account's role. " +
-    "A new teacher's reels are fetched from 30 days before the day it became one, and every new reel after; never older history. " +
+    "Start watching another Instagram account in the niche (`username`, with or without @), add `notes` on why, or stop with `active: false` — its history is kept. " +
+    "A watched account is a peer, benchmarked against its own usual for ideas (social_peers); every reel it posts is downloaded and transcribed. " +
+    "No account is followed for advice: teacher videos are sent one at a time to the Slack bot as Instagram links (social_playbook, teacher_advice). " +
     "Only business and creator accounts can be read; the next daily sync says if Instagram will not describe it.",
   readOnly: false,
   schema: {
     username: { type: "string", required: true },
     active: { type: "boolean", default: true },
-    role: { type: "enum", values: ["peer", "teacher"] },
     notes: { type: "string" },
   },
   async run(ctx, args) {
     const username = normaliseUsername(args.username as string);
     if (!IG_USERNAME.test(username)) throw new McpArgumentError(`"${args.username}" is not an Instagram username`);
     const notes = typeof args.notes === "string" ? args.notes.trim() : undefined;
-    const purpose = args.role as PeerPurpose | undefined;
-    const peer = await setPeer(ctx.db, { username, active: args.active as boolean, purpose, notes, addedBy: ctx.actor ?? null });
-    const when = "the next daily Instagram sync (13:30 UTC), or now with `!sync social` in Slack";
+    const peer = await setPeer(ctx.db, { username, active: args.active as boolean, notes, addedBy: ctx.actor ?? null });
     const { purpose: role, ...rest } = peer;
     return {
       written: true,
       ...rest,
       role,
-      note: !peer.active
-        ? "No longer read; what was collected is kept."
-        : role === "teacher"
-          ? `Read from ${when}; its posts' lessons build up over a few syncs (20 a run) and are served by social_playbook. Its talking-head reels teach in what is said — upload them at ${UPLOAD_PAGE}.`
-          : `Read from ${when}.`,
+      note: peer.active
+        ? "Read from the next daily Instagram sync (13:30 UTC), or now with `!sync social` in Slack."
+        : "No longer read; what was collected is kept.",
     };
   },
 };
 
-/** Lessons are drawn from a teacher's posts of the last year by default. */
+/** Lessons are drawn from videos saved in the last year by default. */
 const PLAYBOOK_DAYS = 365;
 const PLAYBOOK_MAX_LESSONS = 200;
-const PLAYBOOK_AWAITING = 10;
 
 const PLAYBOOK_CAVEAT =
-  "Each lesson is a teacher's advice restated in Claude's words, read from what Instagram gives: the caption, the text on the post, and — only for reels Matt uploaded — what was said. A talking-head reel never uploaded taught what its caption says and no more. " +
-  "`kind: claim` is an assertion the teacher made (about the algorithm, reach or a number) that nothing here verified; `practice` is a way of doing something. " +
-  "Before recommending a lesson, test it against `taraEvidence` (her own 90-day patterns) and say whether her numbers agree, disagree or cannot tell. Use the ideas; never copy a teacher's posts or wording as Tara's.";
+  "Each lesson is advice from a video Matt saved because it seemed insightful, restated in Claude's words, read from its caption, the text on screen and its transcript. " +
+  "`kind: claim` is an assertion the video made (about the algorithm, reach or a number) that nothing here verified; `practice` is a way of doing something. " +
+  "Before recommending a lesson, test it against `taraEvidence` (her own 90-day patterns) and say whether her numbers agree, disagree or cannot tell. Use the ideas; never copy a creator's posts or wording as Tara's.";
 
 const socialPlaybook: McpTool = {
   name: "social_playbook",
-  title: "Lessons from teacher Instagram accounts",
+  title: "Lessons from saved teacher videos",
   description:
-    "What the teacher accounts (added with social_peer_set purpose `teacher`) teach about making Instagram content that grows: `areas` — lessons grouped by part of a post (hook, caption, reel structure, carousel, visuals, audio, posting rhythm, engagement, growth, content ideas), the most-taught first, each with how Tara could apply it, whether it is a practice or an unverified claim, and the posts it came from. " +
-    "`teachers`: how much of each account has been read, and its reels awaiting upload — ask Matt for those by permalink, since a talking-head reel's advice is in what is said. `taraEvidence`: her own patterns and usual from social_review, to test each lesson against before recommending it. " +
-    "Use it to bring lessons into the weekly review, or to write a skill from a slice of it (e.g. one area). Narrow with `username`, `area` or `days` (default 365).",
+    "What the teacher videos teach about making Instagram content that grows. These are videos Matt found insightful and sent to the Slack bot as Instagram links — no account is followed; each video was chosen. " +
+    "`areas`: lessons grouped by part of a post (hook, caption, reel structure, carousel, visuals, audio, posting rhythm, engagement, growth, content ideas), the most-taught first, each with how Tara could apply it, whether it is a practice or an unverified claim, and the videos it came from. " +
+    "`videos`: how many were saved, read and taught something, by creator, and any whose download failed (sending the link again retries it). `taraEvidence`: her own patterns and usual from social_review, to test each lesson against before recommending it. " +
+    "Use it to bring lessons into the weekly review, or to write a skill from a slice of it (e.g. one area). Narrow with `username` (the creator, when known), `area` or `days` saved within (default 365).",
   readOnly: true,
   schema: {
     username: { type: "string" },
@@ -2293,39 +2285,22 @@ const socialPlaybook: McpTool = {
     const since = new Date(now.getTime() - (args.days as number) * 86_400_000);
     const only = typeof args.username === "string" ? normaliseUsername(args.username) : undefined;
     const area = args.area as LessonArea | undefined;
-
-    const teachers = (await getPeers(ctx.db)).filter((p) => p.purpose === "teacher");
-    if (only !== undefined && !teachers.some((t) => t.username === only)) {
-      return { error: `@${only} is not a teacher account. Add it with social_peer_set and purpose "teacher".` };
-    }
-    const [rows, coverage, posts, review] = await Promise.all([
+    const [rows, coverage, review] = await Promise.all([
       getLessons(ctx.db, { since, username: only, area }),
-      getLessonCoverage(ctx.db),
-      getPeerPosts(ctx.db, since),
+      getTeacherVideoCoverage(ctx.db),
       section(() => dispatchTool(ctx, "social_review", {}) as Promise<Json>),
     ]);
     const capped = rows.slice(0, PLAYBOOK_MAX_LESSONS);
-    const awaiting = teacherReelsForUpload(posts).waiting;
     return {
       areas: groupLessons(capped),
       lessonsMatched: rows.length,
       lessonsReturned: capped.length,
-      teachers: teachers
-        .filter((t) => only === undefined || t.username === only)
-        .map((t) => {
-          const c = coverage.find((x) => x.username === t.username);
-          const mine = awaiting.filter((r) => r.username === t.username);
-          return {
-            username: t.username,
-            notes: t.notes,
-            posts: c?.posts ?? 0,
-            read: c?.read ?? 0,
-            withLessons: c?.withLessons ?? 0,
-            reelsAwaitingUpload: mine.slice(0, PLAYBOOK_AWAITING).map((r) => ({ id: r.id, permalink: r.permalink, postedAt: r.postedAt.toISOString(), caption: r.caption ? r.caption.slice(0, 160) : null })),
-            reelsAwaitingUploadMatched: mine.length,
-          };
-        }),
-      uploadPage: UPLOAD_PAGE,
+      videos: {
+        ...coverage,
+        failed: coverage.failed.map((f) => ({ ...f, savedAt: f.savedAt.toISOString() })),
+        howToAdd: "Send an Instagram link to the Slack bot (a DM, or `!learn <link>` in a channel), optionally with @creator and a note on why.",
+      },
+      note: coverage.saved === 0 ? "No teacher videos saved yet — there is nothing to teach from until Matt sends some." : undefined,
       taraEvidence: "error" in review ? review : { usual: (review as Json).usual, patterns: (review as Json).patterns },
       caveat: PLAYBOOK_CAVEAT,
     };
@@ -2337,10 +2312,10 @@ const ADVICE_MAX_REELS = 60;
 
 const teacherAdvice: McpTool = {
   name: "teacher_advice",
-  title: "Search teacher accounts' advice, reel by reel",
+  title: "Search saved teacher videos' advice, video by video",
   description:
-    "Each teacher post's advice with the post it came from: its permalink, where its frames came from (`source`), face in the first 2s, cuts per minute, sound, its first words and transcript, and `advice` — the specific tips and claims it makes (`tip` in Claude's words, `quote` in hers where she was specific; `kind: claim` is an assertion nothing here verified). " +
-    "Search with `query` (words in the advice, a quote or the transcript), `username`, `area`, `kind`, and `days` (default 365). " +
+    "Each saved teacher video's advice (videos Matt sent to the Slack bot because they seemed insightful) with the video it came from: its link, creator when known, why it was saved (`note`), face in the first 2s, cuts per minute, sound, its first words and transcript, and `advice` — the specific tips and claims it makes (`tip` in Claude's words, `quote` in the creator's where they were specific; `kind: claim` is an assertion nothing here verified). " +
+    "Search with `query` (words in the advice, a quote, the transcript or the note), `username`, `area`, `kind`, and `days` saved within (default 365). " +
     "Before recommending any of it, check it against Tara's own results in social_review (its `patterns`): say whether her numbers agree, disagree or cannot tell.",
   readOnly: true,
   schema: {
@@ -2365,7 +2340,7 @@ const teacherAdvice: McpTool = {
       reelsMatched: reels.length,
       reelsReturned: Math.min(reels.length, ADVICE_MAX_REELS),
       adviceMatched: rows.length,
-      caveat: "Advice is read from each post's caption, on-screen text and transcript; a reel with no transcript taught only what its caption says. Test each piece against Tara's own patterns (social_review) before recommending it, and never copy her wording as Tara's.",
+      caveat: "Advice is read from each video's caption, on-screen text and transcript; a video with no speech taught only what its caption and screen say. Test each piece against Tara's own patterns (social_review) before recommending it, and never copy a creator's wording as Tara's.",
     };
   },
 };

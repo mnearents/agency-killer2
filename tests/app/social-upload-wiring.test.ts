@@ -44,8 +44,9 @@ describe("upload routes", () => {
     expect(page).toMatch(/failures=\{failures\}/);
   });
 
-  it("lists teacher reels on the upload page", () => {
-    expect(read("app/social/uploads/page.tsx")).toMatch(/teachers=\{teacherReelsForUpload\(peerPosts\)\}/);
+  // Teacher videos are sent to the Slack bot; nothing on this page asks for them.
+  it("does not list teacher reels on the upload page", () => {
+    expect(read("app/social/uploads/page.tsx")).not.toMatch(/teacherReelsForUpload|teachers=/);
   });
 
   it("uses the cost form's credentials", () => {

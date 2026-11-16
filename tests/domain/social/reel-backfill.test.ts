@@ -19,7 +19,7 @@ vi.mock("@/domain/social/upload", async (importOriginal) => ({
 }));
 
 const NOW = new Date("2026-11-12T12:00:00Z");
-const c = (postId: string, account: DownloadCandidate["account"]): DownloadCandidate => ({ postId, account, username: account === "own" ? null : "lana.k.social", permalink: `https://www.instagram.com/reel/${postId}/`, postedAt: NOW });
+const c = (postId: string, account: DownloadCandidate["account"]): DownloadCandidate => ({ postId, account, username: account === "own" ? null : "pippipost.shop", permalink: `https://www.instagram.com/reel/${postId}/`, postedAt: NOW });
 
 function video(o: Partial<VideoToolkit> = {}): VideoToolkit {
   return {
@@ -34,14 +34,14 @@ function setup(o: Partial<ReelDownloadDeps> = {}) {
   const sleep = vi.fn().mockResolvedValue(undefined);
   const deps: ReelDownloadDeps = {
     db: d.db, anthropic: createMockAnthropicClient(), video: video(), downloader: createMockReelDownloader(),
-    limits: { plan: 100, teacher: 60, peer: 40 }, now: () => NOW, sleep, ...o,
+    limits: { plan: 100, peer: 40 }, now: () => NOW, sleep, ...o,
   };
   return { ...d, deps, sleep };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(queries.getDownloadQueue).mockResolvedValue({ own: [c("o1", "own")], teachers: [c("t1", "teacher")], peers: [] });
+  vi.mocked(queries.getDownloadQueue).mockResolvedValue({ own: [c("o1", "own")], peers: [c("p1", "peer")] });
   vi.mocked(queries.getDownloadUsage).mockResolvedValue({ usage: { own: 0, teacher: 0, peer: 0 }, quota: { remaining: null, resetAt: null, limit: null }, last: null });
   vi.mocked(upload.analyseUploadedReel).mockResolvedValue({ ok: true, account: "own", summary: "Tara colours a page.", visualHook: "POV", durationMs: 15_000, cuts: 4, transcribed: false, transcriptError: null, audioNote: "n" });
 });
@@ -89,7 +89,7 @@ describe("runReelDownloads", () => {
   it("downloads each queued reel, runs it through the upload pipeline as a download, and deletes the file", async () => {
     const { deps, inserts } = setup();
     const r = await runReelDownloads(deps, {});
-    expect(vi.mocked(upload.analyseUploadedReel).mock.calls.map((c) => [c[1].postId, c[2]])).toEqual([["o1", { origin: "api_backfill" }], ["t1", { origin: "api_backfill" }]]);
+    expect(vi.mocked(upload.analyseUploadedReel).mock.calls.map((c) => [c[1].postId, c[2]])).toEqual([["o1", { origin: "api_backfill" }], ["p1", { origin: "api_backfill" }]]);
     expect((deps.downloader as ReturnType<typeof createMockReelDownloader>).removed).toHaveLength(2);
     expect(r).toMatchObject({ calls: 2, ok: 2, failed: 0, stopped: null });
   });
@@ -141,17 +141,17 @@ describe("runReelDownloads", () => {
 
   it("does only one kind of account, and only as many as asked", async () => {
     const { deps } = setup();
-    vi.mocked(queries.getDownloadQueue).mockResolvedValue({ own: [c("o1", "own"), c("o2", "own")], teachers: [c("t1", "teacher")], peers: [] });
-    await runReelDownloads(deps, { only: "teacher", max: 1 });
-    expect(vi.mocked(upload.analyseUploadedReel).mock.calls.map((c) => c[1].postId)).toEqual(["t1"]);
+    vi.mocked(queries.getDownloadQueue).mockResolvedValue({ own: [c("o1", "own"), c("o2", "own")], peers: [c("p1", "peer"), c("p2", "peer")] });
+    await runReelDownloads(deps, { only: "peer", max: 1 });
+    expect(vi.mocked(upload.analyseUploadedReel).mock.calls.map((c) => c[1].postId)).toEqual(["p1"]);
   });
 
   it("makes no call when the plan's limit is spent, and says why", async () => {
     vi.mocked(queries.getDownloadUsage).mockResolvedValue({ usage: { own: 3, teacher: 0, peer: 0 }, quota: { remaining: null, resetAt: null, limit: null }, last: null });
-    const { deps } = setup({ limits: { plan: 3, teacher: 60, peer: 40 } });
+    const { deps } = setup({ limits: { plan: 3, peer: 40 } });
     const r = await runReelDownloads(deps, {});
     expect(deps.downloader.resolve).not.toHaveBeenCalled();
-    expect(r).toMatchObject({ calls: 0, stopped: "plan-limit", queued: { own: 1, teacher: 1, peer: 0 }, deferred: { own: 1, teacher: 1, peer: 0 } });
+    expect(r).toMatchObject({ calls: 0, stopped: "plan-limit", queued: { own: 1, teacher: 0, peer: 1 }, deferred: { own: 1, teacher: 0, peer: 1 } });
   });
 
   it("returns what each reel showed, for the reply", async () => {

@@ -9,7 +9,7 @@ import { kbDocuments, photos, shopifyProducts } from "@/db/schema";
 import type { DropboxClient, DropboxFileEntry } from "@/integrations/dropbox";
 import type { AnthropicClient } from "@/integrations/anthropic";
 import type { Db } from "@/db/client";
-import { createPhotoDb } from "../../helpers/photo-db";
+import { createTestDb } from "../../helpers/test-db";
 
 const ROOT = "/RAD/Footage";
 const NOW = new Date("2026-11-16T14:10:00Z");
@@ -96,9 +96,9 @@ const LIBRARY: FakeFile[] = [
 let db: Db;
 let reset: () => Promise<unknown>;
 beforeAll(async () => {
-  const created = await createPhotoDb();
+  const created = await createTestDb();
   db = created.db;
-  reset = () => created.client.exec(`TRUNCATE photos, kb_documents, shopify_products RESTART IDENTITY`);
+  reset = () => created.truncate("photos", "kb_documents", "shopify_products");
 });
 beforeEach(async () => {
   await reset();

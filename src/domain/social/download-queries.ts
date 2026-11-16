@@ -3,24 +3,20 @@
  *
  * Queued, oldest rule first:
  * - Tara's reels Instagram withheld (`visual_status = 'cover_only'`), any age;
- * - teachers' reels posted no earlier than 30 days before the account's
- *   first fill — fixed when it became a teacher, so older history is never
- *   reached for;
- * - peers' reels from the last 30 days that did better than that account's
- *   usual (above or breakout).
+ * - every reel tracked peers posted in the last 30 days, the ones furthest
+ *   above their account's usual first — each is downloaded and transcribed.
  * A reel already seen through a manual upload or a download is not queued,
- * nor one that has failed three times (`MAX_DOWNLOAD_ATTEMPTS`).
+ * nor one that has failed three times (`MAX_DOWNLOAD_ATTEMPTS`). Teacher
+ * videos are never queued: each is sent to the Slack bot and fetched then.
  */
 
-import { and, desc, eq, gte, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { socialDownloads, socialPeerPosts, socialPeers, socialPosts, socialPostVisuals } from "@/db/schema";
+import { socialDownloads, socialPosts, socialPostVisuals } from "@/db/schema";
 import { eligibleAfterFailures, type DownloadAccount, type DownloadCandidate, type DownloadUsage, type QuotaState } from "./download-plan";
 import { peerReelsForUpload } from "./peers";
 import { getPeerPosts } from "./review-queries";
 
-/** Teachers' reels are fetched from this long before their first fill. */
-export const TEACHER_FIRST_FILL_DAYS = 30;
 const PEER_HISTORY_DAYS = 90;
 
 /** Outcomes that count against a reel: what the reel itself caused. */
@@ -28,7 +24,6 @@ export const FAILED_OUTCOMES = ["api-error", "no-video", "bad-file", "analysis-f
 
 export interface DownloadQueue {
   own: DownloadCandidate[];
-  teachers: DownloadCandidate[];
   peers: DownloadCandidate[];
 }
 
@@ -43,38 +38,24 @@ export async function getDownloadFailures(db: Db): Promise<Map<string, number>> 
 }
 
 export async function getDownloadQueue(db: Db, now: Date): Promise<DownloadQueue> {
-  const seen = sql`(${socialPostVisuals.source} IS NULL OR ${socialPostVisuals.source} NOT IN ('manual_upload', 'api_backfill') OR ${socialPostVisuals.status} <> 'ok')`;
-  const [own, teachers, peerPosts, failures] = await Promise.all([
+  const [own, peerPosts, failures] = await Promise.all([
     db
       .select({ postId: socialPosts.id, permalink: socialPosts.permalink, postedAt: socialPosts.postedAt })
       .from(socialPosts)
       .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPosts.id))
       .where(and(eq(socialPosts.visualStatus, "cover_only"), isNotNull(socialPosts.permalink), sql`${socialPostVisuals.source} IS DISTINCT FROM 'manual_upload'`))
       .orderBy(desc(socialPosts.postedAt)),
-    db
-      .select({ postId: socialPeerPosts.id, username: socialPeerPosts.username, permalink: socialPeerPosts.permalink, postedAt: socialPeerPosts.postedAt })
-      .from(socialPeerPosts)
-      .innerJoin(socialPeers, and(eq(socialPeers.username, socialPeerPosts.username), eq(socialPeers.purpose, "teacher"), eq(socialPeers.active, 1)))
-      .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialPeerPosts.id))
-      .where(and(
-        or(eq(socialPeerPosts.mediaProductType, "REELS"), eq(socialPeerPosts.mediaType, "VIDEO")),
-        isNotNull(socialPeerPosts.permalink),
-        isNotNull(socialPeers.firstFillAt),
-        sql`${socialPeerPosts.postedAt} >= ${socialPeers.firstFillAt} - make_interval(days => ${TEACHER_FIRST_FILL_DAYS})`,
-        seen,
-      ))
-      .orderBy(desc(socialPeerPosts.postedAt)),
+    // 90 days so each account's usual can be judged; only the last 30 are queued.
     getPeerPosts(db, new Date(now.getTime() - PEER_HISTORY_DAYS * 86_400_000)),
     getDownloadFailures(db),
   ]);
 
   const peers = peerReelsForUpload(peerPosts, now).waiting
-    .filter((p) => (p.verdict === "breakout" || p.verdict === "above") && p.permalink !== null)
+    .filter((p) => p.permalink !== null)
     .map((p): DownloadCandidate => ({ postId: p.id, account: "peer", username: p.username, permalink: p.permalink!, postedAt: p.postedAt }));
 
   return {
     own: eligibleAfterFailures(own.map((r): DownloadCandidate => ({ postId: r.postId, account: "own", username: null, permalink: r.permalink!, postedAt: r.postedAt })), failures),
-    teachers: eligibleAfterFailures(teachers.map((r): DownloadCandidate => ({ postId: r.postId, account: "teacher", username: r.username, permalink: r.permalink!, postedAt: r.postedAt })), failures),
     peers: eligibleAfterFailures(peers, failures),
   };
 }

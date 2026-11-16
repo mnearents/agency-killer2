@@ -211,15 +211,3 @@ export function peerReelsForUpload(posts: PeerPost[], now: Date) {
   return { waiting, uploaded };
 }
 
-/**
- * Teacher accounts' reels for the upload page: a talking-head reel teaches in
- * what is said, which only an uploaded copy gives. Every one held, newest
- * first — advice does not expire after 30 days — and those uploaded apart.
- */
-export function teacherReelsForUpload(posts: PeerPost[]) {
-  const reels = posts.filter((p) => p.format === "reel" && p.purpose === "teacher").sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
-  return {
-    waiting: reels.filter((p) => !hasVideo(p)),
-    uploaded: reels.filter(hasVideo),
-  };
-}

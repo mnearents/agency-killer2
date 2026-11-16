@@ -77,9 +77,9 @@ import { createDbTokenStore, createShipHeroTokenProvider, hasShipHeroTokens, par
 import { syncShipHero, dailyShipHeroRange, backfillShipHeroRange, type ShipHeroSyncResult } from "@/domain/economics/shiphero-sync";
 import { SHIPHERO_BILLING_PROBE_TASK } from "@/domain/economics/shiphero-queries";
 import { readDownloadLimits, type DownloadAccount } from "@/domain/social/download-plan";
+import { learnFromVideo, parseLearnMessage, describeLearnResult, MAX_LINKS_PER_MESSAGE } from "@/domain/social/teacher-videos";
 import { runReelDownloads } from "@/domain/social/reel-backfill";
 import { describeDownloadRun } from "@/domain/social/download-report";
-import { extractLessons } from "@/domain/social/lesson-sync";
 import { fetchMedia, writeTemp } from "@/integrations/media-download";
 import { analyzeSocialPerformance } from "@/domain/social/analyze";
 import { getPostSummary } from "@/domain/social/queries";
@@ -438,7 +438,7 @@ async function main() {
             ? `visuals: ${result.visuals.analysed} looked at, ${result.visuals.failed} failed, ${result.visuals.unavailable} with nothing to see`
             : "visuals NOT configured") + ", " +
           (result.lessons.configured
-            ? `lessons: ${result.lessons.lessons} from ${result.lessons.extracted} teacher post(s), ${result.lessons.none} teaching nothing, ${result.lessons.failed} failed`
+            ? `lessons: ${result.lessons.lessons} from ${result.lessons.extracted} saved teacher video(s) retried, ${result.lessons.none} teaching nothing, ${result.lessons.failed} failed`
             : "lessons NOT configured") + ", " +
           (result.downloads.configured
             ? `reel downloads: ${result.downloads.calls} call(s), ${result.downloads.ok} analysed, ${result.downloads.failed} failed${result.downloads.stopped ? ` (stopped: ${result.downloads.stopped})` : ""}`
@@ -1635,7 +1635,7 @@ async function main() {
           : "• What posts show was NOT looked at",
         ...result.visuals.failures.slice(0, 5).map((f) => `   ◦ ${f.postId}: ${f.detail.slice(0, 160)}`),
         ...(result.lessons.extracted + result.lessons.failed > 0
-          ? [`• ${result.lessons.lessons} lessons from ${result.lessons.extracted} teacher posts${result.lessons.failed > 0 ? `, ${result.lessons.failed} could not be read` : ""}`]
+          ? [`• ${result.lessons.lessons} lessons from ${result.lessons.extracted} saved teacher videos${result.lessons.failed > 0 ? `, ${result.lessons.failed} could not be read` : ""}`]
           : []),
       ];
       if (result.errors.length > 0) {
@@ -1644,15 +1644,20 @@ async function main() {
       return { text: `*Instagram sync complete!*\n${lines.join("\n")}`, isError: false };
     },
     /**
-     * `!sync reels [tara|teachers|peers] [N]` — fetch withheld reels through
+     * `!sync reels [tara|peers] [N]` — fetch withheld reels through
      * the downloader now, within the plan's limits and caps, and say what each
-     * showed. Teachers' advice is read straight after, for the reply.
+     * showed and said.
      */
     "sync:reels": async (args) => {
       if (!reelDownloader) return { text: "Reel downloads unavailable — RAPIDAPI_KEY is not set on the worker.", isError: true };
       if (!anthropicClient) return { text: "Reel downloads unavailable — ANTHROPIC_API_KEY is not set.", isError: true };
       const words = (args ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-      const kinds: Record<string, DownloadAccount | undefined> = { tara: "own", own: "own", teacher: "teacher", teachers: "teacher", peer: "peer", peers: "peer", all: undefined };
+      const kinds: Record<string, DownloadAccount | undefined> = { tara: "own", own: "own", peer: "peer", peers: "peer", all: undefined };
+      // A word that is neither a kind nor a number would otherwise run every kind.
+      const stray = words.find((w) => !(w in kinds) && Number.isNaN(parseInt(w, 10)));
+      if (stray !== undefined) {
+        return { text: `\`!sync reels [tara|peers] [N]\` — "${stray}" is not one of those.${stray.startsWith("teacher") ? " Teacher videos are sent as links now: paste one to me." : ""}`, isError: true };
+      }
       const only = words.map((w) => kinds[w]).find((k) => k !== undefined);
       const n = words.map((w) => parseInt(w, 10)).find((v) => !Number.isNaN(v));
       const run = await runReelDownloads({
@@ -1660,14 +1665,45 @@ async function main() {
         transcriber: assemblyAiClient ?? undefined, embeddingClient: embeddingClient ?? undefined,
         now: () => new Date(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       }, { only, max: n !== undefined ? Math.max(n, 0) : undefined });
-      if (run.results.some((r) => r.account === "teacher" && r.outcome === "ok")) {
-        await extractLessons({ db, anthropic: anthropicClient, now: () => new Date() }, { waitForVisuals: true }, []);
-      }
       const lines = await describeDownloadRun(db, run, { transcriptChars: 600 });
       // The full transcripts go to the log, where there is room for them.
       for (const line of await describeDownloadRun(db, run, { transcriptChars: 20_000 })) console.log(`[sync:reels] ${line}`);
       return { text: `*Reel downloads*\n${lines.join("\n")}`, isError: run.failed > 0 && run.ok === 0 };
     },
+    /**
+     * A teacher video: an Instagram link Matt found insightful, pasted to the
+     * bot (or `!learn <link> [@creator] [why]`). Downloaded, transcribed, its
+     * frames read and its lessons listed, then the reply says what it teaches.
+     */
+    "teacher:learn": async (args) => {
+      if (!reelDownloader) return { text: "Can't save videos — RAPIDAPI_KEY is not set on the worker.", isError: true };
+      if (!anthropicClient) return { text: "Can't save videos — ANTHROPIC_API_KEY is not set.", isError: true };
+      const request = parseLearnMessage(args);
+      if (request.links.length === 0) {
+        return { text: "Send an Instagram reel or post link, e.g. `!learn https://www.instagram.com/reel/ABC123/ @creator why it's good`.", isError: true };
+      }
+      const replies: string[] = [];
+      let saved = 0;
+      for (const link of request.links.slice(0, MAX_LINKS_PER_MESSAGE)) {
+        try {
+          const result = await learnFromVideo({
+            db, anthropic: anthropicClient, video: createFfmpegToolkit(), downloader: reelDownloader, transcriber: assemblyAiClient ?? undefined,
+            limits: downloadLimits, now: () => new Date(),
+          }, { link, username: request.username, note: request.note, savedBy: "slack" });
+          if (result.status === "saved" || result.status === "already-saved") saved++;
+          replies.push(describeLearnResult(link, result));
+          console.log(`[teacher:learn] ${link.url}: ${result.status}`);
+        } catch (err) {
+          console.error(`[teacher:learn] ${link.url} failed:`, err);
+          replies.push(`Couldn't save ${link.url}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (request.links.length > MAX_LINKS_PER_MESSAGE) {
+        replies.push(`Only the first ${MAX_LINKS_PER_MESSAGE} links were read — send the rest in another message.`);
+      }
+      return { text: replies.join("\n\n"), isError: saved === 0 };
+    },
+
     "sync:invoices": async () => {
       let result: InvoiceFolderResult | null;
       try {

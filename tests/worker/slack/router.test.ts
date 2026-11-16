@@ -204,7 +204,7 @@ describe("routeCommand: maps commands to handlers", () => {
   });
 
   it("takes reel as well as reels", () => {
-    expect(routeCommand({ type: "command", category: "sync", action: "reel", args: "teachers 1", raw: "!sync reel teachers 1" }).handler).toBe("sync:reels");
+    expect(routeCommand({ type: "command", category: "sync", action: "reel", args: "peers 1", raw: "!sync reel peers 1" }).handler).toBe("sync:reels");
   });
 
   // Footage has to be named.
@@ -235,5 +235,33 @@ describe("routeCommand: maps commands to handlers", () => {
     };
     const result = routeCommand(cmd);
     expect(result.handler).toBe("meta:overview");
+  });
+});
+
+describe("teacher video links", () => {
+  // A pasted link is a video to learn from; a question that mentions one is still a question.
+  it("routes a message that starts with an Instagram link to teacher:learn, keeping the whole message", () => {
+    const text = "<https://www.instagram.com/reel/DAbc123/?igsh=x|instagram.com/reel/DAbc123> @lana.k.social great hook";
+    const parsed = parseMessage(text);
+    expect(parsed).toEqual({ type: "command", category: "learn", action: "", args: text, raw: text });
+    expect(routeCommand(parsed as ParsedCommand).handler).toBe("teacher:learn");
+  });
+
+  it("routes bare links, post links and links with the creator in the path", () => {
+    for (const text of ["https://www.instagram.com/reel/DAbc123/", "https://instagram.com/p/Cxyz789/", "https://www.instagram.com/lana.k.social/reel/Qrst456/"]) {
+      expect(parseMessage(text)).toMatchObject({ type: "command", category: "learn" });
+    }
+  });
+
+  it("leaves a question that mentions a link, and a profile link, as natural language", () => {
+    expect(parseMessage("what do you think of https://www.instagram.com/reel/DAbc123/ ?").type).toBe("natural");
+    expect(parseMessage("https://www.instagram.com/lana.k.social/").type).toBe("natural");
+  });
+
+  // Shortcodes are case-sensitive: `!learn` must not lowercase the link.
+  it("keeps !learn's link exactly as typed", () => {
+    const parsed = parseMessage("!learn https://www.instagram.com/reel/DAbC123xYz/ @Lana why");
+    expect(parsed).toMatchObject({ type: "command", category: "learn", action: "", args: "https://www.instagram.com/reel/DAbC123xYz/ @Lana why" });
+    expect(routeCommand(parsed as ParsedCommand).handler).toBe("teacher:learn");
   });
 });

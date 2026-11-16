@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { getPeerPosts, getUploadableReels } from "@/domain/social/review-queries";
-import { peerReelsForUpload, teacherReelsForUpload } from "@/domain/social/peers";
+import { peerReelsForUpload } from "@/domain/social/peers";
 import { getDownloadStatusByPost, getDownloadUsage } from "@/domain/social/download-queries";
 import { createInstagramApiClient } from "@/integrations/instagram-api";
 import { UploadsView } from "./uploads-view";
@@ -12,13 +12,13 @@ export const dynamic = "force-dynamic";
  * licensed music — waiting for Matt to upload the copy Instagram's own
  * download gives, so they get the same visual analysis as every other reel.
  * Each links to the reel on Instagram, where the download is. Below them,
- * teacher accounts' reels (uploaded for what they say, read for lessons) and
- * tracked peers' reels — neither ever given with video.
+ * tracked peers' reels, never given with video. Teacher videos are not here:
+ * they are sent to the Slack bot as links.
  */
 
 const DAYS = 90;
-/** Teacher reels are listed whatever their age; peers' are judged over 90 days within it. */
-const PEER_HISTORY_DAYS = 365;
+/** Peers' reels are judged against their account's usual over 90 days. */
+const PEER_HISTORY_DAYS = 90;
 
 /** Instagram's cover links expire, so they are fetched fresh for the page. */
 async function freshCovers(ids: string[]): Promise<Map<string, string>> {
@@ -50,7 +50,6 @@ export default async function ReelUploadsPage() {
       reels={reels}
       covers={covers}
       days={DAYS}
-      teachers={teacherReelsForUpload(peerPosts)}
       peers={peerReelsForUpload(peerPosts, now)}
       downloads={downloads}
       failures={failures}

@@ -1,11 +1,11 @@
 /**
- * Lessons from teacher accounts — Instagram accounts followed for their
- * advice rather than as peers to benchmark (`social_peers.purpose =
- * 'teacher'`).
+ * Lessons from teacher videos — Instagram videos Matt found insightful and
+ * sent to the Slack bot (`teacher_videos`). No account is followed for
+ * advice; each video is chosen.
  *
- * Claude reads what Instagram gives of each post — the caption, the text on
- * its slides or image (from the visual reading), and the transcript of a reel
- * Matt uploaded — and records what it teaches: a principle in our own words,
+ * Claude reads what there is of each video — its caption, the text on screen
+ * (from the visual reading of its frames) and its transcript — and records
+ * what it teaches: a principle in our own words,
  * how to apply it, the part of a post it is about, and whether it is a
  * practice or a claim (an assertion about the algorithm or a number that
  * nothing here has verified). A post that teaches nothing is `none`, an
@@ -34,8 +34,11 @@ export const MAX_LESSON_ATTEMPTS = 3;
 const MAX_QUOTE = 200;
 
 export function buildLessonPrompt(input: {
-  username: string;
+  /** The creator, when the link or the message said; null when unknown. */
+  username: string | null;
   format: string;
+  /** Why Matt saved it, as he wrote it. */
+  note?: string | null;
   caption: string | null;
   slideText: Array<{ at: string; text: string }> | null;
   transcript: string | null;
@@ -46,9 +49,12 @@ export function buildLessonPrompt(input: {
   if (caption === "" && slides.length === 0 && transcript === "") return null;
 
   const basis = [caption !== "" && "caption", slides.length > 0 && "slides", transcript !== "" && "transcript"].filter(Boolean).join("+");
+  const by = input.username ? `by @${input.username}` : "by a creator whose handle was not given";
+  const note = input.note?.trim() ?? "";
   const parts = [
-    `@${input.username} is an Instagram account Rad & Happy follows to learn from: its posts teach how to make Instagram content that grows an account. ` +
+    `This is an Instagram video ${by} that Rad & Happy saved because it seemed insightful about making Instagram content that grows an account. ` +
       "Rad & Happy is a small stationery brand; its founder Tara posts reels and carousels of her hand-drawn doodle and coloring illustrations.",
+    ...(note !== "" ? [`Why it was saved: "${note.slice(0, 500)}". Use this only to understand what caught their eye; list what the video itself teaches.`] : []),
     "List what this post teaches. For each lesson return: `principle` (one sentence, in your own words — never copy their phrasing as ours); " +
       "`howToApply` (one sentence on how Tara could apply it to her own posts, or null); " +
       `\`area\` (one of ${LESSON_AREAS.join(", ")}); ` +
@@ -101,22 +107,13 @@ export function shouldExtractLessons(state: { status: string; attempts: number }
   return state.attempts < MAX_LESSON_ATTEMPTS;
 }
 
-/**
- * A post's text on screen comes from its visual reading, so wait until that
- * has finished — read, nothing to read, or given up on. Without the visual
- * step there is nothing to wait for.
- */
-export function lessonsReady(post: { visualStatus: string | null; visualAttempts: number | null }, waitForVisuals: boolean): boolean {
-  if (!waitForVisuals) return true;
-  if (post.visualStatus === "ok" || post.visualStatus === "unavailable") return true;
-  return post.visualStatus === "error" && (post.visualAttempts ?? 0) >= 3;
-}
-
 export interface LessonRow extends Lesson {
   postId: string;
-  username: string;
+  /** The creator; null when the link and the message did not say. */
+  username: string | null;
   permalink: string | null;
-  postedAt: Date;
+  /** When the video was sent — its posting date is not known. */
+  savedAt: Date;
   /** What the lesson was read from: caption, slides, transcript, joined with +. */
   basis: string | null;
 }
@@ -129,12 +126,12 @@ const key = (principle: string) => principle.toLowerCase().replace(/[^a-z0-9 ]/g
  * wording merges — similar lessons are left for the reader to weigh.
  */
 export function groupLessons(rows: LessonRow[]) {
-  const areas = new Map<LessonArea, Map<string, { principle: string; howToApply: string | null; kind: Lesson["kind"]; quote: string | null; sources: Array<{ postId: string; username: string; permalink: string | null; postedAt: string; basis: string | null }> }>>();
+  const areas = new Map<LessonArea, Map<string, { principle: string; howToApply: string | null; kind: Lesson["kind"]; quote: string | null; sources: Array<{ postId: string; username: string | null; permalink: string | null; savedAt: string; basis: string | null }> }>>();
   for (const r of rows) {
     const area = areas.get(r.area) ?? new Map();
     const k = key(r.principle);
     const lesson = area.get(k) ?? { principle: r.principle, howToApply: r.howToApply, kind: r.kind, quote: r.quote, sources: [] };
-    lesson.sources.push({ postId: r.postId, username: r.username, permalink: r.permalink, postedAt: r.postedAt.toISOString(), basis: r.basis });
+    lesson.sources.push({ postId: r.postId, username: r.username, permalink: r.permalink, savedAt: r.savedAt.toISOString(), basis: r.basis });
     area.set(k, lesson);
     areas.set(r.area, area);
   }
@@ -144,11 +141,11 @@ export function groupLessons(rows: LessonRow[]) {
 }
 
 /**
- * Advice per post, for searching a teacher's reels: each post once, with what
- * it was and said, and every piece of advice read from it.
+ * Advice per video, for searching the saved teacher videos: each once, with
+ * what it was and said, why it was saved, and every piece of advice from it.
  */
 export function groupAdviceByPost(rows: Array<{
-  postId: string; username: string; permalink: string | null; postedAt: Date; format: string;
+  postId: string; username: string | null; permalink: string | null; savedAt: Date; note: string | null; format: string;
   transcript: string | null; openingWords: string | null; faceInFirst2s: number | null; cutsPerMinute: number | null;
   audio: string | null; source: string | null; area: string; principle: string; howToApply: string | null; kind: string; quote: string | null;
 }>, opts: { transcriptChars: number }) {
@@ -156,7 +153,7 @@ export function groupAdviceByPost(rows: Array<{
   function toPost(r: (typeof rows)[number]) {
     const t = r.transcript;
     return {
-      postId: r.postId, username: r.username, permalink: r.permalink, postedAt: r.postedAt.toISOString(), format: r.format,
+      postId: r.postId, username: r.username, permalink: r.permalink, savedAt: r.savedAt.toISOString(), note: r.note, format: r.format,
       source: r.source, faceInFirst2s: r.faceInFirst2s === null ? null : r.faceInFirst2s === 1, cutsPerMinute: r.cutsPerMinute, audio: r.audio,
       openingWords: r.openingWords,
       transcript: t !== null && t.length > opts.transcriptChars ? t.slice(0, opts.transcriptChars) : t,

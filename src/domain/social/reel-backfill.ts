@@ -1,6 +1,6 @@
 /**
  * Downloads reels Instagram's API will not give the video of — Tara's
- * licensed-music reels, teachers' and standout peers' — through the
+ * licensed-music reels and every recent peer reel — through the
  * downloader (RapidAPI), and runs each through the same pipeline a manual
  * upload uses (`analyseUploadedReel`, origin `api_backfill`).
  *
@@ -42,7 +42,7 @@ export interface ReelDownloadDeps {
 }
 
 export type FetchedReel =
-  | { ok: true; path: string; quality: string | null; remove: () => Promise<void>; rate: RateLimitState }
+  | { ok: true; path: string; quality: string | null; caption: string | null; remove: () => Promise<void>; rate: RateLimitState }
   | { ok: false; reason: "rate-limited" | "api-error" | "no-video" | "bad-file"; detail: string; rate: RateLimitState };
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -75,7 +75,7 @@ export async function fetchReelVideo(deps: Pick<ReelDownloadDeps, "downloader" |
   } catch (err) {
     return reject(`ffprobe could not read the file: ${errorText(err).slice(0, 200)}`);
   }
-  return { ok: true, path: file.path, quality: resolved.quality, remove: file.remove, rate };
+  return { ok: true, path: file.path, quality: resolved.quality, caption: resolved.caption, remove: file.remove, rate };
 }
 
 export interface ReelDownloadResult {
@@ -110,11 +110,11 @@ export async function runReelDownloads(deps: ReelDownloadDeps, opts: { only?: Do
   const [queue, { usage, quota }] = await Promise.all([getDownloadQueue(deps.db, now), getDownloadUsage(deps.db, now)]);
   const pick = (account: DownloadAccount, list: typeof queue.own) => (opts.only === undefined || opts.only === account ? list : []);
   const plan = planDownloads({
-    own: pick("own", queue.own), teachers: pick("teacher", queue.teachers), peers: pick("peer", queue.peers),
+    own: pick("own", queue.own), peers: pick("peer", queue.peers),
     usage, limits: deps.limits, quota, now, max: opts.max,
   });
 
-  const queued = { own: pick("own", queue.own).length, teacher: pick("teacher", queue.teachers).length, peer: pick("peer", queue.peers).length };
+  const queued = { own: pick("own", queue.own).length, teacher: 0, peer: pick("peer", queue.peers).length };
   const run: ReelDownloadRun = { calls: 0, ok: 0, failed: 0, stopped: plan.blocked, queued, only: opts.only ?? null, deferred: plan.deferred, results: [] };
   for (const [i, reel] of plan.planned.entries()) {
     if (i > 0) await deps.sleep(DOWNLOAD_PAUSE_MS);

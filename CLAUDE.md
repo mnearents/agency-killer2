@@ -490,49 +490,53 @@ up to 100 to reach back) collects; Claude interprets, weekly.
   stops one. Ideas to borrow, never a scoreboard against a bigger account.
 - **Reels are also downloaded automatically** through a RapidAPI scraper
   ("Instagram Downloader", `integrations/reel-downloader.ts`: POST
-  `/download.php`, multipart `url`; the largest mp4 in `formats`; quota in
-  the `x-ratelimit-requests-*` headers; a 429 is the rate limit). It
-  scrapes Instagram, so it can break without notice: **every call is a
+  `/download.php`, multipart `url`; the largest mp4 in `formats`; `title` is
+  the caption, and there is no creator or posting date; quota in the
+  `x-ratelimit-requests-*` headers; a 429 is the rate limit). It scrapes
+  Instagram, so it can break without notice: **every call is a
   `social_downloads` row** with its outcome and the quota the API reported,
-  and `/social/uploads` shows the month's calls by Tara/teachers/peers and
-  the last call's result. `reel-backfill.ts` checks each file (served as
+  and `/social/uploads` shows the month's calls (Tara, peers, teacher videos)
+  and the last call's result. `reel-backfill.ts` checks each file (served as
   video, 100KB-500MB, a length ffprobe reads), runs it through
-  `analyseUploadedReel` with origin `api_backfill`, and deletes it. **A
-  download never replaces a manual upload; an upload always replaces a
-  download.** Queue (`download-queries.ts`): Tara's cover-only reels (never
-  capped), teachers' reels from 30 days before the account's
-  `first_fill_at` on (fixed when it first became a teacher — older history
-  is only ever uploaded by hand), peers' last-30-day reels above their
-  usual. `planDownloads` applies `RAPIDAPI_MONTHLY_LIMIT` (default 3, the
-  free plan, Tara's included), `TEACHER_MONTHLY_CAP` (60) and
-  `PEER_MONTHLY_CAP` (40) — past a cap reels simply stay queued — and the
-  quota the API last reported, which counts calls made anywhere. A failed
-  reel is retried next sync, three times at most; a 429 stops the run.
-  **The daily sync downloads only with `REEL_AUTO_DOWNLOAD=on`**;
-  `!sync reels [tara|teachers|peers] [N]` runs on request and replies with
-  what each reel showed, said and taught. The key is on the worker only;
-  nothing in `src/mcp` can reach the downloader (asserted).
-- **Teacher accounts** (`social_peers.purpose = 'teacher'`, set with
-  `social_peer_set role: "teacher"`; @lana.k.social is seeded as one) are followed for their advice, not
-  benchmarked: they are read by the same sync but kept out of `social_peers`
-  and the review's `peers`. Step 9 of the sync (`lesson-sync.ts`, after the
-  visual step has read their slides, 20 posts a run, every post held
-  whatever its age) has Claude list what each post teaches
-  (`social_lessons`): a principle in our own words, how Tara could apply
-  it, its area, and `practice` or `claim` — an assertion about the
-  algorithm or a number that nothing here verified, which is also what an
-  unclear answer defaults to. A post teaching nothing is `none` in
-  `social_lesson_runs`, an answer; an unreadable reply is an error, retried
-  three times. Talking-head reels teach in what is said, so they are listed
-  on `/social/uploads`; an upload's transcript marks the run `stale` and
-  the post's lessons are replaced. **`social_playbook`** serves the lessons
-  grouped by area with their source posts, each teacher's coverage and
-  reels awaiting upload, and Tara's own 90-day patterns (`taraEvidence`) so
-  a lesson is tested against her numbers before it is recommended.
-  **`teacher_advice`** searches the same advice reel by reel (`query`,
-  `username`, `area`, `kind`) with each reel's transcript, first words,
-  face in the first 2s, cuts per minute and sound. Claude Desktop writes
-  skills from either; nothing here generates skill files.
+  `analyseUploadedReel` with origin `api_backfill` — frames, sound and a
+  transcript — and deletes it. **A download never replaces a manual upload;
+  an upload always replaces a download.** Queue (`download-queries.ts`):
+  Tara's cover-only reels (never capped), then **every reel tracked peers
+  posted in the last 30 days**, furthest above their usual first.
+  `planDownloads` applies `RAPIDAPI_MONTHLY_LIMIT` (5000 on the worker; the
+  default 3 is the free plan) over everything, teacher videos included,
+  `PEER_MONTHLY_CAP` (300) — past it reels stay queued — and the quota the
+  API last reported, which counts calls made anywhere. A failed reel is
+  retried next sync, three times at most; a 429 stops the run. **The daily
+  sync downloads only with `REEL_AUTO_DOWNLOAD=on`**; `!sync reels
+  [tara|peers] [N]` runs on request and replies with what each reel showed
+  and said. The key is on the worker only; nothing in `src/mcp` can reach
+  the downloader (asserted).
+- **Teacher videos are chosen, not followed** (since 2026-11-16). Matt pastes
+  an Instagram link to the Slack bot — a DM, or an @mention; a message that
+  STARTS with the link — or sends `!learn <link> [@creator] [why]`. The
+  router sends it to `teacher:learn` (`teacher-videos.ts`): the link is
+  resolved and downloaded (a `social_downloads` row, account `teacher`),
+  transcribed, its frames read (`social_post_visuals`), and Claude lists
+  what it teaches (`social_lessons`, `lesson-sync.ts`): a principle in our
+  own words, how Tara could apply it, its area, and `practice` or `claim` —
+  an assertion about the algorithm or a number nothing here verified. The
+  reply lists the lessons. A video is saved once (`teacher_videos`, id
+  `ig:<shortcode>`): sending it again downloads nothing; one that failed is
+  tried again. **The creator is only known if the link's path or the message
+  names it** — the downloader gives no creator and Meta's oEmbed needs an app
+  review this app lacks — so `username` is often null, stored as "unknown"
+  on lessons. Lessons that fail are retried by step 9 of the social sync.
+  **`social_playbook`** serves the lessons grouped by area with their
+  videos, how many were saved, read and failed, and Tara's own 90-day
+  patterns (`taraEvidence`) so a lesson is tested against her numbers before
+  it is recommended. **`teacher_advice`** searches the same advice video by
+  video (`query` over advice, quotes, transcripts and Matt's note;
+  `username`, `area`, `kind`). The accounts once followed as teachers
+  (@lana.k.social) were stopped by migration 0066 with everything kept;
+  their old lessons are keyed to media IDs and are no longer served.
+  `social_peer_set` only watches competitors now. Claude Desktop writes
+  skills from either tool; nothing here generates skill files.
 - **`social_review_save`** publishes the written review to
   `/social/review` on the dashboard (archive at `/social/review/<id>`),
   where Tara reads it with the week's numbers and posts beside it. Written

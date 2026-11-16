@@ -5,7 +5,7 @@
 
 import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@/db/client";
-import { socialAccountDays, socialLessonRuns, socialLessons, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets } from "@/db/schema";
+import { socialAccountDays, socialLessonRuns, socialLessons, socialPeerDays, socialPeerPosts, socialPeers, socialPostAnalyses, socialPosts, socialPostVisuals, socialReviews, socialTargets, teacherVideos } from "@/db/schema";
 import { formatGroup, type AccountDayRow, type ReviewPost, type ReviewPostVisual, type TargetMetric } from "./review";
 import type { PeerDay, PeerPost } from "./peers";
 import type { LessonArea, LessonRow } from "./lessons";
@@ -198,7 +198,7 @@ export type PeerPurpose = "peer" | "teacher";
 
 export interface Peer {
   username: string;
-  /** peer: benchmarked for ideas. teacher: read for its advice. */
+  /** peer: benchmarked for ideas. teacher: once followed for its advice, now stopped (teacher videos are sent one at a time). */
   purpose: PeerPurpose;
   notes: string | null;
   active: boolean;
@@ -214,24 +214,22 @@ export async function getPeers(db: Db, includeInactive = false): Promise<Peer[]>
   return rows.map((r) => ({ ...r, purpose: r.purpose as PeerPurpose, active: r.active === 1 }));
 }
 
-/** Start or stop watching an account. Stopping keeps its history. */
-export async function setPeer(db: Db, peer: { username: string; active: boolean; purpose?: PeerPurpose; notes?: string; addedBy: string | null }): Promise<Peer> {
+/**
+ * Start or stop watching an account. Stopping keeps its history. A watched
+ * account is a peer: no account is followed for advice any more, so one
+ * that was a teacher becomes a peer if it is started again.
+ */
+export async function setPeer(db: Db, peer: { username: string; active: boolean; notes?: string; addedBy: string | null }): Promise<Peer> {
   const values = {
     active: peer.active ? 1 : 0,
     updatedAt: new Date(),
     ...(peer.notes !== undefined ? { notes: peer.notes } : {}),
-    ...(peer.purpose !== undefined ? { purpose: peer.purpose } : {}),
+    ...(peer.active ? { purpose: "peer" } : {}),
   };
-  // A teacher's first fill is fixed the first time it becomes one and never
-  // moves: its reels are downloaded from 30 days before that date only.
-  const teacher = peer.purpose === "teacher";
   const [row] = await db
     .insert(socialPeers)
-    .values({ username: peer.username, addedBy: peer.addedBy, ...values, ...(teacher ? { firstFillAt: new Date() } : {}) })
-    .onConflictDoUpdate({
-      target: socialPeers.username,
-      set: { ...values, ...(teacher ? { firstFillAt: sql`COALESCE(${socialPeers.firstFillAt}, now())` } : {}) },
-    })
+    .values({ username: peer.username, addedBy: peer.addedBy, purpose: "peer", ...values })
+    .onConflictDoUpdate({ target: socialPeers.username, set: values })
     .returning({ username: socialPeers.username, purpose: socialPeers.purpose, notes: socialPeers.notes, active: socialPeers.active });
   return { ...row, purpose: row.purpose as PeerPurpose, active: row.active === 1 };
 }
@@ -307,47 +305,73 @@ export async function getPeerPosts(db: Db, since: Date): Promise<PeerPost[]> {
   }));
 }
 
-/** Lessons from teacher accounts, newest post first, optionally one account or area. */
+/** Lessons from saved teacher videos, newest saved first, optionally one creator or area. */
 export async function getLessons(db: Db, filter: { since: Date; username?: string; area?: LessonArea }): Promise<LessonRow[]> {
   const rows = await db
     .select({
       postId: socialLessons.postId,
-      username: socialLessons.username,
+      username: teacherVideos.username,
       area: socialLessons.area,
       principle: socialLessons.principle,
       howToApply: socialLessons.howToApply,
       kind: socialLessons.kind,
       quote: socialLessons.quote,
-      permalink: socialPeerPosts.permalink,
-      postedAt: socialPeerPosts.postedAt,
+      permalink: teacherVideos.url,
+      savedAt: teacherVideos.savedAt,
       basis: socialLessonRuns.basis,
     })
     .from(socialLessons)
-    .innerJoin(socialPeerPosts, eq(socialPeerPosts.id, socialLessons.postId))
+    .innerJoin(teacherVideos, eq(teacherVideos.id, socialLessons.postId))
     .leftJoin(socialLessonRuns, eq(socialLessonRuns.postId, socialLessons.postId))
     .where(and(
-      gte(socialPeerPosts.postedAt, filter.since),
-      filter.username !== undefined ? eq(socialLessons.username, filter.username) : undefined,
+      gte(teacherVideos.savedAt, filter.since),
+      filter.username !== undefined ? eq(teacherVideos.username, filter.username) : undefined,
       filter.area !== undefined ? eq(socialLessons.area, filter.area) : undefined,
     ))
-    .orderBy(desc(socialPeerPosts.postedAt));
+    .orderBy(desc(teacherVideos.savedAt));
   return rows.map((r) => ({ ...r, area: r.area as LessonArea, kind: r.kind as LessonRow["kind"] }));
 }
 
-/** Per teacher account: posts held, read for lessons, and that taught something. */
-export async function getLessonCoverage(db: Db): Promise<Array<{ username: string; posts: number; read: number; withLessons: number }>> {
+export interface TeacherVideoCoverage {
+  saved: number;
+  /** Downloaded and read. */
+  read: number;
+  /** Sent, but the download or the reading failed — sending the link again retries it. */
+  failed: Array<{ id: string; url: string; username: string | null; detail: string | null; savedAt: Date }>;
+  withLessons: number;
+  teachingNothing: number;
+  /** Read, but its lessons are still owed — the daily sync retries them. */
+  lessonsPending: number;
+  byCreator: Array<{ username: string | null; videos: number }>;
+}
+
+/** How many videos have been sent, read, failed and taught something. */
+export async function getTeacherVideoCoverage(db: Db): Promise<TeacherVideoCoverage> {
   const rows = await db
     .select({
-      username: socialPeerPosts.username,
-      posts: sql<number>`count(*)::int`,
-      read: sql<number>`count(*) FILTER (WHERE ${socialLessonRuns.status} IN ('ok', 'none'))::int`,
-      withLessons: sql<number>`count(*) FILTER (WHERE ${socialLessonRuns.status} = 'ok')::int`,
+      id: teacherVideos.id,
+      url: teacherVideos.url,
+      username: teacherVideos.username,
+      status: teacherVideos.status,
+      detail: teacherVideos.detail,
+      savedAt: teacherVideos.savedAt,
+      run: socialLessonRuns.status,
     })
-    .from(socialPeerPosts)
-    .innerJoin(socialPeers, and(eq(socialPeers.username, socialPeerPosts.username), eq(socialPeers.purpose, "teacher")))
-    .leftJoin(socialLessonRuns, eq(socialLessonRuns.postId, socialPeerPosts.id))
-    .groupBy(socialPeerPosts.username);
-  return rows.map((r) => ({ username: r.username, posts: Number(r.posts), read: Number(r.read), withLessons: Number(r.withLessons) }));
+    .from(teacherVideos)
+    .leftJoin(socialLessonRuns, eq(socialLessonRuns.postId, teacherVideos.id))
+    .orderBy(desc(teacherVideos.savedAt));
+  const read = rows.filter((r) => r.status === "ok");
+  const creators = new Map<string | null, number>();
+  for (const r of rows) creators.set(r.username, (creators.get(r.username) ?? 0) + 1);
+  return {
+    saved: rows.length,
+    read: read.length,
+    failed: rows.filter((r) => r.status !== "ok").map(({ id, url, username, detail, savedAt }) => ({ id, url, username, detail, savedAt })),
+    withLessons: read.filter((r) => r.run === "ok").length,
+    teachingNothing: read.filter((r) => r.run === "none").length,
+    lessonsPending: read.filter((r) => r.run !== "ok" && r.run !== "none").length,
+    byCreator: [...creators].map(([username, videos]) => ({ username, videos })).sort((a, b) => b.videos - a.videos),
+  };
 }
 
 /** Peer follower readings between two dates inclusive. */
@@ -452,9 +476,10 @@ export async function getUploadableReels(db: Db, since: Date): Promise<Uploadabl
 
 export interface TeacherAdviceRow {
   postId: string;
-  username: string;
+  username: string | null;
   permalink: string | null;
-  postedAt: Date;
+  savedAt: Date;
+  note: string | null;
   format: string;
   transcript: string | null;
   openingWords: string | null;
@@ -469,7 +494,7 @@ export interface TeacherAdviceRow {
   quote: string | null;
 }
 
-/** Teachers' advice with the post it came from, newest first; `query` matches the advice, its quote or the transcript. */
+/** Saved teacher videos' advice with the video it came from, newest saved first; `query` matches the advice, its quote, the transcript or the note. */
 export async function getTeacherAdvice(
   db: Db,
   filter: { since: Date; username?: string; area?: string; kind?: string; query?: string },
@@ -478,13 +503,12 @@ export async function getTeacherAdvice(
   const rows = await db
     .select({
       postId: socialLessons.postId,
-      username: socialLessons.username,
-      permalink: socialPeerPosts.permalink,
-      postedAt: socialPeerPosts.postedAt,
-      mediaType: socialPeerPosts.mediaType,
-      mediaProductType: socialPeerPosts.mediaProductType,
-      transcript: socialPeerPosts.transcript,
-      openingWords: socialPeerPosts.openingWords,
+      username: teacherVideos.username,
+      permalink: teacherVideos.url,
+      savedAt: teacherVideos.savedAt,
+      note: teacherVideos.note,
+      transcript: teacherVideos.transcript,
+      openingWords: teacherVideos.openingWords,
       faceInFirst2s: socialPostVisuals.faceInFirst2s,
       cutsPerMinute: socialPostVisuals.cutsPerMinute,
       audio: socialPostVisuals.audio,
@@ -496,17 +520,17 @@ export async function getTeacherAdvice(
       quote: socialLessons.quote,
     })
     .from(socialLessons)
-    .innerJoin(socialPeerPosts, eq(socialPeerPosts.id, socialLessons.postId))
+    .innerJoin(teacherVideos, eq(teacherVideos.id, socialLessons.postId))
     .leftJoin(socialPostVisuals, eq(socialPostVisuals.postId, socialLessons.postId))
     .where(and(
-      gte(socialPeerPosts.postedAt, filter.since),
-      filter.username !== undefined ? eq(socialLessons.username, filter.username) : undefined,
+      gte(teacherVideos.savedAt, filter.since),
+      filter.username !== undefined ? eq(teacherVideos.username, filter.username) : undefined,
       filter.area !== undefined ? eq(socialLessons.area, filter.area) : undefined,
       filter.kind !== undefined ? eq(socialLessons.kind, filter.kind) : undefined,
       like !== null
-        ? or(ilike(socialLessons.principle, like), ilike(socialLessons.quote, like), ilike(socialLessons.howToApply, like), ilike(socialPeerPosts.transcript, like))
+        ? or(ilike(socialLessons.principle, like), ilike(socialLessons.quote, like), ilike(socialLessons.howToApply, like), ilike(teacherVideos.transcript, like), ilike(teacherVideos.note, like))
         : undefined,
     ))
-    .orderBy(desc(socialPeerPosts.postedAt));
-  return rows.map(({ mediaType, mediaProductType, ...r }) => ({ ...r, format: formatGroup(mediaType, mediaProductType) }));
+    .orderBy(desc(teacherVideos.savedAt));
+  return rows.map((r) => ({ ...r, format: "reel" }));
 }

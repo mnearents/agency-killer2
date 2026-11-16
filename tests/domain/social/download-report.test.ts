@@ -3,26 +3,25 @@ import { describeDownloadRun } from "@/domain/social/download-report";
 import { fakeDb } from "../../mocks/recording-db";
 
 const run = {
-  calls: 2, ok: 1, failed: 1, stopped: null, only: null, queued: { own: 1, teacher: 4, peer: 0 }, deferred: { own: 0, teacher: 3, peer: 0 },
+  calls: 2, ok: 1, failed: 1, stopped: null, only: null, queued: { own: 1, teacher: 0, peer: 4 }, deferred: { own: 0, teacher: 0, peer: 3 },
   results: [
-    { postId: "t1", account: "teacher" as const, username: "lana.k.social", permalink: "https://instagram.com/reel/t1/", outcome: "ok", detail: null, transcribed: true },
+    { postId: "t1", account: "peer" as const, username: "pippipost.shop", permalink: "https://instagram.com/reel/t1/", outcome: "ok", detail: null, transcribed: true },
     { postId: "o1", account: "own" as const, username: null, permalink: "https://instagram.com/reel/o1/", outcome: "no-video", detail: "message: Media not found" },
   ],
 };
 
 describe("describeDownloadRun", () => {
-  it("shows what a teacher's reel showed, said and taught, and why a reel failed", async () => {
+  it("shows what a competitor's reel showed and said, and why a reel failed", async () => {
     const { db } = fakeDb({
-      social_post_visuals: [{ postId: "t1", summary: "Lana talks to camera.", visualHook: "Your hook is too slow", faceInFirst2s: 1, cutsPerMinute: 18, durationMs: 31_000, audio: "speech" }],
+      social_post_visuals: [{ postId: "t1", summary: "She talks to camera.", visualHook: "Your hook is too slow", faceInFirst2s: 1, cutsPerMinute: 18, durationMs: 31_000, audio: "speech" }],
       social_peer_posts: [{ id: "t1", transcript: "Stop opening with hi. Lead with the payoff.", openingWords: "Stop opening with hi." }],
-      social_lessons: [{ postId: "t1", area: "hook", kind: "practice", principle: "Open with the payoff.", quote: "Lead with the payoff" }],
     });
     const text = (await describeDownloadRun(db, run, { transcriptChars: 20 })).join("\n");
-    expect(text).toMatch(/Waiting: Tara 1, teachers 4, peers 0\. 2 download call\(s\): 1 analysed, 1 failed — still queued: Tara 0, teachers 3, peers 0/);
+    expect(text).toMatch(/Waiting: Tara 1, peers 4\. 2 download call\(s\): 1 analysed, 1 failed — still queued: Tara 0, peers 3/);
+    expect(text).toMatch(/@pippipost\.shop \(peer\) — https:\/\/instagram\.com\/reel\/t1\//);
     expect(text).toMatch(/face in first 2s: yes · 18 cuts\/min · 31s · sound: speech/);
     expect(text).toMatch(/First words: "Stop opening with hi."/);
     expect(text).toMatch(/Transcript: Stop opening with hi…/);
-    expect(text).toMatch(/• \[hook, practice\] Open with the payoff. — "Lead with the payoff"/);
     expect(text).toMatch(/no-video: message: Media not found/);
   });
 });
