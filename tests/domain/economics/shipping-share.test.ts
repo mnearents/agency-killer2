@@ -26,7 +26,21 @@ describe("ordersOverShippingShare", () => {
     expect(r).toMatchObject({ judged: 1, unjudged: 1 });
   });
 
-  it("treats an order with no revenue as over any share", () => {
-    expect(ordersOverShippingShare([o("RH1", 0, 500)], 0.3).orders).toHaveLength(1);
+  // A replacement, exchange or off-Shopify payment earns nothing here, so any
+  // label is "over" every share; listed with paying orders they crowd out the
+  // pricing question. They are totalled apart instead.
+  it("keeps orders that earned nothing out of the list and totals them apart, by code", () => {
+    const r = ordersOverShippingShare([o("RH1", 2000, 900), o("RH2", 0, 500, ["replacement"]), o("RH3", 0, 700), o("RH4", 0, 300, ["replacement"])], 0.3);
+    expect(r.orders.map((x) => x.orderNumber)).toEqual(["RH1"]);
+    expect(r.byDiscountCode).toEqual([{ code: "(no code)", orders: 1, labelCostCents: 900, netRevenueCents: 2000 }]);
+    expect(r.unpaid).toEqual({
+      orders: 3,
+      labelCostCents: 1500,
+      byDiscountCode: [
+        { code: "replacement", orders: 2, labelCostCents: 800, netRevenueCents: 0 },
+        { code: "(no code)", orders: 1, labelCostCents: 700, netRevenueCents: 0 },
+      ],
+    });
+    expect(r.judged).toBe(4);
   });
 });

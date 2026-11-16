@@ -134,6 +134,18 @@ describe("orders_shipping_over_share", () => {
     expect(r.byDiscountCode).toEqual([{ code: "FREESHIP", orders: 1, labelCost: 9, netRevenue: 20 }]);
     expect(r).toMatchObject({ judged: 2, unjudged: 0 });
   });
+
+  it("reports orders that earned nothing apart, in dollars, never in the list", async () => {
+    vi.mocked(economicsQueries.getOrdersForEconomics).mockResolvedValue([
+      { line: "physical", orders: [order("gid://shopify/Order/1", 2000), order("gid://shopify/Order/3", 0, { discountCodes: ["replacement"] })] },
+      { line: "subscription", orders: [] },
+      { line: "digital", orders: [] },
+    ]);
+    vi.mocked(orderPostage.getOrderPostage).mockResolvedValue(new Map([["gid://shopify/Order/1", known(900)], ["gid://shopify/Order/3", known(550)]]));
+    const r = (await dispatchTool(ctx, "orders_shipping_over_share", {})) as Record<string, any>;
+    expect(r.orders.map((o: { orderNumber: string }) => o.orderNumber)).toEqual(["RH1"]);
+    expect(r.unpaid).toEqual({ orders: 1, labelCost: 5.5, byDiscountCode: [{ code: "replacement", orders: 1, labelCost: 5.5 }] });
+  });
 });
 
 describe("shiphero_coverage", () => {

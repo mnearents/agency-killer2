@@ -3851,7 +3851,8 @@ const ordersShippingOverShare: McpTool = {
   title: "Orders whose label ate their revenue",
   description:
     "Shipped physical orders whose own label cost is more than `share` (default 0.3) of the order's net revenue — total less tax, so merchandise after discounts plus any shipping collected — worst first, with the discount codes each used, and totalled by code so a promotion that loses money on shipping is visible. " +
-    "Only orders whose label cost is known can be judged (the 3PL shipment export first, else ShipHero); `unjudged` counts the rest, which are neither flagged nor cleared. Defaults to the last 365 days.",
+    "Only orders whose label cost is known can be judged (the 3PL shipment export first, else ShipHero); `unjudged` counts the rest, which are neither flagged nor cleared. " +
+    "Orders with no net revenue — replacements, exchanges, damage claims, payments taken off Shopify — are over any share by definition, so they are not listed; `unpaid` totals their label cost by code instead. Defaults to the last 365 days.",
   readOnly: true,
   schema: {
     startDate: { type: "date" },
@@ -3886,6 +3887,11 @@ const ordersShippingOverShare: McpTool = {
       })),
       // Over every matching order, not only those returned.
       byDiscountCode: result.byDiscountCode.map((c) => ({ code: c.code, orders: c.orders, labelCost: dollarsFrom(c.labelCostCents), netRevenue: dollarsFrom(c.netRevenueCents) })),
+      unpaid: {
+        orders: result.unpaid.orders,
+        labelCost: dollarsFrom(result.unpaid.labelCostCents),
+        byDiscountCode: result.unpaid.byDiscountCode.map((c) => ({ code: c.code, orders: c.orders, labelCost: dollarsFrom(c.labelCostCents) })),
+      },
     };
   },
 };
